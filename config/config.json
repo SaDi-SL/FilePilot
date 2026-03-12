@@ -1,0 +1,85 @@
+{
+  "source_folder": "C:/Users/SadiA/Downloads/Input",
+  "organized_base_folder": "C:/Users/SadiA/Downloads/Output",
+  "destination_folders": {
+    "images": "organized/images",
+    "pdfs": "organized/pdfs",
+    "data": "organized/data",
+    "text": "organized/text",
+    "documents": "organized/documents",
+    "videos": "organized/videos",
+    "audio": "organized/audio",
+    "archives": "organized/archives",
+    "others": "organized/others"
+  },
+  "rules": {
+    "images": [
+      ".jpg",
+      ".jpeg",
+      ".png",
+      ".gif",
+      ".webp",
+      ".bmp"
+    ],
+    "pdfs": [
+      ".pdf"
+    ],
+    "data": [
+      ".csv",
+      ".xlsx",
+      ".xls",
+      ".json"
+    ],
+    "text": [
+      ".txt",
+      ".md",
+      ".log"
+    ],
+    "documents": [
+      ".doc",
+      ".docx",
+      ".ppt",
+      ".pptx"
+    ],
+    "videos": [
+      ".mp4",
+      ".mkv",
+      ".avi",
+      ".mov"
+    ],
+    "audio": [
+      ".mp3",
+      ".wav",
+      ".m4a"
+    ],
+    "archives": [
+      ".zip",
+      ".rar",
+      ".7z"
+    ],
+    "code": [
+      ".py",
+      ".js",
+      ".html",
+      ".css"
+    ]
+  },
+  "ignored_extensions": [
+    ".tmp",
+    ".part",
+    ".crdownload",
+    ".download"
+  ],
+  "ignored_prefixes": [
+    "~$",
+    "."
+  ],
+  "log_file": "logs/automation.log",
+  "stats_file": "reports/stats.json",
+  "history_file": "reports/history.csv",
+  "hash_db_file": "reports/file_hashes.json",
+  "processing_wait_seconds": 5,
+  "duplicate_event_window_seconds": 3,
+  "archive_by_date": true,
+  "run_at_startup": false
+}
