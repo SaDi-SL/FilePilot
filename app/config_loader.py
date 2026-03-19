@@ -3,12 +3,11 @@ import shutil
 import sys
 from pathlib import Path
 
-
 def get_runtime_base_dir() -> Path:
     """
-    يرجع المجلد الأساسي أثناء التشغيل:
-    - في وضع التطوير: جذر المشروع
-    - في وضع exe: مجلد exe نفسه
+    Return the base directory at runtime:
+    - In development mode: project root
+    - In exe mode: directory of the exe
     """
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
@@ -18,8 +17,8 @@ def get_runtime_base_dir() -> Path:
 
 def get_bundle_base_dir() -> Path:
     """
-    يرجع مجلد ملفات PyInstaller الداخلية عند البناء،
-    أو جذر المشروع أثناء التطوير.
+    Return PyInstaller internal files directory when built,
+    or project root during development.
     """
     if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
         return Path(sys._MEIPASS)
@@ -29,8 +28,8 @@ def get_bundle_base_dir() -> Path:
 
 def ensure_external_config_exists() -> Path:
     """
-    يضمن وجود config/config.json بجانب التطبيق.
-    إذا لم يكن موجودًا، يحاول نسخه من النسخة المضمّنة.
+    Ensure config/config.json exists next to the app.
+    If missing, copy it from the bundled version.
     """
     runtime_base = get_runtime_base_dir()
     bundle_base = get_bundle_base_dir()
@@ -65,13 +64,31 @@ def load_config() -> dict:
 
 def get_config_path() -> Path:
     """
-    يرجع مسار config الخارجي المستخدم فعليًا.
+    Return the external config path currently in use.
     """
     return ensure_external_config_exists()
 
 def resolve_runtime_path(relative_path: str) -> Path:
     """
-    يحول أي مسار نسبي إلى مسار فعلي بجانب التطبيق.
+    Convert any relative path to an absolute path next to the app.
     """
     base_dir = get_runtime_base_dir()
     return (base_dir / relative_path).resolve()
+
+def get_plugins_dir() -> Path:
+    """
+    Return the plugins directory next to the app.
+    """
+    return resolve_runtime_path("plugins")
+
+def get_smart_rules_path() -> Path:
+    """
+    Return the smart_rules.json path next to the app.
+    """
+    return resolve_runtime_path("config/smart_rules.json")
+
+def get_notifications_path() -> Path:
+    """
+    Return the notifications file path next to the app.
+    """
+    return resolve_runtime_path("reports/notifications.json")

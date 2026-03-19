@@ -3,3 +3,5 @@ pystray
 pillow
 winshell
 pywin32
+python-docx
+pypdf

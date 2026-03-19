@@ -1,0 +1,9 @@
+timestamp,filename,category,status,classification_method,smart_source
+2026-03-13 22:46:17,document_001.pdf,invoices,duplicate_skipped,smart,content_or_filename
+2026-03-13 22:46:22,file.docx,resumes,duplicate_skipped,smart,content_or_filename
+2026-03-13 22:46:27,invoice_march_2026.pdf,invoices,duplicate_skipped,plugin,plugin
+2026-03-13 22:46:32,meeting_notes.md,notes,duplicate_skipped,smart,content_or_filename
+2026-03-13 22:46:37,project_report.txt,reports,duplicate_skipped,smart,content_or_filename
+2026-03-13 22:46:42,project_sad.txt,reports,duplicate_skipped,smart,content_or_filename
+2026-03-13 22:46:47,resume_sadi.docx,resumes,duplicate_skipped,smart,content_or_filename
+2026-03-13 22:46:52,Sadi.jpg,images,duplicate_skipped,extension,

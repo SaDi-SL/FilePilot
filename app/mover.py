@@ -10,7 +10,7 @@ from app.hash_manager import is_duplicate_file, register_file_hash, get_existing
 
 
 def generate_unique_destination(destination_path: Path) -> Path:
-    """توليد اسم جديد إذا كان الملف موجودًا مسبقًا."""
+    """Generate a unique name if the file already exists at the destination."""
     if not destination_path.exists():
         return destination_path
 
@@ -29,12 +29,10 @@ def generate_unique_destination(destination_path: Path) -> Path:
 
 def get_dated_destination_dir(base_dir: Path, archive_by_date: bool) -> Path:
     """
-    إذا كانت الأرشفة حسب التاريخ مفعلة،
-    نضيف مجلد فرعي مثل 2026-03
+    If date-based archiving is enabled, add a date subfolder like 2026-03.
     """
     if not archive_by_date:
         return base_dir
-
     date_folder = datetime.now().strftime("%Y-%m")
     return base_dir / date_folder
 
@@ -49,20 +47,19 @@ def move_file_with_retries(
     archive_by_date: bool,
     rules: dict,
     retries: int = 8,
-    delay: int = 2
+    delay: int = 2,
+    classification_method: str = "extension",
+    smart_source: str = "",
 ) -> None:
-    """محاولة نقل الملف عدة مرات مع فحص التكرار بالـ hash والأرشفة حسب التاريخ."""
+    """Attempt to move the file with retries, hash-based duplicate check, and date archiving."""
     category = get_file_category(source_file, extension_lookup)
 
-    print(f"[DEBUG] File name: {source_file.name}")
-    print(f"[DEBUG] Suffix read: {repr(source_file.suffix.lower().strip())}")
-    print(f"[DEBUG] Category chosen: {category}")
+    logging.debug(f"Processing: {source_file.name} | suffix: {source_file.suffix!r} | category: {category}")
 
     if category not in destination_folders:
         category = "others"
 
     if not source_file.exists():
-        print(f"[DEBUG] File no longer exists before hashing: {source_file}")
         logging.warning(f"File no longer exists before hashing: {source_file}")
         append_history(history_file, source_file.name, category, "disappeared")
         return
@@ -73,18 +70,22 @@ def move_file_with_retries(
         if duplicate:
             existing_path = get_existing_file_path(file_hash, hash_db_file)
             logging.info(
-                f"Duplicate file skipped: {source_file.name} | category: {category} | existing: {existing_path}"
+                f"Duplicate skipped: {source_file.name} | category: {category} | existing: {existing_path}"
             )
-            append_history(history_file, source_file.name, category, "duplicate_skipped")
-            print(f"[DEBUG] Duplicate detected. Existing file: {existing_path}")
-
+            append_history(
+                history_file,
+                source_file.name,
+                category,
+                "duplicate_skipped",
+                classification_method,
+                smart_source,
+            )
             source_file.unlink(missing_ok=True)
             return
 
     except Exception as error:
         logging.error(f"Hash check failed for {source_file.name}: {error}")
         append_history(history_file, source_file.name, category, "hash_check_failed")
-        print(f"[DEBUG] Hash check failed: {error}")
         return
 
     base_destination_dir = Path(destination_folders[category])
@@ -99,39 +100,43 @@ def move_file_with_retries(
     for attempt in range(1, retries + 1):
         try:
             if not source_file.exists():
-                print(f"[DEBUG] File no longer exists: {source_file}")
-                logging.warning(f"File no longer exists: {source_file}")
+                logging.warning(f"File disappeared before move (attempt {attempt}): {source_file}")
                 append_history(history_file, source_file.name, category, "disappeared")
                 return
 
             shutil.move(str(source_file), str(final_destination))
 
+            append_history(
+                history_file,
+                source_file.name,
+                category,
+                "moved",
+                classification_method,
+                smart_source,
+            )
             register_file_hash(file_hash, str(final_destination), hash_db_file)
+            update_stats(stats_file, category, rules, success=True)
 
             logging.info(
-                f"Moved file: {source_file.name} | category: {category} | to: {final_destination}"
+                f"Moved: {source_file.name} → {final_destination} | category: {category} | method: {classification_method}"
             )
-            update_stats(stats_file, category, rules, success=True)
-            append_history(history_file, source_file.name, category, "success")
-            print(f"[DEBUG] Moved to: {final_destination}")
             return
 
         except PermissionError as error:
             last_error = error
-            print(f"[DEBUG] Attempt {attempt}: PermissionError -> {source_file.name}: {error}")
+            logging.debug(f"PermissionError (attempt {attempt}/{retries}): {source_file.name}")
             time.sleep(delay)
 
         except OSError as error:
             last_error = error
-            print(f"[DEBUG] Attempt {attempt}: OSError -> {source_file.name}: {error}")
+            logging.debug(f"OSError (attempt {attempt}/{retries}): {source_file.name}")
             time.sleep(delay)
 
         except Exception as error:
             last_error = error
-            print(f"[DEBUG] Attempt {attempt}: Unexpected error -> {source_file.name}: {error}")
+            logging.debug(f"Unexpected error (attempt {attempt}/{retries}): {source_file.name}")
             time.sleep(delay)
 
-    logging.error(f"Failed to move file after retries: {source_file.name} | error: {last_error}")
+    logging.error(f"Failed to move after {retries} retries: {source_file.name} | error: {last_error}")
     update_stats(stats_file, category, rules, success=False)
     append_history(history_file, source_file.name, category, "failed")
-    print(f"[DEBUG] Failed to move after retries: {source_file.name}")

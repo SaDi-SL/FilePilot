@@ -1,4 +1,5 @@
 import logging
+import threading
 import time
 from pathlib import Path
 
@@ -6,30 +7,27 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
 from app.mover import move_file_with_retries
+from app.smart_classifier import smart_classify
 
 
 def should_ignore_file(file_path: Path, config: dict) -> bool:
-    """تحديد هل يجب تجاهل الملف أم لا."""
     ignored_extensions = [ext.lower().strip() for ext in config.get("ignored_extensions", [])]
     ignored_prefixes = config.get("ignored_prefixes", [])
-
-    file_name = file_path.name
     file_extension = file_path.suffix.lower().strip()
-
     if file_extension in ignored_extensions:
         return True
-
     for prefix in ignored_prefixes:
-        if file_name.startswith(prefix):
+        if file_path.name.startswith(prefix):
             return True
-
     return False
 
 
 class NewFileHandler(FileSystemEventHandler):
-    def __init__(self, config: dict, extension_lookup: dict):
+    def __init__(self, config: dict, extension_lookup: dict, plugin_manager=None,
+                 file_processed_callback=None):
         self.config = config
         self.extension_lookup = extension_lookup
+        self.plugin_manager = plugin_manager
         self.destination_folders = config["destination_folders"]
         self.rules = config["rules"]
         self.processing_wait_seconds = config.get("processing_wait_seconds", 5)
@@ -38,51 +36,103 @@ class NewFileHandler(FileSystemEventHandler):
         self.stats_file = config["stats_file"]
         self.history_file = config["history_file"]
         self.hash_db_file = config["hash_db_file"]
-        self.recent_events = {}
+        self.recent_events: dict[str, float] = {}
+        self._lock = threading.Lock()
         self.last_processed_file = "No file processed yet"
+        # callback(filename, category, status) — called from a worker thread
+        # Must be thread-safe (use root.after from the GUI)
+        self.file_processed_callback = file_processed_callback
+
+    # ---- Watchdog event handlers ----
+
+    def on_created(self, event):
+        if not event.is_directory:
+            self._dispatch(event.src_path, "created")
+
+    def on_modified(self, event):
+        if not event.is_directory:
+            self._dispatch(event.src_path, "modified")
+
+    def on_moved(self, event):
+        if not event.is_directory:
+            self._dispatch(event.dest_path, "moved")
+
+    # ---- Internal ----
 
     def is_duplicate_event(self, file_path: Path) -> bool:
         now = time.time()
         key = str(file_path)
-
-        expired_keys = [
-            existing_key
-            for existing_key, timestamp in self.recent_events.items()
-            if now - timestamp > self.duplicate_event_window
-        ]
-        for expired_key in expired_keys:
-            del self.recent_events[expired_key]
-
-        if key in self.recent_events:
-            return True
-
-        self.recent_events[key] = now
+        with self._lock:
+            expired = [k for k, t in self.recent_events.items()
+                       if now - t > self.duplicate_event_window]
+            for k in expired:
+                del self.recent_events[k]
+            if key in self.recent_events:
+                return True
+            self.recent_events[key] = now
         return False
 
-    def process_file(self, file_path: str, source_event: str) -> None:
+    def _dispatch(self, file_path: str, source_event: str) -> None:
+        """Each file processed in a separate thread — watchdog never freezes."""
+        threading.Thread(
+            target=self._process_file_thread,
+            args=(file_path, source_event),
+            daemon=True,
+        ).start()
+
+    def _process_file_thread(self, file_path: str, source_event: str) -> None:
+        classification_method = "extension"
+        smart_source = ""
+        final_category = None
+        status = "unknown"
+
         try:
             source_path = Path(file_path)
 
-            if source_path.is_dir():
-                return
-
-            if not source_path.exists():
+            if source_path.is_dir() or not source_path.exists():
                 return
 
             if should_ignore_file(source_path, self.config):
-                print(f"[DEBUG] Ignored file: {source_path.name}")
+                logging.debug(f"Ignored: {source_path.name}")
                 return
 
             if self.is_duplicate_event(source_path):
-                print(f"[DEBUG] Duplicate event ignored: {source_path.name}")
+                logging.debug(f"Duplicate event skipped: {source_path.name}")
                 return
 
-            print(f"[DEBUG] Detected file: {source_path.name} | event: {source_event}")
-            print(f"[DEBUG] Waiting {self.processing_wait_seconds} seconds before processing: {source_path.name}")
-
+            logging.info(f"Detected: {source_path.name} | event: {source_event}")
             time.sleep(self.processing_wait_seconds)
 
             self.last_processed_file = source_path.name
+
+            # 1) Plugins
+            if self.plugin_manager:
+                plugin_category = self.plugin_manager.classify_with_plugins(
+                    source_path, {"rules": self.rules}
+                )
+                if plugin_category:
+                    logging.info(f"Plugin classified: {source_path.name} → {plugin_category}")
+                    final_category = plugin_category
+                    classification_method = "plugin"
+                    smart_source = "plugin"
+
+            # 2) Smart Classifier
+            if not final_category:
+                smart_category = smart_classify(source_path)
+                if smart_category:
+                    logging.info(f"Smart classified: {source_path.name} → {smart_category}")
+                    final_category = smart_category
+                    classification_method = "smart"
+                    smart_source = "content_or_filename"
+
+            # 3) Create new category folder if needed
+            if final_category and final_category not in self.destination_folders:
+                new_folder = Path(self.destination_folders["others"]).parent / final_category
+                new_folder.mkdir(parents=True, exist_ok=True)
+                self.destination_folders[final_category] = str(new_folder)
+
+            if final_category:
+                self.extension_lookup[source_path.suffix.lower()] = final_category
 
             move_file_with_retries(
                 source_file=source_path,
@@ -94,50 +144,71 @@ class NewFileHandler(FileSystemEventHandler):
                 archive_by_date=self.archive_by_date,
                 rules=self.rules,
                 retries=8,
-                delay=2
+                delay=2,
+                classification_method=classification_method,
+                smart_source=smart_source,
             )
+            status = "moved"
 
         except Exception as error:
-            logging.error(f"Error while processing file {file_path}: {error}")
-            print(f"[DEBUG] Processing error: {error}")
+            logging.error(f"Error processing {file_path}: {error}", exc_info=True)
+            status = "error"
+
+        finally:
+            # Notify the GUI immediately when processing finishes
+            if self.file_processed_callback is not None:
+                try:
+                    self.file_processed_callback(
+                        Path(file_path).name,
+                        final_category or "unknown",
+                        status,
+                    )
+                except Exception:
+                    pass
 
 
 class FileMonitor:
-    def __init__(self, config: dict, extension_lookup: dict):
+    def __init__(self, config: dict, extension_lookup: dict, plugin_manager=None,
+                 file_processed_callback=None):
         self.config = config
         self.extension_lookup = extension_lookup
         self.source_folder = config["source_folder"]
-        self.event_handler = NewFileHandler(config, extension_lookup)
+        self.event_handler = NewFileHandler(
+            config, extension_lookup, plugin_manager,
+            file_processed_callback=file_processed_callback,
+        )
         self.observer = Observer()
         self.is_running = False
 
+    def set_file_processed_callback(self, callback) -> None:
+        """Set callback after construction (useful on reload)."""
+        self.event_handler.file_processed_callback = callback
+
     def scan_existing_files(self) -> None:
-        source_folder = Path(self.source_folder)
+        def _scan():
+            source_folder = Path(self.source_folder)
+            if not source_folder.exists():
+                return
+            logging.info("Scanning existing files in incoming folder...")
+            for item in source_folder.iterdir():
+                if item.is_file():
+                    self.event_handler._process_file_thread(str(item), "startup_scan")
 
-        if not source_folder.exists():
-            return
-
-        print("[DEBUG] Scanning existing files in incoming...")
-        for item in source_folder.iterdir():
-            if item.is_file():
-                self.event_handler.process_file(str(item), "startup_scan")
+        threading.Thread(target=_scan, daemon=True).start()
 
     def start(self) -> None:
         if self.is_running:
             return
-
         self.scan_existing_files()
         self.observer.schedule(self.event_handler, self.source_folder, recursive=False)
         self.observer.start()
         self.is_running = True
-
-        print(f"[DEBUG] Monitoring folder: {self.source_folder}")
+        logging.info(f"Monitoring started: {self.source_folder}")
 
     def stop(self) -> None:
         if not self.is_running:
             return
-
         self.observer.stop()
         self.observer.join()
         self.is_running = False
-        print("[DEBUG] Monitoring stopped.")
+        logging.info("Monitoring stopped.")

@@ -83,6 +83,5 @@
   "archive_by_date": true,
   "run_at_startup": false,
   "first_run_completed": true,
-  "language": "en",
-  "last_backup_timestamp": "2026-03-19T17:54:55.610324"
+  "language": "en"
 }

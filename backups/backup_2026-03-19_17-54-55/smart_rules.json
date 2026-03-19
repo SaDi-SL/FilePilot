@@ -1,0 +1,9 @@
+{
+  "invoices": ["invoice", "bill", "receipt", "payment", "tax_invoice"],
+  "resumes": ["resume", "cv", "curriculum_vitae", "job_application"],
+  "contracts": ["contract", "agreement", "nda", "terms"],
+  "reports": ["report", "summary", "analysis", "findings"],
+  "presentations": ["presentation", "slides", "deck", "pitch"],
+  "notes": ["note", "notes", "memo", "journal"],
+  "datasets": ["dataset", "data", "records", "table", "export"]
+}
