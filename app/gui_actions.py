@@ -316,30 +316,82 @@ class ActionsMixin:
             self.refresh_top_categories_view(category_counter)
             self.refresh_recent_activity_view()
 
-            # Update Detailed Statistics panel
-            self.stats_text.config(state="normal")
-            self.stats_text.delete("1.0", tk.END)
+            # Update breakdown cards
+            self._refresh_breakdown_cards(
+                total_processed_count, plugin_count, smart_count,
+                content_count, extension_count, duplicate_count
+            )
 
-            self.stats_text.insert(tk.END, f"total_files: {total_processed_count}\n")
-            self.stats_text.insert(tk.END, f"failed: {failed_count}\n")
-            self.stats_text.insert(tk.END, f"duplicates_skipped: {duplicate_count}\n")
-            self.stats_text.insert(tk.END, f"documents: {documents_count}\n")
-            self.stats_text.insert(tk.END, f"plugin_classified: {plugin_count}\n")
-            self.stats_text.insert(tk.END, f"smart_classified: {smart_count}\n")
-            self.stats_text.insert(tk.END, f"content_classified: {content_count}\n")
-            self.stats_text.insert(tk.END, f"extension_classified: {extension_count}\n")
-            self.stats_text.insert(tk.END, f"top_category: {self.top_category_var.get()}\n")
+            # Show/hide Getting Started banner
+            if hasattr(self, "getting_started_frame"):
+                if total_processed_count == 0:
+                    self.getting_started_frame.pack(fill="x", padx=20, pady=(0, 16))
+                else:
+                    self.getting_started_frame.pack_forget()
 
-            # Show any extra stats from stats.json without duplicating
-            for key, value in stats.items():
-                if key not in {"total_files", "failed", "documents"}:
-                    self.stats_text.insert(tk.END, f"{key}: {value}\n")
-
-            self.stats_text.config(state="disabled")
             self.status_bar_var.set("Statistics refreshed.")
 
         except Exception as error:
             messagebox.showerror("Error", f"Failed to load stats:\n{error}")
+
+
+    def _refresh_breakdown_cards(self, total, plugin, smart, content, extension, duplicates):
+        """Rebuild the classification breakdown cards."""
+        if not hasattr(self, "breakdown_frame"):
+            return
+
+        for w in self.breakdown_frame.winfo_children():
+            w.destroy()
+
+        if total == 0:
+            tk.Label(self.breakdown_frame,
+                     text="No files processed yet.",
+                     bg=self.colors["card"], fg=self.colors["muted"],
+                     font=("Segoe UI", 9), pady=6, anchor="w").pack(fill="x")
+            return
+
+        items = [
+            ("By Extension",  extension,  self.colors["muted"],       "Files sorted by their file type (.pdf, .jpg...)"),
+            ("By Keywords",   smart,      self.colors["stat_green"],  "Files sorted by keywords in filename"),
+            ("By Content",    content,    self.colors["stat_blue"],   "Files sorted after reading content"),
+            ("By Plugin",     plugin,     self.colors["stat_purple"], "Files sorted by installed plugins"),
+            ("Duplicates",    duplicates, self.colors["stat_amber"],  "Files skipped — already organized"),
+        ]
+
+        for label, count, color, desc in items:
+            if count == 0:
+                continue
+
+            row = tk.Frame(self.breakdown_frame, bg=self.colors["card"])
+            row.pack(fill="x", pady=2)
+
+            # Color dot
+            dot = tk.Canvas(row, width=8, height=8, bg=self.colors["card"], highlightthickness=0)
+            dot.pack(side="left", padx=(0, 8), pady=6)
+            dot.create_oval(1, 1, 7, 7, fill=color, outline="")
+
+            # Label
+            tk.Label(row, text=label,
+                     bg=self.colors["card"], fg=self.colors["text"],
+                     font=("Segoe UI", 9), width=14, anchor="w").pack(side="left")
+
+            # Count
+            tk.Label(row, text=str(count),
+                     bg=self.colors["card"], fg=color,
+                     font=("Segoe UI", 10, "bold"), width=5, anchor="w").pack(side="left")
+
+            # Progress bar
+            pct = count / max(total, 1)
+            bar_outer = tk.Frame(row, bg=self.colors["border"], width=200, height=6)
+            bar_outer.pack(side="left", padx=(8, 12))
+            bar_outer.pack_propagate(False)
+            bar_fill = tk.Frame(bar_outer, bg=color, height=6)
+            bar_fill.place(relx=0, rely=0, relwidth=pct, relheight=1)
+
+            # Description
+            tk.Label(row, text=desc,
+                     bg=self.colors["card"], fg=self.colors["muted"],
+                     font=("Segoe UI", 8), anchor="w").pack(side="left")
 
     def refresh_history(self):
         history_path = Path(self.config["history_file"])
@@ -509,25 +561,27 @@ class ActionsMixin:
             widget.destroy()
 
         self.rule_entries = {}
+        self.rules_inner_frame.grid_columnconfigure(1, weight=1)
 
-        tk.Label(self.rules_inner_frame, text="Category", bg=self.colors["card"], fg=self.colors["text"], font=("Segoe UI", 10, "bold")).grid(row=0, column=0, padx=8, pady=8, sticky="w")
-        tk.Label(self.rules_inner_frame, text="Extensions", bg=self.colors["card"], fg=self.colors["text"], font=("Segoe UI", 10, "bold")).grid(row=0, column=1, padx=8, pady=8, sticky="w")
-        tk.Label(self.rules_inner_frame, text="Action", bg=self.colors["card"], fg=self.colors["text"], font=("Segoe UI", 10, "bold")).grid(row=0, column=2, padx=8, pady=8, sticky="w")
-
-        for index, (category, extensions) in enumerate(self.config.get("rules", {}).items(), start=1):
-            tk.Label(self.rules_inner_frame, text=category, bg=self.colors["card"], fg=self.colors["text"], font=("Segoe UI", 10)).grid(row=index, column=0, padx=8, pady=6, sticky="w")
+        for index, (category, extensions) in enumerate(self.config.get("rules", {}).items()):
+            tk.Label(self.rules_inner_frame, text=category,
+                     bg=self.colors["card"], fg=self.colors["text"],
+                     font=("Segoe UI", 9), width=16, anchor="w").grid(
+                     row=index, column=0, padx=(14, 8), pady=5, sticky="w")
 
             entry_var = tk.StringVar(value=", ".join(extensions))
-            ttk.Entry(self.rules_inner_frame, textvariable=entry_var, width=80).grid(row=index, column=1, padx=8, pady=6, sticky="w")
+            ttk.Entry(self.rules_inner_frame, textvariable=entry_var).grid(
+                row=index, column=1, padx=8, pady=5, sticky="ew")
 
             self.rule_entries[category] = entry_var
 
-            ttk.Button(
-                self.rules_inner_frame,
-                text="Delete",
-                style="Secondary.TButton",
-                command=lambda c=category: self.delete_rule(c),
-            ).grid(row=index, column=2, padx=8, pady=6, sticky="w")
+            tk.Button(self.rules_inner_frame, text="Delete",
+                      bg=self.colors["panel_2"], fg=self.colors["muted"],
+                      activebackground=self.colors["border_2"],
+                      relief="flat", bd=0, padx=10, pady=4,
+                      font=("Segoe UI", 8), cursor="hand2",
+                      command=lambda c=category: self.delete_rule(c)).grid(
+                      row=index, column=2, padx=(8, 14), pady=5, sticky="e")
 
     def normalize_smart_keywords(self, keywords_text: str):
         keywords = [kw.strip().lower() for kw in keywords_text.split(",") if kw.strip()]
@@ -549,56 +603,30 @@ class ActionsMixin:
             widget.destroy()
 
         self.smart_rule_entries = {}
+        self.smart_rules_frame.grid_columnconfigure(1, weight=1)
         smart_rules = load_smart_rules()
 
-        tk.Label(
-            self.smart_rules_frame,
-            text="Category",
-            bg=self.colors["card"],
-            fg=self.colors["text"],
-            font=("Segoe UI", 10, "bold")
-        ).grid(row=0, column=0, padx=8, pady=8, sticky="w")
+        for index, (category, keywords) in enumerate(smart_rules.items()):
+            tk.Label(self.smart_rules_frame, text=category,
+                     bg=self.colors["card"], fg=self.colors["text"],
+                     font=("Segoe UI", 9), width=16, anchor="w").grid(
+                     row=index, column=0, padx=(14, 8), pady=5, sticky="w")
 
-        tk.Label(
-            self.smart_rules_frame,
-            text="Keywords",
-            bg=self.colors["card"],
-            fg=self.colors["text"],
-            font=("Segoe UI", 10, "bold")
-        ).grid(row=0, column=1, padx=8, pady=8, sticky="w")
-
-        tk.Label(
-            self.smart_rules_frame,
-            text="Action",
-            bg=self.colors["card"],
-            fg=self.colors["text"],
-            font=("Segoe UI", 10, "bold")
-        ).grid(row=0, column=2, padx=8, pady=8, sticky="w")
-
-        for index, (category, keywords) in enumerate(smart_rules.items(), start=1):
-            tk.Label(
-                self.smart_rules_frame,
-                text=category,
-                bg=self.colors["card"],
-                fg=self.colors["text"],
-                font=("Segoe UI", 10)
-            ).grid(row=index, column=0, padx=8, pady=6, sticky="w")
-
-            entry_var = tk.StringVar(value=", ".join(keywords))
-            ttk.Entry(
-                self.smart_rules_frame,
-                textvariable=entry_var,
-                width=80
-            ).grid(row=index, column=1, padx=8, pady=6, sticky="w")
+            kw_text = ", ".join(keywords) if isinstance(keywords, list) else str(keywords)
+            entry_var = tk.StringVar(value=kw_text)
+            ttk.Entry(self.smart_rules_frame, textvariable=entry_var).grid(
+                row=index, column=1, padx=8, pady=5, sticky="ew")
 
             self.smart_rule_entries[category] = entry_var
 
-            ttk.Button(
-                self.smart_rules_frame,
-                text="Delete",
-                style="Secondary.TButton",
-                command=lambda c=category: self.delete_smart_rule(c)
-            ).grid(row=index, column=2, padx=8, pady=6, sticky="w")
+            tk.Button(self.smart_rules_frame, text="Delete",
+                      bg=self.colors["panel_2"], fg=self.colors["muted"],
+                      activebackground=self.colors["border_2"],
+                      relief="flat", bd=0, padx=10, pady=4,
+                      font=("Segoe UI", 8), cursor="hand2",
+                      command=lambda c=category: self.delete_smart_rule(c)).grid(
+                      row=index, column=2, padx=(8, 14), pady=5, sticky="e")
+
 
     def add_new_smart_rule(self):
         category = self.new_smart_category_var.get().strip().lower()
@@ -1744,3 +1772,432 @@ class ActionsMixin:
         else:
             self.toast_manager.show_toast(result.message, "error")
 
+    # ── AI Classifier ─────────────────────────────────────────────────────────
+
+    def check_ai_status(self) -> None:
+        """Check AI provider availability and update status label."""
+        if not hasattr(self, "ai_status_var"):
+            return
+        try:
+            from app.ai_classifier import AIClassifier
+            provider = getattr(self, "ai_provider_var", None)
+            provider_name = provider.get() if provider else "ollama"
+
+            api_key = ""
+            if provider_name == "claude" and hasattr(self, "claude_api_key_var"):
+                api_key = self.claude_api_key_var.get()
+
+            ai = AIClassifier(provider=provider_name, claude_api_key=api_key)
+            active = ai.get_active_provider()
+
+            if active == "none":
+                if provider_name == "ollama":
+                    self.ai_status_var.set("! Ollama not running — start Ollama app")
+                else:
+                    self.ai_status_var.set("! Invalid API key")
+            else:
+                self.ai_status_var.set(f"+ Connected ({active})")
+        except Exception as e:
+            self.ai_status_var.set(f"! Error: {e}")
+
+    def test_ai_connection(self) -> None:
+        """Test AI connection with a sample classification."""
+        if not hasattr(self, "ai_status_var"):
+            return
+
+        self.ai_status_var.set("Testing...")
+
+        def _test():
+            try:
+                from app.ai_classifier import AIClassifier
+                provider = getattr(self, "ai_provider_var", None)
+                provider_name = provider.get() if provider else "ollama"
+                api_key = ""
+                if hasattr(self, "claude_api_key_var"):
+                    api_key = self.claude_api_key_var.get()
+
+                ai = AIClassifier(provider=provider_name, claude_api_key=api_key)
+                result = ai.classify("invoice_march_2024.pdf",
+                                     ["invoices", "documents", "finance"])
+                if result.ok:
+                    msg = f"+ OK: '{result.category}' — {result.reason}"
+                else:
+                    msg = f"! Failed: {result.error}"
+                self.root.after(0, lambda: self.ai_status_var.set(msg))
+            except Exception as e:
+                self.root.after(0, lambda: self.ai_status_var.set(f"! {e}"))
+
+        import threading
+        threading.Thread(target=_test, daemon=True).start()
+
+    def suggest_ai_rules(self) -> None:
+        """Ask AI to analyze history and suggest new rules."""
+        if not hasattr(self, "history_rows_cache"):
+            self.toast_manager.show_toast("No history yet to analyze.", "error")
+            return
+
+        self.toast_manager.show_toast("Analyzing history with AI...", "info")
+
+        def _on_done(suggestions, error):
+            def _ui():
+                if error:
+                    self.toast_manager.show_toast(f"AI error: {error}", "error")
+                    return
+                if not suggestions:
+                    self.toast_manager.show_toast("No new rule suggestions.", "info")
+                    return
+                self._show_ai_suggestions(suggestions)
+            self.root.after(0, _ui)
+
+        try:
+            from app.ai_classifier import get_ai_classifier
+            ai = get_ai_classifier(self.config)
+            ai.suggest_rules(self.history_rows_cache, _on_done)
+        except Exception as e:
+            self.toast_manager.show_toast(f"AI error: {e}", "error")
+
+    def _show_ai_suggestions(self, suggestions) -> None:
+        """Show AI rule suggestions in a popup."""
+        import tkinter as tk
+        from tkinter import ttk
+
+        win = tk.Toplevel(self.root)
+        win.title("AI Rule Suggestions")
+        win.geometry("600x400")
+        win.configure(bg=self.colors["bg"])
+        win.transient(self.root)
+        win.grab_set()
+
+        tk.Label(win, text="AI Rule Suggestions",
+                 bg=self.colors["bg"], fg=self.colors["text"],
+                 font=("Segoe UI", 14, "bold")).pack(anchor="w", padx=20, pady=(16, 4))
+
+        tk.Label(win, text="Based on your file history. Click Apply to add a rule.",
+                 bg=self.colors["bg"], fg=self.colors["muted"],
+                 font=("Segoe UI", 9)).pack(anchor="w", padx=20, pady=(0, 12))
+
+        tk.Frame(win, bg=self.colors["border_2"], height=1).pack(fill="x")
+
+        scroll_frame = tk.Frame(win, bg=self.colors["bg"])
+        scroll_frame.pack(fill="both", expand=True, padx=20, pady=12)
+
+        for s in suggestions:
+            card = tk.Frame(scroll_frame, bg=self.colors["card_2"],
+                            highlightbackground=self.colors["border"],
+                            highlightthickness=1)
+            card.pack(fill="x", pady=(0, 8))
+
+            info = tk.Frame(card, bg=self.colors["card_2"])
+            info.pack(side="left", fill="both", expand=True, padx=12, pady=8)
+
+            tk.Label(info, text=s.category.upper(),
+                     bg=self.colors["card_2"], fg=self.colors["stat_blue"],
+                     font=("Segoe UI", 10, "bold")).pack(anchor="w")
+
+            tk.Label(info, text=f"Keywords: {', '.join(s.keywords)}",
+                     bg=self.colors["card_2"], fg=self.colors["muted"],
+                     font=("Segoe UI", 8)).pack(anchor="w")
+
+            tk.Label(info, text=s.reason,
+                     bg=self.colors["card_2"], fg=self.colors["text"],
+                     font=("Segoe UI", 9)).pack(anchor="w", pady=(2, 0))
+
+            conf_color = self.colors["stat_green"] if s.confidence >= 0.8 else self.colors["stat_amber"]
+            tk.Label(info, text=f"Confidence: {int(s.confidence*100)}%",
+                     bg=self.colors["card_2"], fg=conf_color,
+                     font=("Segoe UI", 8)).pack(anchor="w")
+
+            def _apply(sug=s):
+                from app.smart_classifier import load_smart_rules, save_smart_rules
+                rules = load_smart_rules()
+                if sug.category not in rules:
+                    rules[sug.category] = sug.keywords
+                    save_smart_rules(rules)
+                    self.toast_manager.show_toast(
+                        f"Rule added: {sug.category}", "success"
+                    )
+                    self.render_smart_rule_entries()
+                else:
+                    self.toast_manager.show_toast(
+                        f"Category '{sug.category}' already exists.", "info"
+                    )
+
+            tk.Button(card, text="Apply",
+                      bg=self.colors["accent"], fg="white",
+                      relief="flat", bd=0, padx=12, pady=6,
+                      font=("Segoe UI", 9, "bold"), cursor="hand2",
+                      command=_apply).pack(side="right", padx=12, pady=8)
+
+        tk.Button(win, text="Close",
+                  bg=self.colors["panel_2"], fg=self.colors["muted"],
+                  relief="flat", bd=0, padx=16, pady=6,
+                  font=("Segoe UI", 9), cursor="hand2",
+                  command=win.destroy).pack(anchor="e", padx=20, pady=(0, 16))
+
+    def save_ai_settings(self) -> None:
+        """Save AI settings to config.json."""
+        try:
+            cfg_path = get_config_path()
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+
+            cfg["ai"] = {
+                "enabled":        getattr(self, "ai_enabled_var", tk.BooleanVar()).get()
+                                  if hasattr(self, "ai_enabled_var") else False,
+                "provider":       getattr(self, "ai_provider_var", tk.StringVar(value="ollama")).get()
+                                  if hasattr(self, "ai_provider_var") else "ollama",
+                "claude_api_key": getattr(self, "claude_api_key_var", tk.StringVar()).get()
+                                  if hasattr(self, "claude_api_key_var") else "",
+                "ollama_model":   "mistral",
+            }
+
+            with open(cfg_path, "w", encoding="utf-8") as f:
+                json.dump(cfg, f, indent=2, ensure_ascii=False)
+
+            from app.ai_classifier import reset_ai_classifier
+            reset_ai_classifier()
+
+        except Exception as e:
+            logger.error(f"Failed to save AI settings: {e}")
+
+    # ── AI Document Analysis ──────────────────────────────────────────────────
+
+    def analyze_file_with_ai(self, file_path: str | None = None) -> None:
+        """Open file picker and analyze selected file with AI."""
+        if not file_path:
+            from tkinter import filedialog
+            file_path = filedialog.askopenfilename(
+                title="Select file to analyze",
+                filetypes=[
+                    ("All supported", "*.pdf *.docx *.doc *.txt *.xlsx *.xls *.jpg *.jpeg *.png"),
+                    ("PDF files", "*.pdf"),
+                    ("Word files", "*.docx *.doc"),
+                    ("Images", "*.jpg *.jpeg *.png"),
+                    ("All files", "*.*"),
+                ]
+            )
+        if not file_path:
+            return
+
+        self._show_ai_analysis_window(Path(file_path))
+
+    def _show_ai_analysis_window(self, file_path: Path) -> None:
+        """Show the AI document analysis window."""
+        win = tk.Toplevel(self.root)
+        win.title(f"AI Analysis — {file_path.name}")
+        win.geometry("680x580")
+        win.configure(bg=self.colors["bg"])
+        win.transient(self.root)
+
+        # Header
+        header = tk.Frame(win, bg=self.colors["panel"])
+        header.pack(fill="x")
+
+        tk.Label(header, text="AI Document Analysis",
+                 bg=self.colors["panel"], fg=self.colors["text"],
+                 font=("Segoe UI", 13, "bold"),
+                 padx=20, pady=12).pack(side="left")
+
+        tk.Label(header, text=file_path.name,
+                 bg=self.colors["panel"], fg=self.colors["muted"],
+                 font=("Segoe UI", 9),
+                 padx=20, pady=12).pack(side="left")
+
+        tk.Frame(win, bg=self.colors["border_2"], height=1).pack(fill="x")
+
+        # Loading state
+        content_frame = tk.Frame(win, bg=self.colors["bg"])
+        content_frame.pack(fill="both", expand=True, padx=20, pady=16)
+
+        loading_lbl = tk.Label(content_frame,
+                               text="Analyzing document with AI...",
+                               bg=self.colors["bg"], fg=self.colors["muted"],
+                               font=("Segoe UI", 11))
+        loading_lbl.pack(expand=True)
+
+        def _on_analysis_done(analysis):
+            self.root.after(0, lambda: self._populate_analysis_window(
+                win, content_frame, loading_lbl, analysis, file_path
+            ))
+
+        # Run analysis
+        try:
+            from app.ai_document_analyzer import AIDocumentAnalyzer
+            from app.ai_classifier import get_ai_classifier
+            ai = get_ai_classifier(self.config)
+            analyzer = AIDocumentAnalyzer(ai_classifier=ai)
+            categories = list(self.config.get("rules", {}).keys())
+            analyzer.analyze_async(file_path, categories, _on_analysis_done)
+        except Exception as e:
+            loading_lbl.config(text=f"Error: {e}", fg=self.colors["stat_red"])
+
+    def _populate_analysis_window(self, win, frame, loading_lbl, analysis, file_path) -> None:
+        """Fill the analysis window with results."""
+        loading_lbl.destroy()
+        for w in frame.winfo_children():
+            w.destroy()
+
+        # Scrollable content
+        canvas = tk.Canvas(frame, bg=self.colors["bg"], highlightthickness=0)
+        scrollbar = ttk.Scrollbar(frame, orient="vertical", command=canvas.yview)
+        scroll_frame = tk.Frame(canvas, bg=self.colors["bg"])
+        scroll_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=scroll_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        self.attach_safe_mousewheel(canvas, owner=win)
+
+        c = scroll_frame
+
+        # ── Type + Category ───────────────────────────────────────
+        type_row = tk.Frame(c, bg=self.colors["card_2"],
+                            highlightbackground=self.colors["border"],
+                            highlightthickness=1)
+        type_row.pack(fill="x", pady=(0, 10))
+
+        tk.Label(type_row, text=analysis.doc_type.upper(),
+                 bg=self.colors["stat_blue"], fg="white",
+                 font=("Segoe UI", 9, "bold"),
+                 padx=10, pady=5).pack(side="left")
+
+        tk.Label(type_row, text=f"  Category: {analysis.category}",
+                 bg=self.colors["card_2"], fg=self.colors["text"],
+                 font=("Segoe UI", 9, "bold"),
+                 padx=8, pady=5).pack(side="left")
+
+        tk.Label(type_row, text=f"  Folder: {analysis.smart_folder}",
+                 bg=self.colors["card_2"], fg=self.colors["muted"],
+                 font=("Segoe UI", 9),
+                 padx=8, pady=5).pack(side="left")
+
+        # ── Summary ───────────────────────────────────────────────
+        if analysis.summary:
+            tk.Label(c, text=analysis.summary,
+                     bg=self.colors["bg"], fg=self.colors["text"],
+                     font=("Segoe UI", 10), wraplength=580,
+                     justify="left").pack(anchor="w", pady=(0, 12))
+
+        # ── Key dates ─────────────────────────────────────────────
+        if analysis.key_dates:
+            tk.Label(c, text="IMPORTANT DATES",
+                     bg=self.colors["bg"], fg=self.colors["muted"],
+                     font=("Segoe UI", 8, "bold")).pack(anchor="w", pady=(0, 6))
+
+            for date_info in analysis.key_dates:
+                date_card = tk.Frame(c, bg=self.colors["card_2"],
+                                     highlightbackground=self.colors["stat_amber"],
+                                     highlightthickness=1)
+                date_card.pack(fill="x", pady=(0, 6))
+
+                info = tk.Frame(date_card, bg=self.colors["card_2"])
+                info.pack(side="left", fill="both", expand=True, padx=12, pady=8)
+
+                tk.Label(info, text=f"  {date_info.label}",
+                         bg=self.colors["card_2"], fg=self.colors["stat_amber"],
+                         font=("Segoe UI", 9, "bold")).pack(anchor="w")
+
+                tk.Label(info, text=f"Date: {date_info.date}  |  {date_info.description}",
+                         bg=self.colors["card_2"], fg=self.colors["muted"],
+                         font=("Segoe UI", 8)).pack(anchor="w")
+
+                def _add_reminder(di=date_info, fp=file_path):
+                    self._add_calendar_reminder(di, fp.name)
+
+                tk.Button(date_card, text="+ Add Reminder",
+                          bg=self.colors["accent"], fg="white",
+                          relief="flat", bd=0, padx=10, pady=5,
+                          font=("Segoe UI", 8, "bold"), cursor="hand2",
+                          command=_add_reminder).pack(side="right", padx=10, pady=8)
+
+        # ── Entities ──────────────────────────────────────────────
+        if analysis.entities:
+            tk.Label(c, text="KEY INFORMATION",
+                     bg=self.colors["bg"], fg=self.colors["muted"],
+                     font=("Segoe UI", 8, "bold")).pack(anchor="w", pady=(12, 6))
+
+            ent_frame = tk.Frame(c, bg=self.colors["card_2"],
+                                 highlightbackground=self.colors["border"],
+                                 highlightthickness=1)
+            ent_frame.pack(fill="x", pady=(0, 12))
+
+            for key, val in analysis.entities.items():
+                row = tk.Frame(ent_frame, bg=self.colors["card_2"])
+                row.pack(fill="x", padx=12, pady=3)
+                tk.Label(row, text=f"{key.title()}:",
+                         bg=self.colors["card_2"], fg=self.colors["muted"],
+                         font=("Segoe UI", 9), width=12, anchor="w").pack(side="left")
+                tk.Label(row, text=val,
+                         bg=self.colors["card_2"], fg=self.colors["text"],
+                         font=("Segoe UI", 9, "bold")).pack(side="left")
+
+        # ── Tips ──────────────────────────────────────────────────
+        if analysis.tips:
+            tk.Label(c, text="AI TIPS",
+                     bg=self.colors["bg"], fg=self.colors["muted"],
+                     font=("Segoe UI", 8, "bold")).pack(anchor="w", pady=(0, 6))
+
+            for tip in analysis.tips:
+                tip_row = tk.Frame(c, bg=self.colors["success_bg"],
+                                   highlightbackground=self.colors["success_border"],
+                                   highlightthickness=1)
+                tip_row.pack(fill="x", pady=(0, 4))
+                tk.Label(tip_row, text=f"  +  {tip}",
+                         bg=self.colors["success_bg"], fg=self.colors["stat_green"],
+                         font=("Segoe UI", 9), padx=8, pady=6,
+                         wraplength=560, justify="left", anchor="w").pack(fill="x")
+
+        # ── Action buttons ────────────────────────────────────────
+        tk.Frame(win, bg=self.colors["border_2"], height=1).pack(fill="x", pady=(8, 0))
+        btn_row = tk.Frame(win, bg=self.colors["bg"])
+        btn_row.pack(fill="x", padx=20, pady=12)
+
+        def _add_all_reminders():
+            try:
+                from app.calendar_integration import CalendarManager
+                cal = CalendarManager(
+                    provider=self.config.get("calendar_provider", "windows")
+                )
+                results = cal.add_reminders_from_analysis(analysis, auto_open=True)
+                added = sum(1 for ok, _ in results if ok)
+                self.toast_manager.show_toast(
+                    f"Added {added} reminder(s) to calendar!", "success"
+                )
+            except Exception as e:
+                self.toast_manager.show_toast(f"Calendar error: {e}", "error")
+
+        if analysis.key_dates:
+            tk.Button(btn_row, text="+ Add All to Calendar",
+                      bg=self.colors["accent"], fg="white",
+                      activebackground=self.colors["accent_2"],
+                      relief="flat", bd=0, padx=14, pady=7,
+                      font=("Segoe UI", 9, "bold"), cursor="hand2",
+                      command=_add_all_reminders).pack(side="left", padx=(0, 8))
+
+        tk.Button(btn_row, text="Close",
+                  bg=self.colors["panel_2"], fg=self.colors["muted"],
+                  relief="flat", bd=0, padx=14, pady=7,
+                  font=("Segoe UI", 9), cursor="hand2",
+                  command=win.destroy).pack(side="right")
+
+    def _add_calendar_reminder(self, date_info, filename: str) -> None:
+        """Add a single date as calendar reminder."""
+        try:
+            from app.calendar_integration import CalendarManager
+            cal = CalendarManager(
+                provider=self.config.get("calendar_provider", "windows")
+            )
+            ok, msg = cal.add_reminder(
+                title=date_info.label,
+                date_str=date_info.date,
+                description=date_info.description,
+                remind_days_before=date_info.remind_days_before,
+                filename=filename,
+                auto_open=True,
+            )
+            if ok:
+                self.toast_manager.show_toast(msg, "success")
+            else:
+                self.toast_manager.show_toast(msg, "error")
+        except Exception as e:
+            self.toast_manager.show_toast(f"Error: {e}", "error")

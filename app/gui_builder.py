@@ -515,6 +515,75 @@ class BuilderMixin:
         _hint(startup_row, "   Minimizes to tray on launch").pack(side="left")
 
         # ── Action buttons ────────────────────────────────────────
+        # ── AI Settings ───────────────────────────────────────────
+        ai_panel = self.create_info_panel(outer, "AI Classification")
+        ai_panel.pack(fill="x", pady=(0, 10))
+        ai_inner = tk.Frame(ai_panel, bg=self.colors["card"])
+        ai_inner.pack(fill="x", padx=16, pady=12)
+
+        # Enable toggle
+        ai_toggle_row = tk.Frame(ai_inner, bg=self.colors["card"])
+        ai_toggle_row.pack(fill="x", pady=(0, 8))
+
+        self.ai_enabled_var = tk.BooleanVar(
+            value=self.config.get("ai", {}).get("enabled", False)
+        )
+        ttk.Checkbutton(ai_toggle_row, text="Enable AI Classification",
+                        variable=self.ai_enabled_var).pack(side="left")
+        tk.Label(ai_toggle_row,
+                 text="   Uses AI as fallback when no rule matches",
+                 bg=self.colors["card"], fg=self.colors["muted"],
+                 font=("Segoe UI", 8)).pack(side="left")
+
+        # Provider selector
+        provider_row = tk.Frame(ai_inner, bg=self.colors["card"])
+        provider_row.pack(fill="x", pady=(0, 8))
+
+        tk.Label(provider_row, text="Provider:",
+                 bg=self.colors["card"], fg=self.colors["muted"],
+                 font=("Segoe UI", 9), width=12, anchor="w").pack(side="left")
+
+        self.ai_provider_var = tk.StringVar(
+            value=self.config.get("ai", {}).get("provider", "ollama")
+        )
+        provider_combo = ttk.Combobox(
+            provider_row, textvariable=self.ai_provider_var,
+            values=["ollama", "claude"], state="readonly", width=14
+        )
+        provider_combo.pack(side="left", padx=(0, 16))
+
+        # Status indicator
+        self.ai_status_var = tk.StringVar(value="Checking...")
+        tk.Label(provider_row, textvariable=self.ai_status_var,
+                 bg=self.colors["card"], fg=self.colors["muted"],
+                 font=("Segoe UI", 8)).pack(side="left")
+
+        # Claude API key (shown only when claude selected)
+        self.claude_key_frame = tk.Frame(ai_inner, bg=self.colors["card"])
+        self.claude_key_frame.pack(fill="x", pady=(0, 8))
+
+        tk.Label(self.claude_key_frame, text="API Key:",
+                 bg=self.colors["card"], fg=self.colors["muted"],
+                 font=("Segoe UI", 9), width=12, anchor="w").pack(side="left")
+
+        self.claude_api_key_var = tk.StringVar(
+            value=self.config.get("ai", {}).get("claude_api_key", "")
+        )
+        ttk.Entry(self.claude_key_frame, textvariable=self.claude_api_key_var,
+                  width=40, show="*").pack(side="left", padx=(0, 8))
+
+        tk.Button(self.claude_key_frame, text="Test",
+                  bg=self.colors["panel_2"], fg=self.colors["muted"],
+                  relief="flat", bd=0, padx=8, pady=3,
+                  font=("Segoe UI", 8), cursor="hand2",
+                  command=self.test_ai_connection).pack(side="left")
+
+        def _update_ai_ui(*_):
+            self.root.after(100, self.check_ai_status)
+
+        provider_combo.bind("<<ComboboxSelected>>", _update_ai_ui)
+        self.root.after(800, self.check_ai_status)
+
         # ── Language selector ─────────────────────────────────────
         lang_panel = self.create_info_panel(outer, "Language")
         lang_panel.pack(fill="x", pady=(0, 10))
@@ -569,226 +638,286 @@ class BuilderMixin:
     def build_rules_page(self):
         page = self.pages["rules"]
 
-        # Scrollable page container
-        page_container = tk.Frame(page, bg=self.colors["bg"])
-        page_container.pack(fill="both", expand=True, padx=20, pady=20)
+        # ── Notebook ──────────────────────────────────────────────────────────
+        style = ttk.Style()
+        style.configure("Rules.TNotebook",
+                        background=self.colors["panel"],
+                        tabmargins=[0, 0, 0, 0], borderwidth=0)
+        style.configure("Rules.TNotebook.Tab",
+                        background=self.colors["panel"],
+                        foreground=self.colors["muted"],
+                        padding=[22, 10], font=("Segoe UI", 10), borderwidth=0)
+        style.map("Rules.TNotebook.Tab",
+                  background=[("selected", self.colors["bg"]),
+                               ("active",   self.colors["panel_2"])],
+                  foreground=[("selected", self.colors["text"]),
+                               ("active",   self.colors["text"])])
 
-        canvas = tk.Canvas(
-            page_container,
-            bg=self.colors["bg"],
-            highlightthickness=0
-        )
-        scrollbar = ttk.Scrollbar(
-            page_container,
-            orient="vertical",
-            command=canvas.yview
-        )
+        nb = ttk.Notebook(page, style="Rules.TNotebook")
+        nb.pack(fill="both", expand=True)
 
-        scrollable_frame = tk.Frame(canvas, bg=self.colors["bg"])
+        def _scrollable(parent):
+            c = tk.Canvas(parent, bg=self.colors["bg"], highlightthickness=0)
+            sb = ttk.Scrollbar(parent, orient="vertical", command=c.yview)
+            sf = tk.Frame(c, bg=self.colors["bg"])
+            sf.bind("<Configure>", lambda e: c.configure(scrollregion=c.bbox("all")))
+            win = c.create_window((0, 0), window=sf, anchor="nw")
+            c.bind("<Configure>", lambda e: c.itemconfig(win, width=e.width))
+            c.configure(yscrollcommand=sb.set)
+            c.pack(side="left", fill="both", expand=True)
+            sb.pack(side="right", fill="y")
+            self.attach_safe_mousewheel(c, owner=parent)
+            return sf
 
-        scrollable_frame.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-        )
+        ext_tab   = tk.Frame(nb, bg=self.colors["bg"])
+        smart_tab = tk.Frame(nb, bg=self.colors["bg"])
+        test_tab  = tk.Frame(nb, bg=self.colors["bg"])
 
-        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
+        nb.add(ext_tab,   text="  Extension Rules  ")
+        nb.add(smart_tab, text="  Smart Rules       ")
+        nb.add(test_tab,  text="  Rule Tester       ")
 
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
+        self._build_extension_rules_tab(_scrollable(ext_tab))
+        self._build_smart_rules_tab(_scrollable(smart_tab))
+        self._build_rule_tester_tab(_scrollable(test_tab))
 
-        # Mouse wheel support
-        self.attach_safe_mousewheel(canvas, owner=page)
+    def _build_extension_rules_tab(self, outer):
+        """Tab 1: Extension-based rules (.pdf → invoices)"""
 
-        outer = scrollable_frame
+        # Description
+        desc = tk.Frame(outer, bg=self.colors["card_2"],
+                        highlightbackground=self.colors["border"], highlightthickness=1)
+        desc.pack(fill="x", pady=(0, 2))
+        tk.Label(desc,
+                 text="Extension Rules — Files are sorted by their extension. Example: .pdf → invoices",
+                 bg=self.colors["card_2"], fg=self.colors["muted"],
+                 font=("Segoe UI", 9), padx=14, pady=8, anchor="w").pack(fill="x")
 
-        tk.Label(
-            outer,
-            text="Edit file extension rules. Separate extensions with commas, for example: .jpg, .jpeg, .png",
-            bg=self.colors["bg"],
-            fg=self.colors["muted"],
-            font=("Segoe UI", 10),
-        ).pack(anchor="w", pady=(0, 10))
-
-        # -------- Current Rules --------
-        rules_panel = self.create_info_panel(outer, "Current Rules")
-        rules_panel.pack(fill="x", pady=10)
+        # Rules list
+        rules_panel = self.create_info_panel(outer, "Categories")
+        rules_panel.pack(fill="x", pady=(0, 2))
 
         rules_host = tk.Frame(rules_panel, bg=self.colors["card"])
-        rules_host.pack(fill="both", expand=True, padx=12, pady=12)
+        rules_host.pack(fill="x", padx=0)
 
-        rules_canvas = tk.Canvas(rules_host, highlightthickness=0, bg=self.colors["card"], height=260)
-        rules_scrollbar = ttk.Scrollbar(rules_host, orient="vertical", command=rules_canvas.yview)
+        # Column headers
+        hdr = tk.Frame(rules_host, bg=self.colors["panel_2"])
+        hdr.pack(fill="x")
+        tk.Label(hdr, text="CATEGORY", bg=self.colors["panel_2"], fg=self.colors["muted"],
+                 font=("Segoe UI", 8, "bold"), padx=14, pady=6, width=18, anchor="w").pack(side="left")
+        tk.Label(hdr, text="EXTENSIONS", bg=self.colors["panel_2"], fg=self.colors["muted"],
+                 font=("Segoe UI", 8, "bold"), padx=8, pady=6, anchor="w").pack(side="left", fill="x", expand=True)
+        tk.Label(hdr, text="ACTION", bg=self.colors["panel_2"], fg=self.colors["muted"],
+                 font=("Segoe UI", 8, "bold"), padx=14, pady=6, width=10, anchor="w").pack(side="right")
+
+        tk.Frame(rules_host, bg=self.colors["border"], height=1).pack(fill="x")
+
+        rules_canvas = tk.Canvas(rules_host, highlightthickness=0,
+                                  bg=self.colors["card"], height=220)
+        rules_sb = ttk.Scrollbar(rules_host, orient="vertical", command=rules_canvas.yview)
         self.rules_inner_frame = tk.Frame(rules_canvas, bg=self.colors["card"])
-
         self.rules_inner_frame.bind(
             "<Configure>",
-            lambda e: rules_canvas.configure(scrollregion=rules_canvas.bbox("all")),
+            lambda e: rules_canvas.configure(scrollregion=rules_canvas.bbox("all"))
         )
-
-        rules_canvas.create_window((0, 0), window=self.rules_inner_frame, anchor="nw")
-        rules_canvas.configure(yscrollcommand=rules_scrollbar.set)
-
+        win = rules_canvas.create_window((0, 0), window=self.rules_inner_frame, anchor="nw")
+        rules_canvas.bind("<Configure>", lambda e: rules_canvas.itemconfig(win, width=e.width))
+        rules_canvas.configure(yscrollcommand=rules_sb.set)
         rules_canvas.pack(side="left", fill="both", expand=True)
-        rules_scrollbar.pack(side="right", fill="y")
-
+        rules_sb.pack(side="right", fill="y")
         self.render_rule_entries()
 
-        # -------- Add New Rule --------
-        add_panel = self.create_info_panel(outer, "Add New Rule Category")
-        add_panel.pack(fill="x", pady=10)
+        # Add new rule
+        add_panel = self.create_info_panel(outer, "Add New Category")
+        add_panel.pack(fill="x", pady=(0, 2))
 
         add_inner = tk.Frame(add_panel, bg=self.colors["card"])
-        add_inner.pack(fill="x", padx=12, pady=12)
+        add_inner.pack(fill="x", padx=14, pady=12)
 
-        tk.Label(add_inner, text="Category Name:", bg=self.colors["card"], fg=self.colors["text"], font=("Segoe UI", 10)).grid(row=0, column=0, padx=8, pady=8, sticky="w")
-        ttk.Entry(add_inner, textvariable=self.new_rule_name_var, width=28).grid(row=0, column=1, padx=8, pady=8, sticky="w")
+        r1 = tk.Frame(add_inner, bg=self.colors["card"])
+        r1.pack(fill="x", pady=(0, 6))
+        tk.Label(r1, text="Category:", bg=self.colors["card"], fg=self.colors["muted"],
+                 font=("Segoe UI", 9), width=12, anchor="w").pack(side="left", padx=(0, 8))
+        ttk.Entry(r1, textvariable=self.new_rule_name_var, width=24).pack(side="left")
 
-        tk.Label(add_inner, text="Extensions:", bg=self.colors["card"], fg=self.colors["text"], font=("Segoe UI", 10)).grid(row=1, column=0, padx=8, pady=8, sticky="w")
-        ttk.Entry(add_inner, textvariable=self.new_rule_extensions_var, width=78).grid(row=1, column=1, padx=8, pady=8, sticky="w")
+        r2 = tk.Frame(add_inner, bg=self.colors["card"])
+        r2.pack(fill="x")
+        tk.Label(r2, text="Extensions:", bg=self.colors["card"], fg=self.colors["muted"],
+                 font=("Segoe UI", 9), width=12, anchor="w").pack(side="left", padx=(0, 8))
+        ttk.Entry(r2, textvariable=self.new_rule_extensions_var, width=52).pack(side="left", padx=(0, 8))
+        tk.Button(r2, text="+ Add",
+                  bg=self.colors["accent"], fg="white",
+                  activebackground=self.colors["accent_2"],
+                  relief="flat", bd=0, padx=14, pady=6,
+                  font=("Segoe UI", 9, "bold"), cursor="hand2",
+                  command=self.add_new_rule).pack(side="left")
 
-        ttk.Button(
-            add_inner,
-            text="Add Rule",
-            style="Primary.TButton",
-            command=self.add_new_rule
-        ).grid(row=0, column=2, rowspan=2, padx=10, pady=8)
+        # Action buttons
+        btn_bar = tk.Frame(outer, bg=self.colors["panel"],
+                           highlightbackground=self.colors["border_2"], highlightthickness=1)
+        btn_bar.pack(fill="x", side="bottom")
+        btn_inner = tk.Frame(btn_bar, bg=self.colors["panel"])
+        btn_inner.pack(fill="x", padx=14, pady=8)
 
-        buttons = tk.Frame(outer, bg=self.colors["bg"])
-        buttons.pack(fill="x", pady=10)
+        tk.Button(btn_inner, text="Save Rules",
+                  bg=self.colors["accent"], fg="white",
+                  activebackground=self.colors["accent_2"],
+                  relief="flat", bd=0, padx=14, pady=6,
+                  font=("Segoe UI", 9, "bold"), cursor="hand2",
+                  command=self.save_rules).pack(side="left", padx=(0, 6))
+        tk.Button(btn_inner, text="Reload",
+                  bg=self.colors["panel_2"], fg=self.colors["muted"],
+                  activebackground=self.colors["border_2"],
+                  relief="flat", bd=0, padx=14, pady=6,
+                  font=("Segoe UI", 9), cursor="hand2",
+                  command=self.reload_rules).pack(side="left", padx=(0, 6))
+        tk.Button(btn_inner, text="Validate",
+                  bg=self.colors["panel_2"], fg=self.colors["muted"],
+                  activebackground=self.colors["border_2"],
+                  relief="flat", bd=0, padx=14, pady=6,
+                  font=("Segoe UI", 9), cursor="hand2",
+                  command=self.validate_rules_preview).pack(side="left")
 
-        ttk.Button(buttons, text="Save Rules", style="Primary.TButton", command=self.save_rules).pack(side="left", padx=6)
-        ttk.Button(buttons, text="Reload Rules", style="Secondary.TButton", command=self.reload_rules).pack(side="left", padx=6)
-        ttk.Button(buttons, text="Validate Rules", style="Secondary.TButton", command=self.validate_rules_preview).pack(side="left", padx=6)
+    def _build_smart_rules_tab(self, outer):
+        """Tab 2: Keyword-based smart rules (invoice → invoices)"""
 
-        # -------- Smart Rules Editor --------
-        smart_rules_panel = self.create_info_panel(outer, "Smart Rules Editor")
-        smart_rules_panel.pack(fill="x", pady=10)
+        desc = tk.Frame(outer, bg=self.colors["card_2"],
+                        highlightbackground=self.colors["border"], highlightthickness=1)
+        desc.pack(fill="x", pady=(0, 2))
+        tk.Label(desc,
+                 text="Smart Rules — Files are sorted by keywords in their filename. Example: invoice → invoices",
+                 bg=self.colors["card_2"], fg=self.colors["muted"],
+                 font=("Segoe UI", 9), padx=14, pady=8, anchor="w").pack(fill="x")
 
-        smart_rules_inner = tk.Frame(smart_rules_panel, bg=self.colors["card"])
-        smart_rules_inner.pack(fill="both", expand=True, padx=12, pady=12)
+        smart_panel = self.create_info_panel(outer, "Keyword Rules")
+        smart_panel.pack(fill="x", pady=(0, 2))
 
-        smart_canvas = tk.Canvas(
-            smart_rules_inner,
-            highlightthickness=0,
-            bg=self.colors["card"],
-            height=240
-        )
-        smart_scrollbar = ttk.Scrollbar(smart_rules_inner, orient="vertical", command=smart_canvas.yview)
+        smart_inner = tk.Frame(smart_panel, bg=self.colors["card"])
+        smart_inner.pack(fill="x", padx=0)
+
+        hdr = tk.Frame(smart_inner, bg=self.colors["panel_2"])
+        hdr.pack(fill="x")
+        tk.Label(hdr, text="CATEGORY", bg=self.colors["panel_2"], fg=self.colors["muted"],
+                 font=("Segoe UI", 8, "bold"), padx=14, pady=6, width=18, anchor="w").pack(side="left")
+        tk.Label(hdr, text="KEYWORDS", bg=self.colors["panel_2"], fg=self.colors["muted"],
+                 font=("Segoe UI", 8, "bold"), padx=8, pady=6, anchor="w").pack(side="left", fill="x", expand=True)
+        tk.Label(hdr, text="ACTION", bg=self.colors["panel_2"], fg=self.colors["muted"],
+                 font=("Segoe UI", 8, "bold"), padx=14, pady=6, width=10, anchor="w").pack(side="right")
+        tk.Frame(smart_inner, bg=self.colors["border"], height=1).pack(fill="x")
+
+        smart_canvas = tk.Canvas(smart_inner, highlightthickness=0,
+                                  bg=self.colors["card"], height=220)
+        smart_sb = ttk.Scrollbar(smart_inner, orient="vertical", command=smart_canvas.yview)
         self.smart_rules_frame = tk.Frame(smart_canvas, bg=self.colors["card"])
-
         self.smart_rules_frame.bind(
             "<Configure>",
-            lambda e: smart_canvas.configure(scrollregion=smart_canvas.bbox("all")),
+            lambda e: smart_canvas.configure(scrollregion=smart_canvas.bbox("all"))
         )
-
-        smart_canvas.create_window((0, 0), window=self.smart_rules_frame, anchor="nw")
-        smart_canvas.configure(yscrollcommand=smart_scrollbar.set)
-
+        win = smart_canvas.create_window((0, 0), window=self.smart_rules_frame, anchor="nw")
+        smart_canvas.bind("<Configure>", lambda e: smart_canvas.itemconfig(win, width=e.width))
+        smart_canvas.configure(yscrollcommand=smart_sb.set)
         smart_canvas.pack(side="left", fill="both", expand=True)
-        smart_scrollbar.pack(side="right", fill="y")
-
+        smart_sb.pack(side="right", fill="y")
         self.render_smart_rule_entries()
 
-        # -------- Add New Smart Rule --------
-        smart_add_panel = self.create_info_panel(outer, "Add New Smart Rule")
-        smart_add_panel.pack(fill="x", pady=10)
+        # Add new smart rule
+        add_panel = self.create_info_panel(outer, "Add Keyword Rule")
+        add_panel.pack(fill="x", pady=(0, 2))
 
-        smart_add_inner = tk.Frame(smart_add_panel, bg=self.colors["card"])
-        smart_add_inner.pack(fill="x", padx=12, pady=12)
+        add_inner = tk.Frame(add_panel, bg=self.colors["card"])
+        add_inner.pack(fill="x", padx=14, pady=12)
 
-        tk.Label(
-            smart_add_inner,
-            text="Smart Category:",
-            bg=self.colors["card"],
-            fg=self.colors["text"],
-            font=("Segoe UI", 10)
-        ).grid(row=0, column=0, padx=8, pady=8, sticky="w")
+        r1 = tk.Frame(add_inner, bg=self.colors["card"])
+        r1.pack(fill="x", pady=(0, 6))
+        tk.Label(r1, text="Category:", bg=self.colors["card"], fg=self.colors["muted"],
+                 font=("Segoe UI", 9), width=12, anchor="w").pack(side="left", padx=(0, 8))
+        ttk.Entry(r1, textvariable=self.new_smart_category_var, width=24).pack(side="left")
 
-        ttk.Entry(
-            smart_add_inner,
-            textvariable=self.new_smart_category_var,
-            width=28
-        ).grid(row=0, column=1, padx=8, pady=8, sticky="w")
+        r2 = tk.Frame(add_inner, bg=self.colors["card"])
+        r2.pack(fill="x")
+        tk.Label(r2, text="Keywords:", bg=self.colors["card"], fg=self.colors["muted"],
+                 font=("Segoe UI", 9), width=12, anchor="w").pack(side="left", padx=(0, 8))
+        ttk.Entry(r2, textvariable=self.new_smart_keywords_var, width=52).pack(side="left", padx=(0, 8))
+        tk.Button(r2, text="+ Add",
+                  bg=self.colors["accent"], fg="white",
+                  activebackground=self.colors["accent_2"],
+                  relief="flat", bd=0, padx=14, pady=6,
+                  font=("Segoe UI", 9, "bold"), cursor="hand2",
+                  command=self.add_new_smart_rule).pack(side="left")
 
-        tk.Label(
-            smart_add_inner,
-            text="Keywords:",
-            bg=self.colors["card"],
-            fg=self.colors["text"],
-            font=("Segoe UI", 10)
-        ).grid(row=1, column=0, padx=8, pady=8, sticky="w")
+        # Action buttons
+        btn_bar = tk.Frame(outer, bg=self.colors["panel"],
+                           highlightbackground=self.colors["border_2"], highlightthickness=1)
+        btn_bar.pack(fill="x", side="bottom")
+        btn_inner = tk.Frame(btn_bar, bg=self.colors["panel"])
+        btn_inner.pack(fill="x", padx=14, pady=8)
 
-        ttk.Entry(
-            smart_add_inner,
-            textvariable=self.new_smart_keywords_var,
-            width=78
-        ).grid(row=1, column=1, padx=8, pady=8, sticky="w")
+        tk.Button(btn_inner, text="Save Rules",
+                  bg=self.colors["accent"], fg="white",
+                  activebackground=self.colors["accent_2"],
+                  relief="flat", bd=0, padx=14, pady=6,
+                  font=("Segoe UI", 9, "bold"), cursor="hand2",
+                  command=self.save_smart_rules_from_gui).pack(side="left", padx=(0, 6))
+        tk.Button(btn_inner, text="Reload",
+                  bg=self.colors["panel_2"], fg=self.colors["muted"],
+                  activebackground=self.colors["border_2"],
+                  relief="flat", bd=0, padx=14, pady=6,
+                  font=("Segoe UI", 9), cursor="hand2",
+                  command=self.reload_smart_rules_from_gui).pack(side="left", padx=(0, 6))
+        tk.Button(btn_inner, text="AI Suggest",
+                  bg=self.colors["stat_purple"], fg="white",
+                  activebackground=self.colors["stat_purple"],
+                  relief="flat", bd=0, padx=14, pady=6,
+                  font=("Segoe UI", 9, "bold"), cursor="hand2",
+                  command=self.suggest_ai_rules).pack(side="left")
 
-        ttk.Button(
-            smart_add_inner,
-            text="Add Smart Rule",
-            style="Primary.TButton",
-            command=self.add_new_smart_rule
-        ).grid(row=0, column=2, rowspan=2, padx=10, pady=8)
+    def _build_rule_tester_tab(self, outer):
+        """Tab 3: Test any filename against all rules"""
 
-        smart_buttons = tk.Frame(outer, bg=self.colors["bg"])
-        smart_buttons.pack(fill="x", pady=10)
+        desc = tk.Frame(outer, bg=self.colors["card_2"],
+                        highlightbackground=self.colors["border"], highlightthickness=1)
+        desc.pack(fill="x", pady=(0, 2))
+        tk.Label(desc,
+                 text="Rule Tester — Enter any filename and see which category it would go to, and why.",
+                 bg=self.colors["card_2"], fg=self.colors["muted"],
+                 font=("Segoe UI", 9), padx=14, pady=8, anchor="w").pack(fill="x")
 
-        ttk.Button(
-            smart_buttons,
-            text="Save Smart Rules",
-            style="Primary.TButton",
-            command=self.save_smart_rules_from_gui
-        ).pack(side="left", padx=6)
+        test_panel = self.create_info_panel(outer, "Test a Filename")
+        test_panel.pack(fill="x", pady=(0, 2))
 
-        ttk.Button(
-            smart_buttons,
-            text="Reload Smart Rules",
-            style="Secondary.TButton",
-            command=self.reload_smart_rules_from_gui
-        ).pack(side="left", padx=6)
+        ti = tk.Frame(test_panel, bg=self.colors["card"])
+        ti.pack(fill="x", padx=16, pady=16)
 
-        # ── Rule Tester ───────────────────────────────────────────
-        tester_panel = self.create_info_panel(outer, "Rule Tester")
-        tester_panel.pack(fill="x", pady=(10, 16))
-
-        ti = tk.Frame(tester_panel, bg=self.colors["card"])
-        ti.pack(fill="x", padx=16, pady=14)
-
-        # Input row
         input_row = tk.Frame(ti, bg=self.colors["card"])
-        input_row.pack(fill="x", pady=(0, 10))
+        input_row.pack(fill="x", pady=(0, 12))
 
         tk.Label(input_row, text="Filename:",
                  bg=self.colors["card"], fg=self.colors["muted"],
                  font=("Segoe UI", 9), width=10, anchor="w").pack(side="left", padx=(0, 8))
 
         self.rule_test_var = tk.StringVar()
-        test_entry = ttk.Entry(input_row, textvariable=self.rule_test_var, width=48)
+        test_entry = ttk.Entry(input_row, textvariable=self.rule_test_var, width=50)
         test_entry.pack(side="left", padx=(0, 8))
         test_entry.bind("<Return>", lambda e: self.run_rule_test())
 
         tk.Label(input_row, text="e.g.  invoice_march.pdf  or  photo_2024.jpg",
                  bg=self.colors["card"], fg=self.colors["muted"],
-                 font=("Segoe UI", 8)).pack(side="left", padx=(4, 0))
+                 font=("Segoe UI", 8)).pack(side="left", padx=(0, 12))
 
-        tk.Button(input_row, text="Test Rule",
+        tk.Button(input_row, text="Test",
                   bg=self.colors["accent"], fg="white",
                   activebackground=self.colors["accent_2"], activeforeground="white",
-                  relief="flat", bd=0, padx=14, pady=6,
+                  relief="flat", bd=0, padx=18, pady=6,
                   font=("Segoe UI", 9, "bold"), cursor="hand2",
                   command=self.run_rule_test).pack(side="right")
 
-        # Result box
         self.rule_test_result_frame = tk.Frame(
-            ti,
-            bg=self.colors["card_2"],
+            ti, bg=self.colors["card_2"],
             highlightbackground=self.colors["border"],
             highlightthickness=1,
         )
         self.rule_test_result_frame.pack(fill="x")
-        self.rule_test_result_frame.pack_forget()   # hidden until first test
+        self.rule_test_result_frame.pack_forget()
 
     def build_watch_folders_page(self):
         page = self.pages["watch"]

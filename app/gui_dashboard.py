@@ -273,22 +273,42 @@ def build_dashboard_page(self):
 
     self.recent_activity_tree.pack(fill="both", expand=True)
 
-    # -------- Detailed Statistics --------
-    stats_panel = self.create_info_panel(outer, "Detailed Statistics")
-    stats_panel.pack(fill="both", expand=True, padx=20, pady=(10, 16))
+    # -------- Classification Breakdown --------
+    breakdown_panel = self.create_info_panel(outer, "How Files Were Sorted")
+    breakdown_panel.pack(fill="x", padx=20, pady=(10, 16))
 
-    self.stats_text = tk.Text(
-        stats_panel,
-        wrap="word",
-        state="disabled",
-        bg=self.colors["panel"],
-        fg=self.colors["text"],
-        insertbackground=self.colors["text"],
-        relief="flat",
-        font=("Consolas", 10),
-        height=10
-    )
-    self.stats_text.pack(fill="both", expand=True, padx=12, pady=12)
+    self.breakdown_frame = tk.Frame(breakdown_panel, bg=self.colors["card"])
+    self.breakdown_frame.pack(fill="x", padx=14, pady=12)
+
+    # Getting Started banner (shown when no files processed yet)
+    self.getting_started_frame = tk.Frame(outer, bg=self.colors["card_2"],
+                                           highlightbackground=self.colors["accent"],
+                                           highlightthickness=1)
+
+    gs_inner = tk.Frame(self.getting_started_frame, bg=self.colors["card_2"])
+    gs_inner.pack(fill="x", padx=20, pady=16)
+
+    tk.Label(gs_inner, text="Getting Started with FilePilot",
+             bg=self.colors["card_2"], fg=self.colors["text"],
+             font=("Segoe UI", 12, "bold")).pack(anchor="w")
+    tk.Label(gs_inner, text="Follow these steps to start organizing your files automatically:",
+             bg=self.colors["card_2"], fg=self.colors["muted"],
+             font=("Segoe UI", 9)).pack(anchor="w", pady=(2, 10))
+
+    for i, (step, desc) in enumerate([
+        ("1. Set your folders", "Go to Settings → set Incoming Folder and Organized Folder"),
+        ("2. Check your rules", "Go to Rules Editor → make sure categories match your files"),
+        ("3. Start Monitoring", "Click ▶ Start Monitoring above — FilePilot will watch your folder"),
+        ("4. Drop files in",    "Copy files to your Incoming Folder and watch them get organized!"),
+    ], 1):
+        row = tk.Frame(gs_inner, bg=self.colors["card_2"])
+        row.pack(fill="x", pady=2)
+        tk.Label(row, text=step,
+                 bg=self.colors["card_2"], fg=self.colors["accent"],
+                 font=("Segoe UI", 9, "bold"), width=20, anchor="w").pack(side="left")
+        tk.Label(row, text=desc,
+                 bg=self.colors["card_2"], fg=self.colors["muted"],
+                 font=("Segoe UI", 9), anchor="w").pack(side="left")
 
 
 def draw_classification_chart(self, plugin_count, smart_count, content_count, extension_count):

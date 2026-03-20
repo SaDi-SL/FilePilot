@@ -39,8 +39,8 @@ class NewFileHandler(FileSystemEventHandler):
         self.recent_events: dict[str, float] = {}
         self._lock = threading.Lock()
         self.last_processed_file = "No file processed yet"
-        # callback(filename, category, status) — called from a worker thread
-        # Must be thread-safe (use root.after from the GUI)
+        # callback(filename, category, status) — يُستدعى من thread منفصل
+        # يجب أن يكون thread-safe (استخدم root.after من الـ GUI)
         self.file_processed_callback = file_processed_callback
 
     # ---- Watchdog event handlers ----
@@ -73,7 +73,7 @@ class NewFileHandler(FileSystemEventHandler):
         return False
 
     def _dispatch(self, file_path: str, source_event: str) -> None:
-        """Each file processed in a separate thread — watchdog never freezes."""
+        """كل ملف في thread منفصل — watchdog لا يتجمّد."""
         threading.Thread(
             target=self._process_file_thread,
             args=(file_path, source_event),
@@ -125,7 +125,23 @@ class NewFileHandler(FileSystemEventHandler):
                     classification_method = "smart"
                     smart_source = "content_or_filename"
 
-            # 3) Create new category folder if needed
+            # 3) AI Classifier (fallback when smart + extension both miss)
+            if not final_category:
+                try:
+                    from app.ai_classifier import get_ai_classifier
+                    ai = get_ai_classifier(self.config)
+                    if ai.is_enabled and ai.is_available():
+                        categories = list(self.rules.keys())
+                        ai_result = ai.classify(source_path.name, categories)
+                        if ai_result.ok:
+                            logging.info(f"AI classified: {source_path.name} → {ai_result.category} ({ai_result.reason})")
+                            final_category = ai_result.category
+                            classification_method = "ai"
+                            smart_source = f"{ai_result.provider}:{ai_result.reason[:40]}"
+                except Exception as ai_err:
+                    logging.debug(f"AI classifier skipped: {ai_err}")
+
+            # 3) إنشاء مجلد فئة جديدة إذا لزم
             if final_category and final_category not in self.destination_folders:
                 new_folder = Path(self.destination_folders["others"]).parent / final_category
                 new_folder.mkdir(parents=True, exist_ok=True)
@@ -155,7 +171,7 @@ class NewFileHandler(FileSystemEventHandler):
             status = "error"
 
         finally:
-            # Notify the GUI immediately when processing finishes
+            # أبلغ الـ GUI لحظياً بانتهاء المعالجة
             if self.file_processed_callback is not None:
                 try:
                     self.file_processed_callback(
@@ -181,7 +197,7 @@ class FileMonitor:
         self.is_running = False
 
     def set_file_processed_callback(self, callback) -> None:
-        """Set callback after construction (useful on reload)."""
+        """ضبط الـ callback بعد الإنشاء (مفيد عند reload)."""
         self.event_handler.file_processed_callback = callback
 
     def scan_existing_files(self) -> None:

@@ -276,8 +276,10 @@ class MonitoringMixin:
         except Exception:
             pass
         self.status_bar_var.set("Monitoring started  (Ctrl+M to stop)")
-        self.start_button.config(state="disabled")
-        self.stop_button.config(state="normal")
+        try: self.start_button.config(state="disabled")
+        except Exception: pass
+        try: self.stop_button.config(state="normal")
+        except Exception: pass
         self.toast_manager.show_toast("Monitoring started.", "success")
         self.add_notification("success", "Monitoring Started", "File monitoring started.")
 
@@ -307,8 +309,10 @@ class MonitoringMixin:
         except Exception:
             pass
         self.status_bar_var.set("Monitoring stopped  (Ctrl+M to start)")
-        self.start_button.config(state="normal")
-        self.stop_button.config(state="disabled")
+        try: self.start_button.config(state="normal")
+        except Exception: pass
+        try: self.stop_button.config(state="disabled")
+        except Exception: pass
         # Do not rebuild monitor here — keep it so start_monitoring can rebind the callback
         self.toast_manager.show_toast("Monitoring stopped.", "warning")
         self.add_notification("warning", "Monitoring Stopped", "File monitoring stopped.")
@@ -457,8 +461,10 @@ class MonitoringMixin:
                 self._status_dot.config(bg=self.colors["success_bg"])
             except Exception:
                 pass
-            self.start_button.config(state="disabled")
-            self.stop_button.config(state="normal")
+            try: self.start_button.config(state="disabled")
+            except Exception: pass
+            try: self.stop_button.config(state="normal")
+            except Exception: pass
             self._start_dot_pulse()
             self._start_auto_refresh()
 
@@ -520,8 +526,10 @@ class MonitoringMixin:
                 self._status_dot.config(bg=self.colors["success_bg"])
             except Exception:
                 pass
-            self.start_button.config(state="disabled")
-            self.stop_button.config(state="normal")
+            try: self.start_button.config(state="disabled")
+            except Exception: pass
+            try: self.stop_button.config(state="normal")
+            except Exception: pass
             self._start_dot_pulse()
             self._start_auto_refresh()
 
