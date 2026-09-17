@@ -19,7 +19,7 @@ import threading
 from dataclasses import dataclass
 from typing import Callable
 
-from app.ai_service import AIProvider, AIService, OLLAMA_MODEL, create_ai_service
+from app.ai_service import AIService, OLLAMA_MODEL, create_ai_service
 
 logger = logging.getLogger(__name__)
 
@@ -97,22 +97,6 @@ Based on patterns you see, suggest 3-5 new smart rules. Return ONLY a JSON array
 Focus on patterns not already covered by extension rules. Be specific and practical."""
 
 
-# ── Temporary document-analyzer compatibility ─────────────────────────────────
-
-class _LegacyProviderBridge:
-    """Adapt an AIService provider for AIDocumentAnalyzer until Patch 3B-3."""
-
-    def __init__(self, provider: AIProvider) -> None:
-        self._provider = provider
-        self._timeout = REQUEST_TIMEOUT
-
-    def is_available(self) -> bool:
-        return self._provider.is_ready()
-
-    def chat(self, prompt: str) -> str:
-        return self._provider.chat(prompt, timeout=self._timeout)
-
-
 # ── Main AIClassifier ─────────────────────────────────────────────────────────
 
 class AIClassifier:
@@ -134,20 +118,12 @@ class AIClassifier:
             "ollama_model": ollama_model,
         })
         self.provider_name = self._service.selected_provider
-
-        # AIDocumentAnalyzer still uses these private attributes and mutates
-        # _timeout. Remove this bridge when it moves to AIService in Patch 3B-3.
-        self._ollama = (
-            _LegacyProviderBridge(self._service.ollama_provider)
-            if self._service.ollama_provider is not None
-            else None
-        )
-        self._claude = (
-            _LegacyProviderBridge(self._service.claude_provider)
-            if self._service.claude_provider is not None
-            else None
-        )
         self._enabled = True
+
+    @property
+    def service(self) -> AIService:
+        """Return the provider-independent service used by this classifier."""
+        return self._service
 
     @property
     def is_enabled(self) -> bool:

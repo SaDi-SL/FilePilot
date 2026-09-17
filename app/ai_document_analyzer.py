@@ -20,7 +20,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
+from app.ai_service import AIService
+
 logger = logging.getLogger(__name__)
+
+DOCUMENT_ANALYSIS_TIMEOUT = 120
+DOCUMENT_ANALYSIS_MAX_OUTPUT_TOKENS = 1200
 
 
 # ── Result dataclasses ────────────────────────────────────────────────────────
@@ -226,16 +231,22 @@ class AIDocumentAnalyzer:
     Extracts type, dates, entities, and actionable tips.
     """
 
-    def __init__(self, ai_classifier=None) -> None:
+    def __init__(
+        self,
+        ai_classifier=None,
+        ai_service: AIService | None = None,
+    ) -> None:
         self._ai = ai_classifier  # AIClassifier instance
+        self._service = ai_service
 
-    def _get_ai(self):
-        if self._ai:
-            return self._ai
-        # Lazy import to avoid circular imports
-        from app.ai_classifier import AIClassifier
-        self._ai = AIClassifier()
-        return self._ai
+    def _get_service(self) -> AIService:
+        if self._service is None:
+            if self._ai is None:
+                # Lazy import to avoid coupling module initialization.
+                from app.ai_classifier import AIClassifier
+                self._ai = AIClassifier()
+            self._service = self._ai.service
+        return self._service
 
     def analyze(
         self,
@@ -252,36 +263,29 @@ class AIDocumentAnalyzer:
         # Extract text content
         content = _extract_text(file_path)
 
-        # Build and send prompt
-        ai = self._get_ai()
-        provider = ai.get_active_provider()
-
-        if provider == "none":
-            return DocumentAnalysis(
-                filename=filename,
-                doc_type="unknown",
-                category="others",
-                smart_folder="others",
-                summary="AI not available",
-                error="No AI provider running",
-            )
-
         try:
+            service = self._get_service()
+            if service.get_active_provider_name() == "none":
+                return DocumentAnalysis(
+                    filename=filename,
+                    doc_type="unknown",
+                    category="others",
+                    smart_folder="others",
+                    summary="AI not available",
+                    error="No AI provider running",
+                )
+
             prompt   = _build_analysis_prompt(filename, content, categories or [])
-            backend  = ai._claude if provider == "claude" else ai._ollama
-            # Document analysis needs more time than simple classification
-            orig_timeout = getattr(backend, "_timeout", None)
-            try:
-                backend._timeout = 120  # 2 minutes for full document analysis
-            except Exception:
-                pass
-            response = backend.chat(prompt)
-            if orig_timeout is not None:
-                try:
-                    backend._timeout = orig_timeout
-                except Exception:
-                    pass
-            return self._parse_response(filename, response, provider)
+            response = service.chat(
+                prompt,
+                timeout=DOCUMENT_ANALYSIS_TIMEOUT,
+                max_output_tokens=DOCUMENT_ANALYSIS_MAX_OUTPUT_TOKENS,
+            )
+            return self._parse_response(
+                filename,
+                response.text,
+                response.provider,
+            )
 
         except Exception as e:
             logger.error(f"Analysis failed for {filename}: {e}")

@@ -67,6 +67,24 @@ class AIProviderBehaviorTests(unittest.TestCase):
         service = AIService(selected, self.ollama, self.claude)
         return AIClassifier(service=service)
 
+    @staticmethod
+    def _analysis_response():
+        return json.dumps({
+            "doc_type": "invoice",
+            "category": "invoices",
+            "smart_folder": "Invoices/2026",
+            "summary": "Invoice for consulting services.",
+            "key_dates": [{
+                "label": "Payment due",
+                "date": "2026-10-01",
+                "description": "Invoice payment deadline",
+                "remind_days_before": 5,
+            }],
+            "entities": {"amount": "$125.00"},
+            "tips": ["Schedule payment"],
+            "confidence": 0.92,
+        })
+
     def test_provider_selection_and_fallback_matrix(self):
         cases = [
             ("ollama", True, True, "ollama"),
@@ -251,22 +269,9 @@ class AIProviderBehaviorTests(unittest.TestCase):
         callback.assert_called_once_with([], "suggestion request failed")
 
     def test_manual_analysis_succeeds_when_automatic_classification_is_disabled(self):
-        response = json.dumps({
-            "doc_type": "invoice",
-            "category": "invoices",
-            "smart_folder": "Invoices/2026",
-            "summary": "Invoice for consulting services.",
-            "key_dates": [{
-                "label": "Payment due",
-                "date": "2026-10-01",
-                "description": "Invoice payment deadline",
-                "remind_days_before": 5,
-            }],
-            "entities": {"amount": "$125.00"},
-            "tips": ["Schedule payment"],
-            "confidence": 0.92,
-        })
-        classifier = self._classifier(ollama_response=response)
+        classifier = self._classifier(
+            ollama_response=self._analysis_response()
+        )
         classifier.disable()
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -284,7 +289,34 @@ class AIProviderBehaviorTests(unittest.TestCase):
         self.assertEqual(result.provider, "ollama")
         self.assertEqual(result.key_dates[0].label, "Payment due")
         self.ollama.chat.assert_called_once()
-        self.assertEqual(self.ollama.chat.call_args.kwargs, {"timeout": 120})
+        self.assertEqual(
+            self.ollama.chat.call_args.kwargs,
+            {"timeout": 120, "max_output_tokens": 1200},
+        )
+        self.assertNotIn("_timeout", self.ollama.__dict__)
+
+    def test_manual_analysis_fallback_reports_provider_actually_used(self):
+        classifier = self._classifier(
+            selected="claude",
+            claude_available=False,
+            ollama_response=self._analysis_response(),
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            file_path = Path(temp_dir) / "invoice.txt"
+            file_path.write_text("Invoice total: $125.00", encoding="utf-8")
+            result = AIDocumentAnalyzer(
+                ai_service=classifier.service
+            ).analyze(file_path)
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.provider, "ollama")
+        self.ollama.chat.assert_called_once()
+        self.assertEqual(
+            self.ollama.chat.call_args.kwargs,
+            {"timeout": 120, "max_output_tokens": 1200},
+        )
+        self.claude.chat.assert_not_called()
 
     def test_manual_analysis_malformed_response_returns_failed_result(self):
         classifier = self._classifier(ollama_response="not JSON")
@@ -301,7 +333,8 @@ class AIProviderBehaviorTests(unittest.TestCase):
 
     def test_manual_analysis_provider_failure_returns_failed_result(self):
         classifier = self._classifier(
-            ollama_failure=RuntimeError("analysis request failed")
+            selected="claude",
+            claude_failure=RuntimeError("analysis request failed"),
         )
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -313,6 +346,8 @@ class AIProviderBehaviorTests(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertEqual(result.error, "analysis request failed")
         self.assertEqual(result.summary, "Analysis failed: analysis request failed")
+        self.claude.chat.assert_called_once()
+        self.ollama.chat.assert_not_called()
 
 
 if __name__ == "__main__":
