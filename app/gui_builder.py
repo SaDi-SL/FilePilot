@@ -528,7 +528,7 @@ class BuilderMixin:
         self.ai_enabled_var = tk.BooleanVar(
             value=self.config.get("ai", {}).get("enabled", False)
         )
-        ttk.Checkbutton(ai_toggle_row, text="Enable AI Classification",
+        ttk.Checkbutton(ai_toggle_row, text="Enable automatic AI classification",
                         variable=self.ai_enabled_var).pack(side="left")
         tk.Label(ai_toggle_row,
                  text="   Uses AI as fallback when no rule matches",
@@ -552,11 +552,28 @@ class BuilderMixin:
         )
         provider_combo.pack(side="left", padx=(0, 16))
 
-        # Status indicator
+        # Selected-provider status indicator (independent of the automatic toggle)
+        tk.Label(provider_row, text="Provider status:",
+                 bg=self.colors["card"], fg=self.colors["muted"],
+                 font=("Segoe UI", 8)).pack(side="left")
         self.ai_status_var = tk.StringVar(value="Checking...")
         tk.Label(provider_row, textvariable=self.ai_status_var,
                  bg=self.colors["card"], fg=self.colors["muted"],
-                 font=("Segoe UI", 8)).pack(side="left")
+                 font=("Segoe UI", 8)).pack(side="left", padx=(4, 0))
+
+        # Ollama model
+        ollama_model_row = tk.Frame(ai_inner, bg=self.colors["card"])
+        ollama_model_row.pack(fill="x", pady=(0, 8))
+
+        tk.Label(ollama_model_row, text="Ollama model:",
+                 bg=self.colors["card"], fg=self.colors["muted"],
+                 font=("Segoe UI", 9), width=12, anchor="w").pack(side="left")
+
+        self.ollama_model_var = tk.StringVar(
+            value=self.config.get("ai", {}).get("ollama_model", "mistral")
+        )
+        ttk.Entry(ollama_model_row, textvariable=self.ollama_model_var,
+                  width=24).pack(side="left")
 
         # Claude API key (shown only when claude selected)
         self.claude_key_frame = tk.Frame(ai_inner, bg=self.colors["card"])

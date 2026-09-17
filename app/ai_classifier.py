@@ -200,11 +200,19 @@ class AIClassifier:
 
     def get_active_provider(self) -> str:
         """Return name of the currently active provider."""
-        if self.provider_name == "claude" and self._claude and self._claude.is_available():
+        if self.provider_name == "claude" and self.is_provider_available():
             return "claude"
         if self._ollama.is_available():
             return "ollama"
         return "none"
+
+    def is_provider_available(self) -> bool:
+        """Return whether the selected provider is currently available."""
+        if self.provider_name == "claude":
+            return bool(self._claude and self._claude.is_available())
+        if self.provider_name == "ollama":
+            return self._ollama.is_available()
+        return False
 
     def is_available(self) -> bool:
         return self.get_active_provider() != "none"

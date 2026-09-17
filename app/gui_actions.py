@@ -845,6 +845,12 @@ class ActionsMixin:
             config_data["archive_by_date"] = bool(self.archive_by_date_var.get())
             config_data["run_at_startup"] = bool(self.run_at_startup_var.get())
             config_data["language"] = get_language()
+            config_data["ai"] = {
+                "enabled": bool(self.ai_enabled_var.get()),
+                "provider": self.ai_provider_var.get(),
+                "claude_api_key": self.claude_api_key_var.get(),
+                "ollama_model": self.ollama_model_var.get().strip() or "mistral",
+            }
 
             with open(config_path, "w", encoding="utf-8") as file:
                 json.dump(config_data, file, indent=2, ensure_ascii=False)
@@ -864,15 +870,24 @@ class ActionsMixin:
             if was_running:
                 self._stop_dot_pulse()
                 self._stop_auto_refresh()
-                self.monitor.stop()
+                self.monitor.stop_all()
 
             self.config, self.monitor = build_monitor()
+
+            from app.ai_classifier import reset_ai_classifier
+            reset_ai_classifier()
 
             self.source_folder_var.set(self.config.get("source_folder", "incoming"))
             self.organized_base_var.set(self.config.get("organized_base_folder", "organized"))
             self.processing_wait_var.set(str(self.config.get("processing_wait_seconds", 5)))
             self.duplicate_window_var.set(str(self.config.get("duplicate_event_window_seconds", 3)))
             self.archive_by_date_var.set(self.config.get("archive_by_date", False))
+            ai_config = self.config.get("ai", {})
+            self.ai_enabled_var.set(ai_config.get("enabled", False))
+            self.ai_provider_var.set(ai_config.get("provider", "ollama"))
+            self.claude_api_key_var.set(ai_config.get("claude_api_key", ""))
+            self.ollama_model_var.set(ai_config.get("ollama_model", "mistral"))
+            self.check_ai_status()
             from app.startup_manager import is_startup_enabled
             self.run_at_startup_var.set(is_startup_enabled())
 
@@ -885,7 +900,7 @@ class ActionsMixin:
 
             if was_running:
                 self.monitor.set_file_processed_callback(self._make_live_callback())
-                self.monitor.start()
+                self.monitor.start_all()
                 self.status_var.set(t("status_running"))
                 try:
                     self.header_status.config(text="Running", bg=self.colors["success_bg"], fg=self.colors["success"])
@@ -1787,16 +1802,21 @@ class ActionsMixin:
             if provider_name == "claude" and hasattr(self, "claude_api_key_var"):
                 api_key = self.claude_api_key_var.get()
 
-            ai = AIClassifier(provider=provider_name, claude_api_key=api_key)
-            active = ai.get_active_provider()
+            ollama_model = (self.ollama_model_var.get().strip()
+                            if hasattr(self, "ollama_model_var") else "mistral")
+            ai = AIClassifier(
+                provider=provider_name,
+                claude_api_key=api_key,
+                ollama_model=ollama_model or "mistral",
+            )
 
-            if active == "none":
+            if not ai.is_provider_available():
                 if provider_name == "ollama":
-                    self.ai_status_var.set("! Ollama not running — start Ollama app")
+                    self.ai_status_var.set("Unavailable: Ollama is not running")
                 else:
-                    self.ai_status_var.set("! Invalid API key")
+                    self.ai_status_var.set("Unavailable: Claude API key is invalid")
             else:
-                self.ai_status_var.set(f"+ Connected ({active})")
+                self.ai_status_var.set(f"Available ({provider_name})")
         except Exception as e:
             self.ai_status_var.set(f"! Error: {e}")
 
@@ -1816,7 +1836,13 @@ class ActionsMixin:
                 if hasattr(self, "claude_api_key_var"):
                     api_key = self.claude_api_key_var.get()
 
-                ai = AIClassifier(provider=provider_name, claude_api_key=api_key)
+                ollama_model = (self.ollama_model_var.get().strip()
+                                if hasattr(self, "ollama_model_var") else "mistral")
+                ai = AIClassifier(
+                    provider=provider_name,
+                    claude_api_key=api_key,
+                    ollama_model=ollama_model or "mistral",
+                )
                 result = ai.classify("invoice_march_2024.pdf",
                                      ["invoices", "documents", "finance"])
                 if result.ok:
@@ -1948,7 +1974,8 @@ class ActionsMixin:
                                   if hasattr(self, "ai_provider_var") else "ollama",
                 "claude_api_key": getattr(self, "claude_api_key_var", tk.StringVar()).get()
                                   if hasattr(self, "claude_api_key_var") else "",
-                "ollama_model":   "mistral",
+                "ollama_model":   self.ollama_model_var.get().strip() or "mistral"
+                                  if hasattr(self, "ollama_model_var") else "mistral",
             }
 
             with open(cfg_path, "w", encoding="utf-8") as f:
