@@ -50,9 +50,14 @@ def move_file_with_retries(
     delay: int = 2,
     classification_method: str = "extension",
     smart_source: str = "",
+    category_override: str | None = None,
 ) -> None:
     """Attempt to move the file with retries, hash-based duplicate check, and date archiving."""
-    category = get_file_category(source_file, extension_lookup)
+    category = (
+        category_override
+        if category_override is not None
+        else get_file_category(source_file, extension_lookup)
+    )
 
     logging.debug(f"Processing: {source_file.name} | suffix: {source_file.suffix!r} | category: {category}")
 

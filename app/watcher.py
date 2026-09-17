@@ -125,30 +125,38 @@ class NewFileHandler(FileSystemEventHandler):
                     classification_method = "smart"
                     smart_source = "content_or_filename"
 
-            # 3) AI Classifier (fallback when smart + extension both miss)
-            if not final_category:
-                try:
-                    from app.ai_classifier import get_ai_classifier
-                    ai = get_ai_classifier(self.config)
-                    if ai.is_enabled and ai.is_available():
-                        categories = list(self.rules.keys())
-                        ai_result = ai.classify(source_path.name, categories)
-                        if ai_result.ok:
-                            logging.info(f"AI classified: {source_path.name} → {ai_result.category} ({ai_result.reason})")
-                            final_category = ai_result.category
-                            classification_method = "ai"
-                            smart_source = f"{ai_result.provider}:{ai_result.reason[:40]}"
-                except Exception as ai_err:
-                    logging.debug(f"AI classifier skipped: {ai_err}")
+            # 3) Configured extension rule
+            suffix = source_path.suffix.lower().strip()
+            if not final_category and suffix in self.extension_lookup:
+                final_category = self.extension_lookup[suffix]
 
-            # 3) إنشاء مجلد فئة جديدة إذا لزم
+            # 4) AI Classifier (fallback when plugin, smart, and extension miss)
+            if not final_category:
+                ai_enabled = self.config.get("ai", {}).get("enabled") is True
+                if ai_enabled:
+                    try:
+                        from app.ai_classifier import get_ai_classifier
+                        ai = get_ai_classifier(self.config)
+                        categories = list(self.rules.keys())
+                        if ai.is_enabled and ai.is_available():
+                            ai_result = ai.classify(source_path.name, categories)
+                            if ai_result.ok and ai_result.category in categories:
+                                logging.info(f"AI classified: {source_path.name} → {ai_result.category} ({ai_result.reason})")
+                                final_category = ai_result.category
+                                classification_method = "ai"
+                                smart_source = f"{ai_result.provider}:{ai_result.reason[:40]}"
+                    except Exception as ai_err:
+                        logging.debug(f"AI classifier skipped: {ai_err}")
+
+            # 5) Others
+            if not final_category:
+                final_category = "others"
+
+            # إنشاء مجلد فئة جديدة إذا لزم
             if final_category and final_category not in self.destination_folders:
                 new_folder = Path(self.destination_folders["others"]).parent / final_category
                 new_folder.mkdir(parents=True, exist_ok=True)
                 self.destination_folders[final_category] = str(new_folder)
-
-            if final_category:
-                self.extension_lookup[source_path.suffix.lower()] = final_category
 
             move_file_with_retries(
                 source_file=source_path,
@@ -163,6 +171,7 @@ class NewFileHandler(FileSystemEventHandler):
                 delay=2,
                 classification_method=classification_method,
                 smart_source=smart_source,
+                category_override=final_category,
             )
             status = "moved"
 
