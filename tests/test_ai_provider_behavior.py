@@ -12,6 +12,7 @@ from app.ai_classifier import (
     reset_ai_classifier,
 )
 from app.ai_document_analyzer import AIDocumentAnalyzer, DocumentAnalysis
+from app.ai_service import AIService
 
 
 class ImmediateThread:
@@ -28,10 +29,11 @@ class AIProviderBehaviorTests(unittest.TestCase):
         reset_ai_classifier()
 
     @staticmethod
-    def _provider(available, response="", failure=None):
+    def _provider(name, is_cloud, available, response="", failure=None):
         provider = MagicMock()
-        provider.is_available.return_value = available
-        provider._timeout = 30
+        provider.name = name
+        provider.is_cloud = is_cloud
+        provider.is_ready.return_value = available
         if failure is not None:
             provider.chat.side_effect = failure
         else:
@@ -48,21 +50,22 @@ class AIProviderBehaviorTests(unittest.TestCase):
         ollama_failure=None,
         claude_failure=None,
     ):
-        classifier = AIClassifier(
-            provider=selected,
-            claude_api_key="sk-ant-test",
-        )
-        classifier._ollama = self._provider(
+        self.ollama = self._provider(
+            "ollama",
+            False,
             ollama_available,
             ollama_response,
             ollama_failure,
         )
-        classifier._claude = self._provider(
+        self.claude = self._provider(
+            "claude",
+            True,
             claude_available,
             claude_response,
             claude_failure,
         )
-        return classifier
+        service = AIService(selected, self.ollama, self.claude)
+        return AIClassifier(service=service)
 
     def test_provider_selection_and_fallback_matrix(self):
         cases = [
@@ -87,6 +90,15 @@ class AIProviderBehaviorTests(unittest.TestCase):
 
                 self.assertEqual(classifier.get_active_provider(), expected)
                 self.assertEqual(classifier.is_available(), expected != "none")
+                selected_available = (
+                    ollama_available
+                    if selected == "ollama"
+                    else claude_available if selected == "claude" else False
+                )
+                self.assertEqual(
+                    classifier.is_provider_available(),
+                    selected_available,
+                )
 
     def test_missing_and_unknown_provider_configuration_use_safe_ollama_default(self):
         default_classifier = get_ai_classifier({})
@@ -95,7 +107,7 @@ class AIProviderBehaviorTests(unittest.TestCase):
         unknown_classifier = self._classifier(selected="unexpected")
         self.assertEqual(unknown_classifier.get_active_provider(), "ollama")
 
-        unknown_classifier._ollama.is_available.return_value = False
+        self.ollama.is_ready.return_value = False
         self.assertEqual(unknown_classifier.get_active_provider(), "none")
 
     def test_classify_parses_success_and_reports_provider_actually_used(self):
@@ -118,8 +130,14 @@ class AIProviderBehaviorTests(unittest.TestCase):
         self.assertEqual(result.reason, "Quarterly figures detected")
         self.assertFalse(result.confident)
         self.assertEqual(result.provider, "ollama")
-        classifier._ollama.chat.assert_called_once()
-        classifier._claude.chat.assert_not_called()
+        self.ollama.chat.assert_called_once()
+        prompt = self.ollama.chat.call_args.args[0]
+        self.assertIn("Filename: quarterly.txt", prompt)
+        self.assertEqual(
+            self.ollama.chat.call_args.kwargs,
+            {"timeout": 30, "max_output_tokens": 300},
+        )
+        self.claude.chat.assert_not_called()
 
     def test_classify_malformed_response_returns_failed_result(self):
         classifier = self._classifier(ollama_response="not JSON")
@@ -135,15 +153,37 @@ class AIProviderBehaviorTests(unittest.TestCase):
 
     def test_classify_provider_failure_returns_failed_result(self):
         classifier = self._classifier(
-            ollama_failure=RuntimeError("provider request failed")
+            selected="claude",
+            claude_failure=RuntimeError("provider request failed"),
         )
 
         result = classifier.classify("unknown.bin")
 
         self.assertIsInstance(result, AIResult)
         self.assertFalse(result.ok)
-        self.assertEqual(result.provider, "ollama")
+        self.assertEqual(result.provider, "claude")
         self.assertEqual(result.error, "provider request failed")
+        self.claude.chat.assert_called_once()
+        self.ollama.chat.assert_not_called()
+
+    def test_classify_unavailable_service_returns_failed_result(self):
+        classifier = self._classifier(
+            selected="claude",
+            ollama_available=False,
+            claude_available=False,
+        )
+
+        result = classifier.classify("unknown.bin")
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.provider, "none")
+        self.assertEqual(result.reason, "No AI provider available")
+        self.assertEqual(
+            result.error,
+            "Ollama not running or Claude API key not set",
+        )
+        self.claude.chat.assert_not_called()
+        self.ollama.chat.assert_not_called()
 
     @patch("app.ai_classifier.threading.Thread", ImmediateThread)
     def test_suggest_rules_parses_valid_response_and_preserves_reasoning(self):
@@ -160,7 +200,15 @@ class AIProviderBehaviorTests(unittest.TestCase):
         )
         callback = MagicMock()
 
-        classifier.suggest_rules([{"filename": "receipt.pdf"}], callback)
+        history = [
+            {
+                "filename": f"receipt-{index}.pdf",
+                "category": "receipts",
+                "classification_method": "smart",
+            }
+            for index in range(55)
+        ]
+        classifier.suggest_rules(history, callback)
 
         suggestions, error = callback.call_args.args
         self.assertIsNone(error)
@@ -171,8 +219,16 @@ class AIProviderBehaviorTests(unittest.TestCase):
         self.assertEqual(suggestions[0].extensions, [".pdf"])
         self.assertEqual(suggestions[0].reason, "Repeated receipt filenames")
         self.assertEqual(suggestions[0].confidence, 0.95)
-        classifier._claude.chat.assert_called_once()
-        classifier._ollama.chat.assert_not_called()
+        self.claude.chat.assert_called_once()
+        prompt = self.claude.chat.call_args.args[0]
+        self.assertNotIn("receipt-4.pdf", prompt)
+        self.assertIn("receipt-5.pdf", prompt)
+        self.assertIn("receipt-54.pdf", prompt)
+        self.assertEqual(
+            self.claude.chat.call_args.kwargs,
+            {"timeout": 30, "max_output_tokens": 800},
+        )
+        self.ollama.chat.assert_not_called()
 
     @patch("app.ai_classifier.threading.Thread", ImmediateThread)
     def test_suggest_rules_malformed_response_fails_safely(self):
@@ -227,7 +283,8 @@ class AIProviderBehaviorTests(unittest.TestCase):
         self.assertEqual(result.category, "invoices")
         self.assertEqual(result.provider, "ollama")
         self.assertEqual(result.key_dates[0].label, "Payment due")
-        classifier._ollama.chat.assert_called_once()
+        self.ollama.chat.assert_called_once()
+        self.assertEqual(self.ollama.chat.call_args.kwargs, {"timeout": 120})
 
     def test_manual_analysis_malformed_response_returns_failed_result(self):
         classifier = self._classifier(ollama_response="not JSON")

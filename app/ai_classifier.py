@@ -16,18 +16,14 @@ from __future__ import annotations
 import json
 import logging
 import threading
-from dataclasses import dataclass, field
-from pathlib import Path
+from dataclasses import dataclass
 from typing import Callable
-from urllib import request, error as url_error
+
+from app.ai_service import AIProvider, AIService, OLLAMA_MODEL, create_ai_service
 
 logger = logging.getLogger(__name__)
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-OLLAMA_BASE_URL  = "http://localhost:11434"
-OLLAMA_MODEL     = "mistral"
-CLAUDE_API_URL   = "https://api.anthropic.com/v1/messages"
-CLAUDE_MODEL     = "claude-haiku-4-5-20251001"
 REQUEST_TIMEOUT  = 30
 
 
@@ -101,72 +97,20 @@ Based on patterns you see, suggest 3-5 new smart rules. Return ONLY a JSON array
 Focus on patterns not already covered by extension rules. Be specific and practical."""
 
 
-# ── Providers ─────────────────────────────────────────────────────────────────
+# ── Temporary document-analyzer compatibility ─────────────────────────────────
 
-class OllamaProvider:
-    """Local AI via Ollama — free, private, no internet needed."""
+class _LegacyProviderBridge:
+    """Adapt an AIService provider for AIDocumentAnalyzer until Patch 3B-3."""
 
-    def __init__(self, model: str = OLLAMA_MODEL, base_url: str = OLLAMA_BASE_URL) -> None:
-        self.model    = model
-        self.base_url = base_url.rstrip("/")
-        self._timeout = REQUEST_TIMEOUT  # Can be overridden for long tasks
-
-    def is_available(self) -> bool:
-        try:
-            req = request.Request(f"{self.base_url}/api/tags")
-            with request.urlopen(req, timeout=3):
-                return True
-        except Exception:
-            return False
-
-    def chat(self, prompt: str) -> str:
-        payload = json.dumps({
-            "model":  self.model,
-            "prompt": prompt,
-            "stream": False,
-        }).encode("utf-8")
-
-        req = request.Request(
-            f"{self.base_url}/api/generate",
-            data=payload,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with request.urlopen(req, timeout=self._timeout) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            return data.get("response", "").strip()
-
-
-class ClaudeProvider:
-    """Cloud AI via Anthropic Claude API."""
-
-    def __init__(self, api_key: str, model: str = CLAUDE_MODEL) -> None:
-        self.api_key = api_key
-        self.model   = model
+    def __init__(self, provider: AIProvider) -> None:
+        self._provider = provider
+        self._timeout = REQUEST_TIMEOUT
 
     def is_available(self) -> bool:
-        return bool(self.api_key and self.api_key.startswith("sk-ant-"))
+        return self._provider.is_ready()
 
     def chat(self, prompt: str) -> str:
-        payload = json.dumps({
-            "model":      self.model,
-            "max_tokens": 300,
-            "messages":   [{"role": "user", "content": prompt}],
-        }).encode("utf-8")
-
-        req = request.Request(
-            CLAUDE_API_URL,
-            data=payload,
-            headers={
-                "Content-Type":      "application/json",
-                "x-api-key":         self.api_key,
-                "anthropic-version": "2023-06-01",
-            },
-            method="POST",
-        )
-        with request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            return data["content"][0]["text"].strip()
+        return self._provider.chat(prompt, timeout=self._timeout)
 
 
 # ── Main AIClassifier ─────────────────────────────────────────────────────────
@@ -182,10 +126,27 @@ class AIClassifier:
         provider: str = "ollama",
         claude_api_key: str = "",
         ollama_model: str = OLLAMA_MODEL,
+        service: AIService | None = None,
     ) -> None:
-        self.provider_name = provider
-        self._ollama = OllamaProvider(model=ollama_model)
-        self._claude = ClaudeProvider(api_key=claude_api_key) if claude_api_key else None
+        self._service = service or create_ai_service({
+            "provider": provider,
+            "claude_api_key": claude_api_key,
+            "ollama_model": ollama_model,
+        })
+        self.provider_name = self._service.selected_provider
+
+        # AIDocumentAnalyzer still uses these private attributes and mutates
+        # _timeout. Remove this bridge when it moves to AIService in Patch 3B-3.
+        self._ollama = (
+            _LegacyProviderBridge(self._service.ollama_provider)
+            if self._service.ollama_provider is not None
+            else None
+        )
+        self._claude = (
+            _LegacyProviderBridge(self._service.claude_provider)
+            if self._service.claude_provider is not None
+            else None
+        )
         self._enabled = True
 
     @property
@@ -200,22 +161,14 @@ class AIClassifier:
 
     def get_active_provider(self) -> str:
         """Return name of the currently active provider."""
-        if self.provider_name == "claude" and self.is_provider_available():
-            return "claude"
-        if self._ollama.is_available():
-            return "ollama"
-        return "none"
+        return self._service.get_active_provider_name()
 
     def is_provider_available(self) -> bool:
         """Return whether the selected provider is currently available."""
-        if self.provider_name == "claude":
-            return bool(self._claude and self._claude.is_available())
-        if self.provider_name == "ollama":
-            return self._ollama.is_available()
-        return False
+        return self._service.is_selected_provider_ready()
 
     def is_available(self) -> bool:
-        return self.get_active_provider() != "none"
+        return self._service.is_available()
 
     # ── Classification ────────────────────────────────────────────────────────
 
@@ -238,14 +191,16 @@ class AIClassifier:
 
         try:
             prompt   = _build_classify_prompt(filename, categories or [])
-            backend  = self._claude if provider == "claude" else self._ollama
-            response = backend.chat(prompt)
-            return self._parse_classify_response(filename, response, provider)
-
-        except url_error.URLError as e:
-            msg = f"Network error: {e.reason}"
-            logger.warning(f"AI classify failed: {msg}")
-            return AIResult(filename, None, msg, provider, error=msg)
+            response = self._service.chat(
+                prompt,
+                timeout=REQUEST_TIMEOUT,
+                max_output_tokens=300,
+            )
+            return self._parse_classify_response(
+                filename,
+                response.text,
+                response.provider,
+            )
         except Exception as e:
             msg = str(e)
             logger.error(f"AI classify error: {msg}")
@@ -281,9 +236,12 @@ class AIClassifier:
                 return
             try:
                 prompt   = _build_suggest_prompt(history)
-                backend  = self._claude if provider == "claude" else self._ollama
-                response = backend.chat(prompt)
-                suggestions = self._parse_suggestions(response)
+                response = self._service.chat(
+                    prompt,
+                    timeout=REQUEST_TIMEOUT,
+                    max_output_tokens=800,
+                )
+                suggestions = self._parse_suggestions(response.text)
                 on_done(suggestions, None)
             except Exception as e:
                 on_done([], str(e))

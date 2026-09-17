@@ -2,9 +2,10 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 from app.ai_classifier import get_ai_classifier, reset_ai_classifier
+from app.ai_service import create_ai_service
 from app.gui_actions import ActionsMixin
 
 
@@ -136,40 +137,58 @@ class AISettingsRuntimeTests(unittest.TestCase):
         self.assertEqual(gui.ollama_model_var.get(), "mistral")
 
     def test_classifier_reset_rebuilds_from_new_ai_configuration(self):
-        first = get_ai_classifier(
-            {
-                "ai": {
+        with patch(
+            "app.ai_classifier.create_ai_service",
+            wraps=create_ai_service,
+        ) as service_factory:
+            first = get_ai_classifier(
+                {
+                    "ai": {
+                        "provider": "claude",
+                        "claude_api_key": "sk-ant-first",
+                        "ollama_model": "first-model",
+                    }
+                }
+            )
+
+            reset_ai_classifier()
+            second = get_ai_classifier(
+                {
+                    "ai": {
+                        "provider": "ollama",
+                        "claude_api_key": "",
+                        "ollama_model": "second-model",
+                    }
+                }
+            )
+
+        self.assertIsNot(first, second)
+        self.assertEqual(first.provider_name, "claude")
+        self.assertEqual(second.provider_name, "ollama")
+        self.assertEqual(
+            service_factory.call_args_list,
+            [
+                call({
                     "provider": "claude",
                     "claude_api_key": "sk-ant-first",
                     "ollama_model": "first-model",
-                }
-            }
-        )
-
-        reset_ai_classifier()
-        second = get_ai_classifier(
-            {
-                "ai": {
+                }),
+                call({
                     "provider": "ollama",
                     "claude_api_key": "",
                     "ollama_model": "second-model",
-                }
-            }
+                }),
+            ],
         )
-
-        self.assertIsNot(first, second)
-        self.assertEqual(second.provider_name, "ollama")
-        self.assertEqual(second._ollama.model, "second-model")
-        self.assertIsNone(second._claude)
 
     def test_selected_provider_availability_is_distinct_from_fallback(self):
         classifier = get_ai_classifier(
             {"ai": {"provider": "claude", "claude_api_key": ""}}
         )
-        classifier._ollama.is_available = MagicMock(return_value=True)
 
-        self.assertFalse(classifier.is_provider_available())
-        self.assertTrue(classifier.is_available())
+        with patch("app.ai_service.OllamaProvider.is_ready", return_value=True):
+            self.assertFalse(classifier.is_provider_available())
+            self.assertTrue(classifier.is_available())
 
     def _make_save_gui(self):
         gui = object.__new__(ActionsMixin)
