@@ -459,7 +459,14 @@ class ActionsMixin:
             self.history_empty_label.pack_forget()
             for row in filtered_rows:
                 status = row.get("status", "")
-                tag = status if status in ("moved", "duplicate_skipped", "failed", "disappeared") else ""
+                tag = status if status in (
+                    "moved",
+                    "duplicate",
+                    "duplicate_skipped",
+                    "hash_check_failed",
+                    "failed",
+                    "disappeared",
+                ) else ""
                 self.history_tree.insert(
                     "",
                     tk.END,

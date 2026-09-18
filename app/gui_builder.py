@@ -1100,7 +1100,9 @@ class BuilderMixin:
 
         # Status tag colors
         self.history_tree.tag_configure("moved",            foreground=self.colors["stat_green"])
+        self.history_tree.tag_configure("duplicate",        foreground=self.colors["stat_amber"])
         self.history_tree.tag_configure("duplicate_skipped", foreground=self.colors["stat_amber"])
+        self.history_tree.tag_configure("hash_check_failed", foreground=self.colors["stat_red"])
         self.history_tree.tag_configure("failed",           foreground=self.colors["stat_red"])
         self.history_tree.tag_configure("disappeared",      foreground=self.colors["muted"])
 

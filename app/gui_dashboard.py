@@ -268,7 +268,9 @@ def build_dashboard_page(self):
 
     # Status colors
     self.recent_activity_tree.tag_configure("moved",             foreground=self.colors["stat_green"])
+    self.recent_activity_tree.tag_configure("duplicate",         foreground=self.colors["stat_amber"])
     self.recent_activity_tree.tag_configure("duplicate_skipped", foreground=self.colors["stat_amber"])
+    self.recent_activity_tree.tag_configure("hash_check_failed", foreground=self.colors["stat_red"])
     self.recent_activity_tree.tag_configure("failed",            foreground=self.colors["stat_red"])
 
     self.recent_activity_tree.pack(fill="both", expand=True)
@@ -477,13 +479,21 @@ def refresh_recent_activity_view(self):
 
     status_colors = {
         "moved":             self.colors["stat_green"],
+        "duplicate":         self.colors["stat_amber"],
         "duplicate_skipped": self.colors["stat_amber"],
+        "hash_check_failed": self.colors["stat_red"],
         "failed":            self.colors["stat_red"],
     }
 
     for row in display_rows_rev:
         status = row.get("status", "")
-        tag = status if status in ("moved", "duplicate_skipped", "failed") else ""
+        tag = status if status in (
+            "moved",
+            "duplicate",
+            "duplicate_skipped",
+            "hash_check_failed",
+            "failed",
+        ) else ""
         self.recent_activity_tree.insert(
             "", tk.END,
             values=(

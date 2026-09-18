@@ -1,12 +1,35 @@
 import logging
 import shutil
 import time
+from dataclasses import dataclass
 from datetime import datetime
+from enum import Enum
 from pathlib import Path
 
 from app.classifier import get_file_category
 from app.stats import update_stats, append_history
-from app.hash_manager import is_duplicate_file, register_file_hash, get_existing_file_path
+from app.hash_manager import (
+    calculate_file_hash,
+    get_verified_file_path,
+    hash_operation,
+    register_file_hash,
+)
+
+
+class MoveStatus(Enum):
+    MOVED = "moved"
+    DUPLICATE = "duplicate"
+    HASH_CHECK_FAILED = "hash_check_failed"
+    MOVE_FAILED = "failed"
+
+
+@dataclass(frozen=True)
+class MoveResult:
+    status: MoveStatus
+    source: Path
+    destination: Path | None = None
+    duplicate_of: Path | None = None
+    error: str | None = None
 
 
 def generate_unique_destination(destination_path: Path) -> Path:
@@ -51,7 +74,7 @@ def move_file_with_retries(
     classification_method: str = "extension",
     smart_source: str = "",
     category_override: str | None = None,
-) -> None:
+) -> MoveResult:
     """Attempt to move the file with retries, hash-based duplicate check, and date archiving."""
     category = (
         category_override
@@ -67,81 +90,149 @@ def move_file_with_retries(
     if not source_file.exists():
         logging.warning(f"File no longer exists before hashing: {source_file}")
         append_history(history_file, source_file.name, category, "disappeared")
-        return
+        return MoveResult(
+            MoveStatus.MOVE_FAILED,
+            source_file,
+            error="Source file disappeared before hashing",
+        )
 
     try:
-        duplicate, file_hash = is_duplicate_file(source_file, hash_db_file)
-
-        if duplicate:
-            existing_path = get_existing_file_path(file_hash, hash_db_file)
-            logging.info(
-                f"Duplicate skipped: {source_file.name} | category: {category} | existing: {existing_path}"
-            )
-            append_history(
-                history_file,
-                source_file.name,
-                category,
-                "duplicate_skipped",
-                classification_method,
-                smart_source,
-            )
-            source_file.unlink(missing_ok=True)
-            return
-
+        file_hash = calculate_file_hash(source_file)
     except Exception as error:
         logging.error(f"Hash check failed for {source_file.name}: {error}")
         append_history(history_file, source_file.name, category, "hash_check_failed")
-        return
+        return MoveResult(MoveStatus.HASH_CHECK_FAILED, source_file, error=str(error))
 
     base_destination_dir = Path(destination_folders[category])
     destination_dir = get_dated_destination_dir(base_destination_dir, archive_by_date)
-    destination_dir.mkdir(parents=True, exist_ok=True)
-
-    destination_file = destination_dir / source_file.name
-    final_destination = generate_unique_destination(destination_file)
-
     last_error = None
+    result: MoveResult | None = None
+    failure_history_status = "failed"
 
-    for attempt in range(1, retries + 1):
-        try:
-            if not source_file.exists():
-                logging.warning(f"File disappeared before move (attempt {attempt}): {source_file}")
-                append_history(history_file, source_file.name, category, "disappeared")
-                return
+    try:
+        with hash_operation(file_hash):
+            existing_path = get_verified_file_path(file_hash, hash_db_file)
+            if existing_path is not None:
+                result = MoveResult(
+                    MoveStatus.DUPLICATE,
+                    source_file,
+                    duplicate_of=Path(existing_path),
+                )
+            else:
+                try:
+                    destination_dir.mkdir(parents=True, exist_ok=True)
+                    destination_file = destination_dir / source_file.name
+                    final_destination = generate_unique_destination(destination_file)
+                except Exception as error:
+                    last_error = error
+                    result = MoveResult(
+                        MoveStatus.MOVE_FAILED,
+                        source_file,
+                        error=str(error),
+                    )
+                else:
+                    for attempt in range(1, retries + 1):
+                        if not source_file.exists():
+                            last_error = FileNotFoundError(
+                                f"Source file disappeared before move: {source_file}"
+                            )
+                            failure_history_status = "disappeared"
+                            logging.warning(
+                                f"File disappeared before move (attempt {attempt}): {source_file}"
+                            )
+                            result = MoveResult(
+                                MoveStatus.MOVE_FAILED,
+                                source_file,
+                                error=str(last_error),
+                            )
+                            break
 
-            shutil.move(str(source_file), str(final_destination))
+                        try:
+                            shutil.move(str(source_file), str(final_destination))
+                        except PermissionError as error:
+                            last_error = error
+                            logging.debug(
+                                f"PermissionError (attempt {attempt}/{retries}): {source_file.name}"
+                            )
+                        except OSError as error:
+                            last_error = error
+                            logging.debug(
+                                f"OSError (attempt {attempt}/{retries}): {source_file.name}"
+                            )
+                        except Exception as error:
+                            last_error = error
+                            logging.debug(
+                                f"Unexpected error (attempt {attempt}/{retries}): {source_file.name}"
+                            )
+                        else:
+                            try:
+                                register_file_hash(
+                                    file_hash,
+                                    str(final_destination),
+                                    hash_db_file,
+                                )
+                            except Exception as error:
+                                last_error = error
+                                result = MoveResult(
+                                    MoveStatus.MOVE_FAILED,
+                                    source_file,
+                                    destination=final_destination,
+                                    error=str(error),
+                                )
+                            else:
+                                result = MoveResult(
+                                    MoveStatus.MOVED,
+                                    source_file,
+                                    destination=final_destination,
+                                )
+                            break
 
-            append_history(
-                history_file,
-                source_file.name,
-                category,
-                "moved",
-                classification_method,
-                smart_source,
-            )
-            register_file_hash(file_hash, str(final_destination), hash_db_file)
-            update_stats(stats_file, category, rules, success=True)
+                        if attempt < retries:
+                            time.sleep(delay)
 
-            logging.info(
-                f"Moved: {source_file.name} → {final_destination} | category: {category} | method: {classification_method}"
-            )
-            return
+                    if result is None:
+                        result = MoveResult(
+                            MoveStatus.MOVE_FAILED,
+                            source_file,
+                            error=str(last_error) if last_error is not None else "No move attempts were made",
+                        )
+    except Exception as error:
+        last_error = error
+        result = MoveResult(MoveStatus.MOVE_FAILED, source_file, error=str(error))
 
-        except PermissionError as error:
-            last_error = error
-            logging.debug(f"PermissionError (attempt {attempt}/{retries}): {source_file.name}")
-            time.sleep(delay)
+    if result.status is MoveStatus.DUPLICATE:
+        logging.info(
+            f"Duplicate retained: {source_file.name} | category: {category} | existing: {result.duplicate_of}"
+        )
+        append_history(
+            history_file,
+            source_file.name,
+            category,
+            "duplicate_skipped",
+            classification_method,
+            smart_source,
+        )
+        return result
 
-        except OSError as error:
-            last_error = error
-            logging.debug(f"OSError (attempt {attempt}/{retries}): {source_file.name}")
-            time.sleep(delay)
+    if result.status is MoveStatus.MOVED:
+        append_history(
+            history_file,
+            source_file.name,
+            category,
+            "moved",
+            classification_method,
+            smart_source,
+        )
+        update_stats(stats_file, category, rules, success=True)
+        logging.info(
+            f"Moved: {source_file.name} → {result.destination} | category: {category} | method: {classification_method}"
+        )
+        return result
 
-        except Exception as error:
-            last_error = error
-            logging.debug(f"Unexpected error (attempt {attempt}/{retries}): {source_file.name}")
-            time.sleep(delay)
-
-    logging.error(f"Failed to move after {retries} retries: {source_file.name} | error: {last_error}")
-    update_stats(stats_file, category, rules, success=False)
-    append_history(history_file, source_file.name, category, "failed")
+    logging.error(
+        f"Failed to move after {retries} retries: {source_file.name} | error: {last_error}"
+    )
+    if failure_history_status == "failed":
+        update_stats(stats_file, category, rules, success=False)
+    append_history(history_file, source_file.name, category, failure_history_status)
+    return result

@@ -70,7 +70,14 @@ class MonitoringMixin:
             # Update notifications count
             self.notifications_count_var.set(str(self.notification_center.count()))
 
-            icon = {"moved": "✔", "error": "✖", "unknown": "•"}.get(status, "•")
+            icon = {
+                "moved": "✔",
+                "duplicate": "•",
+                "hash_check_failed": "✖",
+                "failed": "✖",
+                "error": "✖",
+                "unknown": "•",
+            }.get(status, "•")
             self.status_bar_var.set(f"{icon} Processed: {filename} → {category}")
 
             # Send tray notification when app is hidden
@@ -120,7 +127,9 @@ class MonitoringMixin:
             # Status color
             status_colors = {
                 "moved":             self.colors["stat_green"],
+                "duplicate":         self.colors["stat_amber"],
                 "duplicate_skipped": self.colors["stat_amber"],
+                "hash_check_failed": self.colors["stat_red"],
                 "failed":            self.colors["stat_red"],
                 "disappeared":       self.colors["muted"],
             }

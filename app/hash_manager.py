@@ -1,7 +1,9 @@
 import hashlib
 import json
 import threading
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator
 
 # ---- Module-level cache ----
 # Instead of reading hash_db.json from disk on every file,
@@ -10,6 +12,8 @@ from pathlib import Path
 _cache: dict | None = None
 _cache_path: str | None = None
 _cache_lock = threading.Lock()
+_hash_operation_locks: dict[str, tuple[threading.Lock, int]] = {}
+_hash_operation_locks_guard = threading.Lock()
 
 
 def ensure_hash_db(hash_db_file: str) -> None:
@@ -72,15 +76,67 @@ def calculate_file_hash(file_path: Path, chunk_size: int = 65536) -> str:
     return sha256.hexdigest()
 
 
+@contextmanager
+def hash_operation(file_hash: str) -> Iterator[None]:
+    """Serialize duplicate decisions and commits for one hash in this process."""
+    with _hash_operation_locks_guard:
+        entry = _hash_operation_locks.get(file_hash)
+        if entry is None:
+            lock = threading.Lock()
+            users = 0
+        else:
+            lock, users = entry
+        _hash_operation_locks[file_hash] = (lock, users + 1)
+
+    try:
+        with lock:
+            yield
+    finally:
+        with _hash_operation_locks_guard:
+            current_lock, users = _hash_operation_locks[file_hash]
+            if users == 1:
+                del _hash_operation_locks[file_hash]
+            else:
+                _hash_operation_locks[file_hash] = (current_lock, users - 1)
+
+
+def _remove_stale_hash(file_hash: str, indexed_path: object, hash_db_file: str) -> None:
+    """Remove an index entry only if it still points to the path we checked."""
+    with _cache_lock:
+        db = _get_cache(hash_db_file)
+        if db.get(file_hash) == indexed_path:
+            del db[file_hash]
+            _flush_to_disk(hash_db_file)
+
+
+def get_verified_file_path(file_hash: str, hash_db_file: str) -> str | None:
+    """Return the indexed path only when it is still a readable matching file."""
+    with _cache_lock:
+        indexed_path = _get_cache(hash_db_file).get(file_hash)
+
+    if indexed_path is None:
+        return None
+
+    try:
+        path = Path(indexed_path)
+        if not path.is_file() or calculate_file_hash(path) != file_hash:
+            _remove_stale_hash(file_hash, indexed_path, hash_db_file)
+            return None
+    except Exception:
+        # An unverifiable old destination cannot prove that the incoming file is a duplicate.
+        _remove_stale_hash(file_hash, indexed_path, hash_db_file)
+        return None
+
+    return str(path)
+
+
 def is_duplicate_file(file_path: Path, hash_db_file: str) -> tuple[bool, str]:
     """
     Check whether the file is a duplicate.
     Returns (True, file_hash) if duplicate, (False, file_hash) otherwise.
     """
     file_hash = calculate_file_hash(file_path)
-    with _cache_lock:
-        db = _get_cache(hash_db_file)
-        return file_hash in db, file_hash
+    return get_verified_file_path(file_hash, hash_db_file) is not None, file_hash
 
 
 def register_file_hash(file_hash: str, stored_path: str, hash_db_file: str) -> None:

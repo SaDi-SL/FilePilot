@@ -4,6 +4,7 @@ import json
 import tempfile
 import threading
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -12,7 +13,7 @@ from app.stats import ensure_stats_file
 from app.watcher import NewFileHandler
 
 
-class DuplicateSafetyCharacterizationTests(unittest.TestCase):
+class DuplicateSafetyRegressionTests(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.root = Path(self.temp_dir.name)
@@ -103,6 +104,8 @@ class DuplicateSafetyCharacterizationTests(unittest.TestCase):
     def test_known_hash_is_duplicate_and_lookup_returns_recorded_path(self):
         source = self._source(content="same content")
         indexed_path = self.documents / "stored.txt"
+        indexed_path.parent.mkdir(parents=True)
+        indexed_path.write_text("same content", encoding="utf-8")
         file_hash = self._register_source_hash(source, indexed_path)
 
         result = hash_manager.is_duplicate_file(source, str(self.hash_db_file))
@@ -116,8 +119,7 @@ class DuplicateSafetyCharacterizationTests(unittest.TestCase):
             str(indexed_path),
         )
 
-    def test_current_stale_hash_is_treated_as_duplicate(self):
-        """Legacy behavior: a missing indexed path is not revalidated."""
+    def test_stale_hash_is_not_duplicate_and_is_removed(self):
         source = self._source(content="only remaining copy")
         missing_path = self.documents / "missing.txt"
         file_hash = self._register_source_hash(source, missing_path)
@@ -125,10 +127,13 @@ class DuplicateSafetyCharacterizationTests(unittest.TestCase):
         result = hash_manager.is_duplicate_file(source, str(self.hash_db_file))
 
         self.assertFalse(missing_path.exists())
-        self.assertEqual(result, (True, file_hash))
+        self.assertEqual(result, (False, file_hash))
+        self.assertNotIn(
+            file_hash,
+            hash_manager.load_hash_db(str(self.hash_db_file)),
+        )
 
-    def test_current_changed_indexed_file_is_not_revalidated(self):
-        """Legacy behavior: only the incoming hash and index key are checked."""
+    def test_changed_indexed_file_is_not_duplicate_and_is_removed(self):
         source = self._source(content="content A")
         indexed_path = self.documents / "indexed.txt"
         indexed_path.parent.mkdir(parents=True)
@@ -138,10 +143,36 @@ class DuplicateSafetyCharacterizationTests(unittest.TestCase):
 
         result = hash_manager.is_duplicate_file(source, str(self.hash_db_file))
 
-        self.assertEqual(result, (True, file_hash))
+        self.assertEqual(result, (False, file_hash))
         self.assertNotEqual(
             hash_manager.calculate_file_hash(indexed_path),
             file_hash,
+        )
+        self.assertNotIn(
+            file_hash,
+            hash_manager.load_hash_db(str(self.hash_db_file)),
+        )
+
+    def test_unverifiable_indexed_file_is_not_duplicate_and_is_removed(self):
+        source = self._source(content="content A")
+        indexed_path = self.documents / "indexed.txt"
+        indexed_path.parent.mkdir(parents=True)
+        indexed_path.write_text("content A", encoding="utf-8")
+        file_hash = self._register_source_hash(source, indexed_path)
+
+        with patch(
+            "app.hash_manager.calculate_file_hash",
+            side_effect=PermissionError("simulated unreadable destination"),
+        ):
+            existing_path = hash_manager.get_verified_file_path(
+                file_hash,
+                str(self.hash_db_file),
+            )
+
+        self.assertIsNone(existing_path)
+        self.assertNotIn(
+            file_hash,
+            hash_manager.load_hash_db(str(self.hash_db_file)),
         )
 
     def test_register_file_hash_updates_memory_and_disk(self):
@@ -185,13 +216,15 @@ class DuplicateSafetyCharacterizationTests(unittest.TestCase):
 
     # Mover behavior
 
-    def test_successful_move_removes_source_preserves_content_and_returns_none(self):
+    def test_successful_move_removes_source_preserves_content_and_returns_result(self):
         source = self._source(content="move me")
 
         result = self._move(source)
 
         destination = self.documents / source.name
-        self.assertIsNone(result)
+        self.assertEqual(result.status, mover.MoveStatus.MOVED)
+        self.assertEqual(result.source, source)
+        self.assertEqual(result.destination, destination)
         self.assertFalse(source.exists())
         self.assertEqual(destination.read_text(encoding="utf-8"), "move me")
         self.assertEqual(self._history()[0]["status"], "moved")
@@ -205,8 +238,7 @@ class DuplicateSafetyCharacterizationTests(unittest.TestCase):
             str(destination),
         )
 
-    def test_current_verified_duplicate_source_is_permanently_deleted(self):
-        """Legacy behavior: even a verified duplicate is handled by unlink."""
+    def test_verified_duplicate_source_is_retained(self):
         source = self._source(content="duplicate content")
         indexed_path = self.documents / "existing.txt"
         indexed_path.parent.mkdir(parents=True)
@@ -216,8 +248,10 @@ class DuplicateSafetyCharacterizationTests(unittest.TestCase):
 
         result = self._move(source)
 
-        self.assertIsNone(result)
-        self.assertFalse(source.exists())
+        self.assertEqual(result.status, mover.MoveStatus.DUPLICATE)
+        self.assertEqual(result.duplicate_of, indexed_path)
+        self.assertTrue(source.exists())
+        self.assertEqual(source.read_text(encoding="utf-8"), "duplicate content")
         self.assertEqual(
             indexed_path.read_text(encoding="utf-8"),
             "duplicate content",
@@ -232,23 +266,28 @@ class DuplicateSafetyCharacterizationTests(unittest.TestCase):
             str(indexed_path),
         )
 
-    def test_current_stale_hash_missing_destination_deletes_only_valid_copy(self):
-        """Unsafe legacy behavior captured for replacement in Patch 4B."""
+    def test_stale_hash_missing_destination_moves_incoming_file(self):
         source = self._source(content="only valid copy")
         missing_path = self.documents / "missing.txt"
-        self._register_source_hash(source, missing_path)
+        file_hash = self._register_source_hash(source, missing_path)
         initial_stats = self._initialize_stats()
 
         result = self._move(source)
 
-        self.assertIsNone(result)
+        destination = self.documents / source.name
+        self.assertEqual(result.status, mover.MoveStatus.MOVED)
+        self.assertEqual(result.destination, destination)
         self.assertFalse(source.exists())
         self.assertFalse(missing_path.exists())
-        self.assertEqual(self._history()[0]["status"], "duplicate_skipped")
-        self.assertEqual(self._stats(), initial_stats)
+        self.assertEqual(destination.read_text(encoding="utf-8"), "only valid copy")
+        self.assertEqual(self._history()[0]["status"], "moved")
+        self.assertEqual(self._stats()["total_files"], initial_stats["total_files"] + 1)
+        self.assertEqual(
+            hash_manager.get_existing_file_path(file_hash, str(self.hash_db_file)),
+            str(destination),
+        )
 
-    def test_current_changed_indexed_destination_deletes_incoming_original(self):
-        """Unsafe legacy behavior: changed destination content is not verified."""
+    def test_changed_indexed_destination_does_not_prove_duplication(self):
         source = self._source(content="content A")
         indexed_path = self.documents / "indexed.txt"
         indexed_path.parent.mkdir(parents=True)
@@ -259,29 +298,57 @@ class DuplicateSafetyCharacterizationTests(unittest.TestCase):
 
         result = self._move(source)
 
-        self.assertIsNone(result)
+        destination = self.documents / source.name
+        self.assertEqual(result.status, mover.MoveStatus.MOVED)
         self.assertFalse(source.exists())
         self.assertEqual(indexed_path.read_text(encoding="utf-8"), "content B")
-        self.assertEqual(self._history()[0]["status"], "duplicate_skipped")
-        self.assertEqual(self._stats(), initial_stats)
+        self.assertEqual(destination.read_text(encoding="utf-8"), "content A")
+        self.assertEqual(self._history()[0]["status"], "moved")
+        self.assertEqual(self._stats()["total_files"], initial_stats["total_files"] + 1)
 
-    def test_hash_calculation_failure_preserves_source_and_returns_none(self):
+    def test_unverifiable_indexed_destination_does_not_prove_duplication(self):
+        source = self._source(content="content A")
+        indexed_path = self.documents / "indexed.txt"
+        indexed_path.parent.mkdir(parents=True)
+        indexed_path.write_text("content A", encoding="utf-8")
+        self._register_source_hash(source, indexed_path)
+        real_calculate_file_hash = hash_manager.calculate_file_hash
+
+        def fail_for_indexed_path(file_path, chunk_size=65536):
+            if Path(file_path) == indexed_path:
+                raise PermissionError("simulated unreadable destination")
+            return real_calculate_file_hash(file_path, chunk_size)
+
+        with patch(
+            "app.hash_manager.calculate_file_hash",
+            side_effect=fail_for_indexed_path,
+        ):
+            result = self._move(source)
+
+        destination = self.documents / source.name
+        self.assertEqual(result.status, mover.MoveStatus.MOVED)
+        self.assertFalse(source.exists())
+        self.assertEqual(destination.read_text(encoding="utf-8"), "content A")
+        self.assertEqual(indexed_path.read_text(encoding="utf-8"), "content A")
+
+    def test_hash_calculation_failure_preserves_source_and_returns_result(self):
         source = self._source(content="must remain")
         initial_stats = self._initialize_stats()
 
         with patch(
-            "app.mover.is_duplicate_file",
+            "app.mover.calculate_file_hash",
             side_effect=OSError("simulated hash failure"),
         ):
             result = self._move(source)
 
-        self.assertIsNone(result)
+        self.assertEqual(result.status, mover.MoveStatus.HASH_CHECK_FAILED)
+        self.assertIn("simulated hash failure", result.error)
         self.assertTrue(source.exists())
         self.assertEqual(source.read_text(encoding="utf-8"), "must remain")
         self.assertEqual(self._history()[0]["status"], "hash_check_failed")
         self.assertEqual(self._stats(), initial_stats)
 
-    def test_move_failure_preserves_source_records_failure_and_returns_none(self):
+    def test_move_failure_preserves_source_records_failure_and_returns_result(self):
         source = self._source(content="must remain")
 
         with (
@@ -293,7 +360,8 @@ class DuplicateSafetyCharacterizationTests(unittest.TestCase):
         ):
             result = self._move(source, retries=2)
 
-        self.assertIsNone(result)
+        self.assertEqual(result.status, mover.MoveStatus.MOVE_FAILED)
+        self.assertIn("simulated move failure", result.error)
         self.assertEqual(move_call.call_count, 2)
         self.assertTrue(source.exists())
         self.assertEqual(source.read_text(encoding="utf-8"), "must remain")
@@ -323,7 +391,7 @@ class DuplicateSafetyCharacterizationTests(unittest.TestCase):
             file_processed_callback=callback,
         )
 
-    def _run_watcher_with_mover(self, mover_side_effect):
+    def _run_watcher_with_mover(self, move_result):
         source = self._source(content="watch me")
         callback = MagicMock()
         handler = self._watcher(callback)
@@ -332,92 +400,211 @@ class DuplicateSafetyCharacterizationTests(unittest.TestCase):
             patch("app.watcher.time.sleep"),
             patch(
                 "app.watcher.move_file_with_retries",
-                side_effect=mover_side_effect,
+                return_value=move_result,
             ),
         ):
             handler._process_file_thread(str(source), "created")
         return source, handler, callback
 
     def test_watcher_reports_successful_move_as_moved(self):
-        def successful_move(**kwargs):
-            self.documents.mkdir(parents=True, exist_ok=True)
-            kwargs["source_file"].replace(self.documents / kwargs["source_file"].name)
+        source = self.incoming / "incoming.txt"
+        move_result = mover.MoveResult(
+            mover.MoveStatus.MOVED,
+            source,
+            destination=self.documents / source.name,
+        )
+        source, handler, callback = self._run_watcher_with_mover(move_result)
 
-        source, handler, callback = self._run_watcher_with_mover(successful_move)
-
-        self.assertFalse(source.exists())
         self.assertEqual(handler.last_processed_file, source.name)
         callback.assert_called_once_with(source.name, "documents", "moved")
 
-    def test_current_watcher_reports_duplicate_outcome_as_moved(self):
-        """Legacy behavior: the mover's duplicate None return is reported as moved."""
-        def duplicate_outcome(**kwargs):
-            kwargs["source_file"].unlink()
-
-        source, _, callback = self._run_watcher_with_mover(duplicate_outcome)
-
-        self.assertFalse(source.exists())
-        callback.assert_called_once_with(source.name, "documents", "moved")
-
-    def test_current_watcher_reports_exhausted_move_failure_as_moved(self):
-        """Legacy behavior: the mover's failure None return is reported as moved."""
-        source, _, callback = self._run_watcher_with_mover(lambda **kwargs: None)
+    def test_watcher_reports_duplicate_outcome_as_duplicate(self):
+        source = self.incoming / "incoming.txt"
+        move_result = mover.MoveResult(
+            mover.MoveStatus.DUPLICATE,
+            source,
+            duplicate_of=self.documents / "existing.txt",
+        )
+        source, _, callback = self._run_watcher_with_mover(move_result)
 
         self.assertTrue(source.exists())
-        callback.assert_called_once_with(source.name, "documents", "moved")
+        callback.assert_called_once_with(source.name, "documents", "duplicate")
+
+    def test_watcher_reports_hash_failure(self):
+        source = self.incoming / "incoming.txt"
+        move_result = mover.MoveResult(
+            mover.MoveStatus.HASH_CHECK_FAILED,
+            source,
+            error="hash failed",
+        )
+        source, _, callback = self._run_watcher_with_mover(move_result)
+
+        self.assertTrue(source.exists())
+        callback.assert_called_once_with(source.name, "documents", "hash_check_failed")
+
+    def test_watcher_reports_exhausted_move_failure_as_failed(self):
+        source = self.incoming / "incoming.txt"
+        move_result = mover.MoveResult(
+            mover.MoveStatus.MOVE_FAILED,
+            source,
+            error="move failed",
+        )
+        source, _, callback = self._run_watcher_with_mover(move_result)
+
+        self.assertTrue(source.exists())
+        callback.assert_called_once_with(source.name, "documents", "failed")
 
     # Concurrency behavior
 
-    def test_current_concurrent_equal_content_can_both_move_before_registration(self):
-        """A barrier exposes the non-atomic duplicate-check/register sequence."""
+    def test_concurrent_equal_content_cannot_both_move(self):
         first = self._source("first.txt", "equal content")
         second = self._source("second.txt", "equal content")
-        barrier = threading.Barrier(2)
-        real_duplicate_check = hash_manager.is_duplicate_file
+        registration_started = threading.Event()
+        release_registration = threading.Event()
+        second_lock_attempted = threading.Event()
+        second_verification_started = threading.Event()
+        verification_count_lock = threading.Lock()
+        verification_count = 0
+        real_verify = mover.get_verified_file_path
+        real_register = mover.register_file_hash
+        real_hash_operation = mover.hash_operation
         errors = []
+        results = []
 
-        def synchronized_duplicate_check(file_path, hash_db_file):
-            result = real_duplicate_check(file_path, hash_db_file)
-            barrier.wait(timeout=5)
-            return result
+        def observed_verify(file_hash, hash_db_file):
+            nonlocal verification_count
+            with verification_count_lock:
+                verification_count += 1
+                if verification_count == 2:
+                    second_verification_started.set()
+            return real_verify(file_hash, hash_db_file)
+
+        def blocked_register(file_hash, stored_path, hash_db_file):
+            with hash_manager._hash_operation_locks_guard:
+                lock_entry = hash_manager._hash_operation_locks.get(file_hash)
+                self.assertIsNotNone(lock_entry)
+                self.assertTrue(lock_entry[0].locked())
+            registration_started.set()
+            if not release_registration.wait(timeout=5):
+                raise TimeoutError("registration was not released")
+            real_register(file_hash, stored_path, hash_db_file)
+
+        @contextmanager
+        def observed_hash_operation(file_hash):
+            if threading.current_thread().name == "second-equal-content-move":
+                second_lock_attempted.set()
+            with real_hash_operation(file_hash):
+                yield
 
         def move_in_thread(source):
             try:
-                self._move(source)
+                results.append(self._move(source))
             except Exception as error:
                 errors.append(error)
 
         with (
             patch(
-                "app.mover.is_duplicate_file",
-                side_effect=synchronized_duplicate_check,
+                "app.mover.get_verified_file_path",
+                side_effect=observed_verify,
             ),
+            patch(
+                "app.mover.register_file_hash",
+                side_effect=blocked_register,
+            ),
+            patch("app.mover.hash_operation", new=observed_hash_operation),
             patch("app.mover.append_history"),
             patch("app.mover.update_stats"),
         ):
-            threads = [
-                threading.Thread(target=move_in_thread, args=(source,))
-                for source in (first, second)
-            ]
-            for thread in threads:
-                thread.start()
-            for thread in threads:
-                thread.join(timeout=10)
+            first_thread = threading.Thread(target=move_in_thread, args=(first,))
+            second_thread = threading.Thread(target=move_in_thread, args=(second,))
+            first_thread.start()
+            self.assertTrue(registration_started.wait(timeout=5))
+            second_thread.name = "second-equal-content-move"
+            second_thread.start()
 
-        self.assertTrue(all(not thread.is_alive() for thread in threads))
+            try:
+                self.assertTrue(second_lock_attempted.wait(timeout=5))
+                self.assertFalse(second_verification_started.wait(timeout=0.2))
+            finally:
+                release_registration.set()
+                first_thread.join(timeout=10)
+                second_thread.join(timeout=10)
+
+        self.assertFalse(first_thread.is_alive())
+        self.assertFalse(second_thread.is_alive())
+        self.assertTrue(second_verification_started.is_set())
         self.assertEqual(errors, [])
-        self.assertFalse(first.exists())
-        self.assertFalse(second.exists())
-        destinations = {
-            self.documents / first.name,
-            self.documents / second.name,
-        }
-        self.assertTrue(all(path.exists() for path in destinations))
-        file_hash = hashlib.sha256(b"equal content").hexdigest()
-        self.assertIn(
-            Path(hash_manager.load_hash_db(str(self.hash_db_file))[file_hash]),
-            destinations,
+        self.assertCountEqual(
+            [result.status for result in results],
+            [mover.MoveStatus.MOVED, mover.MoveStatus.DUPLICATE],
         )
+        moved_result = next(
+            result for result in results if result.status is mover.MoveStatus.MOVED
+        )
+        duplicate_result = next(
+            result for result in results if result.status is mover.MoveStatus.DUPLICATE
+        )
+        self.assertFalse(moved_result.source.exists())
+        self.assertTrue(moved_result.destination.exists())
+        self.assertTrue(duplicate_result.source.exists())
+        self.assertEqual(duplicate_result.duplicate_of, moved_result.destination)
+        file_hash = hashlib.sha256(b"equal content").hexdigest()
+        self.assertEqual(
+            Path(hash_manager.load_hash_db(str(self.hash_db_file))[file_hash]),
+            moved_result.destination,
+        )
+
+    def test_hash_operation_releases_lock_after_exception(self):
+        file_hash = hashlib.sha256(b"exception").hexdigest()
+
+        with self.assertRaisesRegex(RuntimeError, "simulated failure"):
+            with hash_manager.hash_operation(file_hash):
+                raise RuntimeError("simulated failure")
+
+        acquired = threading.Event()
+
+        def acquire_again():
+            with hash_manager.hash_operation(file_hash):
+                acquired.set()
+
+        thread = threading.Thread(target=acquire_again)
+        thread.start()
+        thread.join(timeout=5)
+
+        self.assertFalse(thread.is_alive())
+        self.assertTrue(acquired.is_set())
+        with hash_manager._hash_operation_locks_guard:
+            self.assertNotIn(file_hash, hash_manager._hash_operation_locks)
+
+    def test_hash_operations_for_unrelated_hashes_do_not_serialize(self):
+        first_acquired = threading.Event()
+        release_first = threading.Event()
+        second_acquired = threading.Event()
+
+        def hold_first_hash():
+            with hash_manager.hash_operation("first-hash"):
+                first_acquired.set()
+                release_first.wait(timeout=5)
+
+        def acquire_second_hash():
+            with hash_manager.hash_operation("second-hash"):
+                second_acquired.set()
+
+        first_thread = threading.Thread(target=hold_first_hash)
+        second_thread = threading.Thread(target=acquire_second_hash)
+        first_thread.start()
+        self.assertTrue(first_acquired.wait(timeout=5))
+        second_thread.start()
+
+        try:
+            self.assertTrue(second_acquired.wait(timeout=1))
+        finally:
+            release_first.set()
+            first_thread.join(timeout=5)
+            second_thread.join(timeout=5)
+
+        self.assertFalse(first_thread.is_alive())
+        self.assertFalse(second_thread.is_alive())
 
 
 if __name__ == "__main__":

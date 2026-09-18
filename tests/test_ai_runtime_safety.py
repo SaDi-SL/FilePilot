@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+from app.mover import MoveResult, MoveStatus
 from app.watcher import NewFileHandler
 
 
@@ -52,6 +53,11 @@ class AIRuntimeSafetyTests(unittest.TestCase):
             patch("app.watcher.time.sleep"),
             patch("app.ai_classifier.get_ai_classifier", return_value=ai) as get_ai,
         ):
+            move_file.return_value = MoveResult(
+                MoveStatus.MOVED,
+                source,
+                destination=self.root / "moved" / source.name,
+            )
             handler._process_file_thread(str(source), "test")
         return move_file, get_ai
 

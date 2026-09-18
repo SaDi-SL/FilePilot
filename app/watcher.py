@@ -6,7 +6,7 @@ from pathlib import Path
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
-from app.mover import move_file_with_retries
+from app.mover import MoveStatus, move_file_with_retries
 from app.smart_classifier import smart_classify
 
 
@@ -158,7 +158,7 @@ class NewFileHandler(FileSystemEventHandler):
                 new_folder.mkdir(parents=True, exist_ok=True)
                 self.destination_folders[final_category] = str(new_folder)
 
-            move_file_with_retries(
+            move_result = move_file_with_retries(
                 source_file=source_path,
                 destination_folders=self.destination_folders,
                 extension_lookup=self.extension_lookup,
@@ -173,7 +173,12 @@ class NewFileHandler(FileSystemEventHandler):
                 smart_source=smart_source,
                 category_override=final_category,
             )
-            status = "moved"
+            status = {
+                MoveStatus.MOVED: "moved",
+                MoveStatus.DUPLICATE: "duplicate",
+                MoveStatus.HASH_CHECK_FAILED: "hash_check_failed",
+                MoveStatus.MOVE_FAILED: "failed",
+            }[move_result.status]
 
         except Exception as error:
             logging.error(f"Error processing {file_path}: {error}", exc_info=True)
