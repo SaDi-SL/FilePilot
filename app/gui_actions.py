@@ -873,6 +873,9 @@ class ActionsMixin:
 
     def reload_settings(self):
         try:
+            monitor_thread = getattr(self, "monitor_thread", None)
+            if monitor_thread is not None and monitor_thread.is_alive():
+                monitor_thread.join()
             was_running = self.monitor.is_running
             if was_running:
                 self._stop_dot_pulse()

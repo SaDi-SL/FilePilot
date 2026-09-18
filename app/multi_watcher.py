@@ -16,6 +16,7 @@ Usage:
 from __future__ import annotations
 
 import logging
+import threading
 from pathlib import Path
 
 from app.watcher import FileMonitor
@@ -50,6 +51,9 @@ class MultiFolderMonitor:
 
         # path_str → FileMonitor
         self._monitors: dict[str, FileMonitor] = {}
+        self._lifecycle_lock = threading.RLock()
+        self._lifecycle_condition = threading.Condition(self._lifecycle_lock)
+        self._lifecycle_operation: str | None = None
 
         self._build_monitors()
 
@@ -58,126 +62,228 @@ class MultiFolderMonitor:
     @property
     def is_running(self) -> bool:
         """True if at least one monitor is running."""
-        return any(m.is_running for m in self._monitors.values())
+        with self._lifecycle_lock:
+            monitors = list(self._monitors.values())
+        return any(m.is_running for m in monitors)
 
     @property
     def running_folders(self) -> list[str]:
-        return [p for p, m in self._monitors.items() if m.is_running]
+        with self._lifecycle_lock:
+            monitors = list(self._monitors.items())
+        return [p for p, m in monitors if m.is_running]
 
     @property
     def all_folders(self) -> list[dict]:
         """Return watch_folders list from config."""
-        return self.config.get("watch_folders", [])
+        with self._lifecycle_lock:
+            return list(self.config.get("watch_folders", []))
 
     def set_file_processed_callback(self, callback) -> None:
         """Update callback for all monitors (used after theme/language reload)."""
-        self._callback = callback
-        for m in self._monitors.values():
-            m.set_file_processed_callback(callback)
+        with self._lifecycle_lock:
+            self._callback = callback
+            monitors = list(self._monitors.values())
+        for monitor in monitors:
+            monitor.set_file_processed_callback(callback)
 
     def start_all(self) -> None:
         """Start all active folders."""
-        folders = self.config.get("watch_folders", [])
-        for folder in folders:
-            if folder.get("active", True):
-                self.start_folder(folder["path"])
+        self._begin_lifecycle_operation("start_all")
+        errors = []
+        try:
+            with self._lifecycle_lock:
+                monitors = []
+                for folder in self.config.get("watch_folders", []):
+                    if not folder.get("active", True):
+                        continue
+                    path = str(Path(folder["path"]).resolve())
+                    monitor = self._monitors.get(path)
+                    if monitor is None:
+                        monitor = self._add_monitor(path)
+                    monitors.append((path, monitor))
+
+            for path, monitor in monitors:
+                if not Path(path).exists():
+                    logger.warning(f"Watch folder does not exist: {path}")
+                    continue
+                try:
+                    monitor.start()
+                    logger.info(f"Started monitoring: {path}")
+                except Exception as error:
+                    errors.append(error)
+                    logger.error(f"Failed to start monitoring: {path}", exc_info=True)
+        finally:
+            self._end_lifecycle_operation()
+
+        if errors:
+            raise RuntimeError("One or more folder monitors failed to start") from errors[0]
 
     def stop_all(self) -> None:
-        """Stop all running monitors."""
-        for path in list(self._monitors.keys()):
-            self.stop_folder(path)
+        """Stop and drain every child monitor."""
+        self._begin_lifecycle_operation("stop_all")
+        errors = []
+        try:
+            with self._lifecycle_lock:
+                monitors = list(self._monitors.items())
+
+            for path, monitor in monitors:
+                was_running = monitor.is_running
+                try:
+                    monitor.stop()
+                    if was_running:
+                        logger.info(f"Stopped monitoring: {path}")
+                except Exception as error:
+                    errors.append(error)
+                    logger.error(f"Failed to stop monitoring: {path}", exc_info=True)
+        finally:
+            self._end_lifecycle_operation()
+
+        if errors:
+            raise RuntimeError("One or more folder monitors failed to stop") from errors[0]
 
     def start_folder(self, path: str) -> bool:
         """
         Start monitoring a specific folder.
         Returns True if started, False if already running or invalid.
         """
-        path = str(Path(path).resolve())
-        if path not in self._monitors:
-            self._add_monitor(path)
+        self._begin_lifecycle_operation("start_folder")
+        try:
+            with self._lifecycle_lock:
+                path = str(Path(path).resolve())
+                if path not in self._monitors:
+                    self._add_monitor(path)
+                monitor = self._monitors.get(path)
 
-        monitor = self._monitors.get(path)
-        if not monitor:
-            return False
+            if not monitor or monitor.is_running:
+                return False
 
-        if monitor.is_running:
-            return False
+            if not Path(path).exists():
+                logger.warning(f"Watch folder does not exist: {path}")
+                return False
 
-        if not Path(path).exists():
-            logger.warning(f"Watch folder does not exist: {path}")
-            return False
-
-        monitor.start()
-        logger.info(f"Started monitoring: {path}")
-        return True
+            monitor.start()
+            logger.info(f"Started monitoring: {path}")
+            return True
+        finally:
+            self._end_lifecycle_operation()
 
     def stop_folder(self, path: str) -> bool:
         """
         Stop monitoring a specific folder.
         Returns True if stopped.
         """
-        path = str(Path(path).resolve())
-        monitor = self._monitors.get(path)
-        if not monitor or not monitor.is_running:
-            return False
-        monitor.stop()
-        logger.info(f"Stopped monitoring: {path}")
-        return True
+        self._begin_lifecycle_operation("stop_folder")
+        try:
+            with self._lifecycle_lock:
+                path = str(Path(path).resolve())
+                monitor = self._monitors.get(path)
+            if not monitor:
+                return False
+            was_running = monitor.is_running
+            monitor.stop()
+            if was_running:
+                logger.info(f"Stopped monitoring: {path}")
+            return was_running
+        finally:
+            self._end_lifecycle_operation()
+
+    def _begin_lifecycle_operation(self, operation: str) -> None:
+        with self._lifecycle_condition:
+            self._reject_processing_callback_lifecycle_change()
+            while self._lifecycle_operation is not None:
+                self._lifecycle_condition.wait()
+            self._lifecycle_operation = operation
+
+    def _reject_processing_callback_lifecycle_change(self) -> None:
+        if any(
+            getattr(
+                monitor,
+                "owns_current_processing_thread",
+                lambda: False,
+            )()
+            for monitor in self._monitors.values()
+        ):
+            raise RuntimeError(
+                "A processing callback cannot change monitor lifecycle"
+            )
+
+    def _end_lifecycle_operation(self) -> None:
+        with self._lifecycle_condition:
+            self._lifecycle_operation = None
+            self._lifecycle_condition.notify_all()
 
     def add_watch_folder(self, path: str, label: str = "", active: bool = True) -> bool:
         """
         Add a new folder to watch_folders in config and create its monitor.
         Returns True if added, False if already exists.
         """
-        path = str(Path(path).resolve())
-        folders = self.config.setdefault("watch_folders", [])
+        with self._lifecycle_condition:
+            self._reject_processing_callback_lifecycle_change()
+            while self._lifecycle_operation is not None:
+                self._lifecycle_condition.wait()
+            path = str(Path(path).resolve())
+            folders = self.config.setdefault("watch_folders", [])
 
-        # Check for duplicate
-        for f in folders:
-            if str(Path(f["path"]).resolve()) == path:
-                return False
+            # Check for duplicate
+            for f in folders:
+                if str(Path(f["path"]).resolve()) == path:
+                    return False
 
-        entry = {"path": path, "label": label or Path(path).name, "active": active}
-        folders.append(entry)
-        self._add_monitor(path)
-        logger.info(f"Added watch folder: {path}")
-        return True
+            entry = {"path": path, "label": label or Path(path).name, "active": active}
+            folders.append(entry)
+            self._add_monitor(path)
+            logger.info(f"Added watch folder: {path}")
+            return True
 
     def remove_watch_folder(self, path: str) -> bool:
         """
         Remove a folder from watch_folders. Stops it first if running.
         Returns True if removed.
         """
-        path = str(Path(path).resolve())
-        self.stop_folder(path)
+        self._begin_lifecycle_operation("remove_watch_folder")
+        try:
+            path = str(Path(path).resolve())
+            with self._lifecycle_lock:
+                monitor = self._monitors.get(path)
 
-        folders = self.config.get("watch_folders", [])
-        before = len(folders)
-        self.config["watch_folders"] = [
-            f for f in folders
-            if str(Path(f["path"]).resolve()) != path
-        ]
-        removed = len(self.config["watch_folders"]) < before
+            if monitor is not None:
+                monitor.stop()
 
-        if path in self._monitors:
-            del self._monitors[path]
+            with self._lifecycle_lock:
+                folders = self.config.get("watch_folders", [])
+                before = len(folders)
+                self.config["watch_folders"] = [
+                    f for f in folders
+                    if str(Path(f["path"]).resolve()) != path
+                ]
+                removed = len(self.config["watch_folders"]) < before
 
-        if removed:
-            logger.info(f"Removed watch folder: {path}")
-        return removed
+                if path in self._monitors:
+                    del self._monitors[path]
+
+            if removed:
+                logger.info(f"Removed watch folder: {path}")
+            return removed
+        finally:
+            self._end_lifecycle_operation()
 
     def set_folder_active(self, path: str, active: bool) -> None:
         """Toggle the active flag of a folder in config (does not start/stop)."""
         path_resolved = str(Path(path).resolve())
-        for f in self.config.get("watch_folders", []):
-            if str(Path(f["path"]).resolve()) == path_resolved:
-                f["active"] = active
-                break
+        with self._lifecycle_condition:
+            self._reject_processing_callback_lifecycle_change()
+            while self._lifecycle_operation is not None:
+                self._lifecycle_condition.wait()
+            for f in self.config.get("watch_folders", []):
+                if str(Path(f["path"]).resolve()) == path_resolved:
+                    f["active"] = active
+                    break
 
     def folder_status(self, path: str) -> str:
         """Return 'running', 'stopped', or 'not_found'."""
         path = str(Path(path).resolve())
-        monitor = self._monitors.get(path)
+        with self._lifecycle_lock:
+            monitor = self._monitors.get(path)
         if not monitor:
             return "not_found"
         return "running" if monitor.is_running else "stopped"
@@ -187,11 +293,31 @@ class MultiFolderMonitor:
         Called after settings are saved. Stops all, rebuilds monitors,
         does NOT auto-restart (caller decides).
         """
-        self.stop_all()
-        self.config           = new_config
-        self.extension_lookup = new_extension_lookup
-        self._monitors.clear()
-        self._build_monitors()
+        self._begin_lifecycle_operation("reload_config")
+        errors = []
+        try:
+            with self._lifecycle_lock:
+                monitors = list(self._monitors.items())
+
+            for path, monitor in monitors:
+                try:
+                    monitor.stop()
+                except Exception as error:
+                    errors.append(error)
+                    logger.error(f"Failed to stop monitoring: {path}", exc_info=True)
+
+            if errors:
+                raise RuntimeError(
+                    "One or more folder monitors failed during reload"
+                ) from errors[0]
+
+            with self._lifecycle_lock:
+                self.config = new_config
+                self.extension_lookup = new_extension_lookup
+                self._monitors.clear()
+                self._build_monitors()
+        finally:
+            self._end_lifecycle_operation()
 
     # ── Internal ──────────────────────────────────────────────────────────────
 

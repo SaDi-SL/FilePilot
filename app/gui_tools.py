@@ -385,6 +385,9 @@ def _build_plugins_tab(self, outer):
 # ─────────────────────────────────────────────────────────────────────────────
 def reload_plugins_from_gui(self):
     try:
+        monitor_thread = getattr(self, "monitor_thread", None)
+        if monitor_thread is not None and monitor_thread.is_alive():
+            monitor_thread.join()
         was_running = self.monitor.is_running
         if was_running:
             try: self._stop_dot_pulse()

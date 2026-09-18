@@ -13,6 +13,7 @@ class PluginChangeHandler(FileSystemEventHandler):
         self.reload_callback = reload_callback
         self._timer: threading.Timer | None = None
         self._lock = threading.Lock()
+        self._stopped = False
 
     def on_any_event(self, event):
         if event.is_directory:
@@ -24,6 +25,8 @@ class PluginChangeHandler(FileSystemEventHandler):
         # Debounce: cancel any previous timer and start a new one.
         # This prevents 3-5 reloads per single save.
         with self._lock:
+            if self._stopped:
+                return
             if self._timer is not None:
                 self._timer.cancel()
             self._timer = threading.Timer(_DEBOUNCE_SECONDS, self._fire)
@@ -31,11 +34,27 @@ class PluginChangeHandler(FileSystemEventHandler):
             self._timer.start()
 
     def _fire(self):
+        with self._lock:
+            if self._stopped:
+                return
         logging.info("Plugin change detected — reloading plugins")
         try:
             self.reload_callback()
         except Exception as error:
             logging.error(f"Plugin reload failed: {error}", exc_info=True)
+        finally:
+            with self._lock:
+                if self._timer is threading.current_thread():
+                    self._timer = None
+
+    def stop(self):
+        with self._lock:
+            self._stopped = True
+            timer = self._timer
+            if timer is not None:
+                timer.cancel()
+        if timer is not None and timer is not threading.current_thread():
+            timer.join()
 
 
 class PluginWatcher:
@@ -43,15 +62,16 @@ class PluginWatcher:
         self.plugins_dir = plugins_dir
         self.reload_callback = reload_callback
         self.observer = Observer()
+        self.handler = PluginChangeHandler(self.reload_callback)
 
     def start(self):
         self.plugins_dir.mkdir(parents=True, exist_ok=True)
-        handler = PluginChangeHandler(self.reload_callback)
-        self.observer.schedule(handler, str(self.plugins_dir), recursive=False)
+        self.observer.schedule(self.handler, str(self.plugins_dir), recursive=False)
         self.observer.start()
         logging.info(f"Plugin watcher started: {self.plugins_dir}")
 
     def stop(self):
         self.observer.stop()
         self.observer.join()
+        self.handler.stop()
         logging.info("Plugin watcher stopped.")

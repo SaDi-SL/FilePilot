@@ -3,6 +3,7 @@ gui_monitoring.py — Monitoring control, tray, live updates, theme/language for
 Mixin class: MonitoringMixin
 """
 import json
+import queue
 import sys
 import threading
 import tkinter as tk
@@ -49,10 +50,72 @@ class MonitoringMixin:
         self.root.after(1000, self.hide_to_tray)
 
     def _make_live_callback(self):
-        """Create a thread-safe callback that updates the GUI via root.after."""
+        """Create a worker-safe callback consumed by the Tk main thread."""
+        if not hasattr(self, "_live_callback_queue"):
+            self._live_callback_queue = queue.SimpleQueue()
+        self._live_callback_generation = (
+            getattr(self, "_live_callback_generation", 0) + 1
+        )
+        generation = self._live_callback_generation
+
         def _callback(filename: str, category: str, status: str):
-            self.root.after(0, lambda: self._on_file_processed(filename, category, status))
+            self._live_callback_queue.put(
+                (generation, filename, category, status)
+            )
         return _callback
+
+    def _start_live_callback_pump(self):
+        if not hasattr(self, "_live_callback_queue"):
+            self._live_callback_queue = queue.SimpleQueue()
+        if not hasattr(self, "_monitor_error_queue"):
+            self._monitor_error_queue = queue.SimpleQueue()
+        if not hasattr(self, "_plugin_reload_queue"):
+            self._plugin_reload_queue = queue.SimpleQueue()
+        if getattr(self, "_live_callback_job", None) is None:
+            self._live_callback_job = self.root.after(
+                50,
+                self._drain_live_callbacks,
+            )
+
+    def _drain_live_callbacks(self):
+        self._live_callback_job = None
+        generation = getattr(self, "_live_callback_generation", 0)
+        for _ in range(50):
+            try:
+                item_generation, filename, category, status = (
+                    self._live_callback_queue.get_nowait()
+                )
+            except queue.Empty:
+                break
+            if item_generation == generation:
+                self._on_file_processed(filename, category, status)
+        for _ in range(10):
+            try:
+                error = self._monitor_error_queue.get_nowait()
+            except queue.Empty:
+                break
+            messagebox.showerror("Error", f"Failed to start monitoring:\n{error}")
+        try:
+            self._plugin_reload_queue.get_nowait()
+        except queue.Empty:
+            pass
+        else:
+            self.reload_plugins_from_gui()
+        self._start_live_callback_pump()
+
+    def _queue_plugin_reload(self):
+        if not hasattr(self, "_plugin_reload_queue"):
+            self._plugin_reload_queue = queue.SimpleQueue()
+        self._plugin_reload_queue.put(True)
+
+    def _stop_live_callback_pump(self):
+        job = getattr(self, "_live_callback_job", None)
+        if job is not None:
+            try:
+                self.root.after_cancel(job)
+            except Exception:
+                pass
+            self._live_callback_job = None
 
     def _on_file_processed(self, filename: str, category: str, status: str):
         """Called on the main thread after each file is processed."""
@@ -257,16 +320,18 @@ class MonitoringMixin:
         if self.monitor.is_running:
             return
 
+        self._start_live_callback_pump()
+        monitor = self.monitor
         # Bind callback for live updates
-        self.monitor.set_file_processed_callback(self._make_live_callback())
+        monitor.set_file_processed_callback(self._make_live_callback())
 
         def run_monitor():
             try:
-                self.monitor.start_all()
+                monitor.start_all()
             except Exception as error:
-                self.root.after(0, lambda: messagebox.showerror(
-                    "Error", f"Failed to start monitoring:\n{error}"))
+                self._monitor_error_queue.put(str(error))
 
+        self.monitor_thread_monitor = monitor
         self.monitor_thread = threading.Thread(target=run_monitor, daemon=True)
         self.monitor_thread.start()
 
@@ -296,13 +361,17 @@ class MonitoringMixin:
         self._start_auto_refresh()
 
     def stop_monitoring(self):
-        if not self.monitor.is_running:
+        monitor_thread = getattr(self, "monitor_thread", None)
+        start_in_progress = monitor_thread is not None and monitor_thread.is_alive()
+        if not self.monitor.is_running and not start_in_progress:
             return
 
         self._stop_dot_pulse()
         self._stop_auto_refresh()
 
-        self.monitor.stop_all()
+        if start_in_progress and monitor_thread is not threading.current_thread():
+            monitor_thread.join()
+        self._stop_monitor_lifecycle()
         self.status_var.set(t("status_stopped"))
         try:
             self.header_status.config(
@@ -326,10 +395,31 @@ class MonitoringMixin:
         self.toast_manager.show_toast("Monitoring stopped.", "warning")
         self.add_notification("warning", "Monitoring Stopped", "File monitoring stopped.")
 
+    def _stop_monitor_lifecycle(self):
+        monitor = getattr(self, "monitor", None)
+        if monitor is None:
+            return
+        stop_all = getattr(monitor, "stop_all", None)
+        if callable(stop_all):
+            stop_all()
+            return
+        stop = getattr(monitor, "stop", None)
+        if callable(stop):
+            stop()
+
     def exit_application(self):
+        if hasattr(self, "plugin_watcher"):
+            try:
+                self.plugin_watcher.stop()
+            except Exception:
+                pass
+
         try:
-            if self.monitor.is_running:
-                self.monitor.stop()
+            monitor_thread = getattr(self, "monitor_thread", None)
+            if (monitor_thread is not None and monitor_thread.is_alive()
+                    and monitor_thread is not threading.current_thread()):
+                monitor_thread.join()
+            self._stop_monitor_lifecycle()
         except Exception:
             pass
 
@@ -341,6 +431,7 @@ class MonitoringMixin:
 
         self._stop_dot_pulse()
         self._stop_auto_refresh()
+        self._stop_live_callback_pump()
 
         try:
             if self.tray_icon is not None:
@@ -352,9 +443,6 @@ class MonitoringMixin:
             self.close_logs_viewer()
         except Exception:
             pass
-        
-        if hasattr(self, "plugin_watcher"):
-            self.plugin_watcher.stop()
         
         self.root.destroy()
 

@@ -112,7 +112,7 @@ class FileAutomationGUI(
         self.first_run_completed = self.config.get("first_run_completed", False)
         self.plugin_watcher = PluginWatcher(
             plugins_dir,
-            self.reload_plugins_from_gui
+            self._queue_plugin_reload,
         )
 
         self.plugin_watcher.start()
@@ -138,6 +138,9 @@ class FileAutomationGUI(
         self._auto_refresh_job = None
         self._dot_pulse_job = None
         self._dot_phase = 0
+        self._live_callback_job = None
+        self._live_callback_generation = 0
+        self._start_live_callback_pump()
 
         self.status_var = tk.StringVar(value=t("status_stopped"))
         self.last_file_var = tk.StringVar(value="No file processed yet")
