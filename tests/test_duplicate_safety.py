@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from app import hash_manager, mover
+from app.main import build_destination_folders
 from app.stats import ensure_stats_file
 from app.watcher import NewFileHandler
 
@@ -84,6 +85,59 @@ class DuplicateSafetyRegressionTests(unittest.TestCase):
             str(self.hash_db_file),
         )
         return file_hash
+
+    def _run_synchronized_destination_race(self, sources):
+        """Let every mover select its destination before any mover can commit."""
+        self._initialize_stats()
+        self.history_file.parent.mkdir(parents=True, exist_ok=True)
+        self.history_file.write_text(
+            "timestamp,filename,category,status,classification_method,smart_source\n",
+            encoding="utf-8",
+        )
+        selection_barrier = threading.Barrier(len(sources))
+        selected_destinations = []
+        results = [None] * len(sources)
+        errors = []
+        result_lock = threading.Lock()
+        real_generate = mover.generate_unique_destination
+
+        def synchronized_generate(destination_path):
+            selected = real_generate(destination_path)
+            with result_lock:
+                selected_destinations.append(selected)
+            selection_barrier.wait(timeout=5)
+            return selected
+
+        def move_source(index, source):
+            try:
+                result = self._move(source)
+                with result_lock:
+                    results[index] = result
+            except Exception as error:
+                with result_lock:
+                    errors.append(error)
+
+        with patch(
+            "app.mover.generate_unique_destination",
+            side_effect=synchronized_generate,
+        ):
+            threads = [
+                threading.Thread(
+                    target=move_source,
+                    args=(index, source),
+                    name=f"destination-race-{index}",
+                )
+                for index, source in enumerate(sources)
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=10)
+
+        self.assertTrue(all(not thread.is_alive() for thread in threads))
+        self.assertEqual(errors, [])
+        self.assertTrue(all(result is not None for result in results))
+        return results, selected_destinations
 
     # Hash manager behavior
 
@@ -370,6 +424,282 @@ class DuplicateSafetyRegressionTests(unittest.TestCase):
         self.assertEqual(
             hash_manager.load_hash_db(str(self.hash_db_file)),
             {},
+        )
+
+    # Patch 5C-A: unsafe current filesystem behavior characterization
+
+    def test_unsafe_current_behavior_concurrent_different_content_same_name_clobbers(self):
+        first_dir = self.root / "source-a"
+        second_dir = self.root / "source-b"
+        first_dir.mkdir()
+        second_dir.mkdir()
+        first = first_dir / "name.txt"
+        second = second_dir / "name.txt"
+        first.write_text("content A", encoding="utf-8")
+        second.write_text("content B", encoding="utf-8")
+
+        results, selected = self._run_synchronized_destination_race(
+            [first, second]
+        )
+
+        destination = self.documents / "name.txt"
+        self.assertEqual(selected, [destination, destination])
+        self.assertEqual(
+            [result.status for result in results],
+            [mover.MoveStatus.MOVED, mover.MoveStatus.MOVED],
+        )
+        self.assertEqual(
+            [result.destination for result in results],
+            [destination, destination],
+        )
+        self.assertFalse(first.exists())
+        self.assertFalse(second.exists())
+        self.assertEqual(
+            [path.name for path in self.documents.iterdir()],
+            ["name.txt"],
+        )
+        self.assertIn(
+            destination.read_text(encoding="utf-8"),
+            {"content A", "content B"},
+        )
+
+        first_hash = hashlib.sha256(b"content A").hexdigest()
+        second_hash = hashlib.sha256(b"content B").hexdigest()
+        hash_db = hash_manager.load_hash_db(str(self.hash_db_file))
+        self.assertEqual(hash_db[first_hash], str(destination))
+        self.assertEqual(hash_db[second_hash], str(destination))
+        surviving_hash = hash_manager.calculate_file_hash(destination)
+        self.assertIn(surviving_hash, {first_hash, second_hash})
+        self.assertNotEqual(first_hash, second_hash)
+        self.assertEqual(len(self._history()), 2)
+        self.assertEqual(self._stats()["total_files"], 2)
+
+    def test_unsafe_current_behavior_concurrent_alternative_name_clobbers(self):
+        self.documents.mkdir(parents=True)
+        original = self.documents / "name.txt"
+        original.write_text("pre-existing", encoding="utf-8")
+        first_dir = self.root / "source-a"
+        second_dir = self.root / "source-b"
+        first_dir.mkdir()
+        second_dir.mkdir()
+        first = first_dir / "name.txt"
+        second = second_dir / "name.txt"
+        first.write_text("content A", encoding="utf-8")
+        second.write_text("content B", encoding="utf-8")
+
+        results, selected = self._run_synchronized_destination_race(
+            [first, second]
+        )
+
+        alternative = self.documents / "name(1).txt"
+        self.assertEqual(selected, [alternative, alternative])
+        self.assertEqual(
+            [result.status for result in results],
+            [mover.MoveStatus.MOVED, mover.MoveStatus.MOVED],
+        )
+        self.assertEqual(
+            [result.destination for result in results],
+            [alternative, alternative],
+        )
+        self.assertFalse(first.exists())
+        self.assertFalse(second.exists())
+        self.assertEqual(original.read_text(encoding="utf-8"), "pre-existing")
+        self.assertIn(
+            alternative.read_text(encoding="utf-8"),
+            {"content A", "content B"},
+        )
+        self.assertCountEqual(
+            [path.name for path in self.documents.iterdir()],
+            ["name.txt", "name(1).txt"],
+        )
+        first_hash = hashlib.sha256(b"content A").hexdigest()
+        second_hash = hashlib.sha256(b"content B").hexdigest()
+        hash_db = hash_manager.load_hash_db(str(self.hash_db_file))
+        self.assertEqual(hash_db[first_hash], str(alternative))
+        self.assertEqual(hash_db[second_hash], str(alternative))
+
+    def test_unsafe_current_behavior_external_destination_toctou_overwrites_sentinel(self):
+        source = self._source("name.txt", "incoming bytes")
+        sentinel_bytes = b"external sentinel"
+        selected_destination = []
+        real_generate = mover.generate_unique_destination
+
+        def create_sentinel_after_selection(destination_path):
+            selected = real_generate(destination_path)
+            self.assertFalse(selected.exists())
+            selected.write_bytes(sentinel_bytes)
+            selected_destination.append(selected)
+            return selected
+
+        with patch(
+            "app.mover.generate_unique_destination",
+            side_effect=create_sentinel_after_selection,
+        ):
+            result = self._move(source)
+
+        destination = self.documents / "name.txt"
+        self.assertEqual(selected_destination, [destination])
+        self.assertEqual(result.status, mover.MoveStatus.MOVED)
+        self.assertEqual(result.destination, destination)
+        self.assertFalse(source.exists())
+        self.assertEqual(destination.read_bytes(), b"incoming bytes")
+        self.assertNotEqual(destination.read_bytes(), sentinel_bytes)
+
+    def test_unsafe_current_behavior_hash_registration_failure_follows_committed_move(self):
+        source = self._source(content="committed bytes")
+
+        with patch(
+            "app.mover.register_file_hash",
+            side_effect=OSError("simulated registration failure"),
+        ):
+            result = self._move(source)
+
+        destination = self.documents / source.name
+        self.assertEqual(result.status, mover.MoveStatus.MOVE_FAILED)
+        self.assertEqual(result.destination, destination)
+        self.assertIn("simulated registration failure", result.error)
+        self.assertFalse(source.exists())
+        self.assertTrue(destination.exists())
+        self.assertEqual(destination.read_text(encoding="utf-8"), "committed bytes")
+        self.assertEqual(
+            hash_manager.load_hash_db(str(self.hash_db_file)),
+            {},
+        )
+        self.assertEqual(self._history()[0]["status"], "failed")
+        self.assertEqual(self._stats()["total_files"], 0)
+        self.assertEqual(self._stats()["failed"], 1)
+
+    def test_unsafe_current_behavior_source_mutation_after_hash_registers_wrong_digest(self):
+        source = self._source(content="content A")
+        original_hash = hashlib.sha256(b"content A").hexdigest()
+        replacement_hash = hashlib.sha256(b"content B").hexdigest()
+        real_calculate = mover.calculate_file_hash
+
+        def hash_then_mutate(file_path):
+            calculated = real_calculate(file_path)
+            Path(file_path).write_text("content B", encoding="utf-8")
+            return calculated
+
+        with patch(
+            "app.mover.calculate_file_hash",
+            side_effect=hash_then_mutate,
+        ):
+            result = self._move(source)
+
+        destination = self.documents / source.name
+        self.assertEqual(result.status, mover.MoveStatus.MOVED)
+        self.assertFalse(source.exists())
+        self.assertEqual(destination.read_text(encoding="utf-8"), "content B")
+        self.assertEqual(hash_manager.calculate_file_hash(destination), replacement_hash)
+        hash_db = hash_manager.load_hash_db(str(self.hash_db_file))
+        self.assertEqual(hash_db, {original_hash: str(destination)})
+        self.assertNotEqual(original_hash, replacement_hash)
+
+    def test_unsafe_current_behavior_configured_parent_category_escapes_organized_root(self):
+        organized = self.root / "organized"
+        rules = {"../escaped": [".txt"]}
+        destination_folders = {
+            category: str(Path(path).resolve())
+            for category, path in build_destination_folders(
+                str(organized),
+                rules,
+            ).items()
+        }
+        source = self._source("configured.txt", "configured escape")
+
+        result = mover.move_file_with_retries(
+            source_file=source,
+            destination_folders=destination_folders,
+            extension_lookup={".txt": "../escaped"},
+            stats_file=str(self.stats_file),
+            history_file=str(self.history_file),
+            hash_db_file=str(self.hash_db_file),
+            archive_by_date=False,
+            rules=rules,
+            retries=1,
+            delay=0,
+            category_override="../escaped",
+        )
+
+        escaped_destination = self.root / "escaped" / source.name
+        self.assertEqual(result.status, mover.MoveStatus.MOVED)
+        self.assertEqual(result.destination, escaped_destination)
+        self.assertFalse(source.exists())
+        self.assertEqual(
+            escaped_destination.read_text(encoding="utf-8"),
+            "configured escape",
+        )
+        self.assertFalse(escaped_destination.is_relative_to(organized.resolve()))
+        self.assertTrue(escaped_destination.is_relative_to(self.root.resolve()))
+
+    def test_unsafe_current_behavior_dynamic_parent_category_escapes_organized_root(self):
+        source = self._source("smart.txt", "smart escape")
+        callback = MagicMock()
+        handler = self._watcher(callback)
+
+        with (
+            patch.object(handler, "_wait_until_stable", return_value=True),
+            patch("app.watcher.smart_classify", return_value="../smart-escaped"),
+        ):
+            handler._process_file_thread(str(source), "created")
+
+        escaped_destination = self.root / "smart-escaped" / source.name
+        organized = self.root / "organized"
+        self.assertFalse(source.exists())
+        self.assertEqual(
+            escaped_destination.read_text(encoding="utf-8"),
+            "smart escape",
+        )
+        self.assertFalse(escaped_destination.is_relative_to(organized.resolve()))
+        self.assertTrue(escaped_destination.is_relative_to(self.root.resolve()))
+        self.assertEqual(
+            Path(handler.destination_folders["../smart-escaped"]).resolve(),
+            escaped_destination.parent,
+        )
+        callback.assert_called_once_with(source.name, "../smart-escaped", "moved")
+
+    def test_unsafe_current_behavior_dynamic_absolute_category_escapes_organized_root(self):
+        source = self._source("plugin.txt", "plugin escape")
+        absolute_destination = (self.root / "absolute-escaped").resolve()
+        plugin_manager = MagicMock()
+        plugin_manager.classify_with_plugins.return_value = str(absolute_destination)
+        callback = MagicMock()
+        handler = NewFileHandler(
+            {
+                "destination_folders": self.destination_folders,
+                "rules": self.rules,
+                "processing_wait_seconds": 0,
+                "duplicate_event_window_seconds": 3,
+                "archive_by_date": False,
+                "stats_file": str(self.stats_file),
+                "history_file": str(self.history_file),
+                "hash_db_file": str(self.hash_db_file),
+            },
+            {".txt": "documents"},
+            plugin_manager=plugin_manager,
+            file_processed_callback=callback,
+        )
+
+        with (
+            patch.object(handler, "_wait_until_stable", return_value=True),
+            patch("app.watcher.smart_classify", return_value=None),
+        ):
+            handler._process_file_thread(str(source), "created")
+
+        escaped_file = absolute_destination / source.name
+        organized = self.root / "organized"
+        self.assertFalse(source.exists())
+        self.assertEqual(escaped_file.read_text(encoding="utf-8"), "plugin escape")
+        self.assertFalse(escaped_file.is_relative_to(organized.resolve()))
+        self.assertTrue(escaped_file.is_relative_to(self.root.resolve()))
+        self.assertEqual(
+            Path(handler.destination_folders[str(absolute_destination)]),
+            absolute_destination,
+        )
+        callback.assert_called_once_with(
+            source.name,
+            str(absolute_destination),
+            "moved",
         )
 
     # Watcher propagation behavior
