@@ -99,13 +99,16 @@ class DuplicateSafetyRegressionTests(unittest.TestCase):
         results = [None] * len(sources)
         errors = []
         result_lock = threading.Lock()
+        selection_state = threading.local()
         real_generate = mover.generate_unique_destination
 
         def synchronized_generate(destination_path):
             selected = real_generate(destination_path)
-            with result_lock:
-                selected_destinations.append(selected)
-            selection_barrier.wait(timeout=5)
+            if not getattr(selection_state, "initial_selection_complete", False):
+                selection_state.initial_selection_complete = True
+                with result_lock:
+                    selected_destinations.append(selected)
+                selection_barrier.wait(timeout=5)
             return selected
 
         def move_source(index, source):
@@ -407,7 +410,7 @@ class DuplicateSafetyRegressionTests(unittest.TestCase):
 
         with (
             patch(
-                "app.mover.shutil.move",
+                "app.mover._move_no_clobber",
                 side_effect=OSError("simulated move failure"),
             ) as move_call,
             patch("app.mover.time.sleep"),
@@ -426,9 +429,9 @@ class DuplicateSafetyRegressionTests(unittest.TestCase):
             {},
         )
 
-    # Patch 5C-A: unsafe current filesystem behavior characterization
+    # Patch 5C-B1: atomic no-clobber destination regression coverage
 
-    def test_unsafe_current_behavior_concurrent_different_content_same_name_clobbers(self):
+    def test_concurrent_different_content_same_name_commits_without_clobber(self):
         first_dir = self.root / "source-a"
         second_dir = self.root / "source-b"
         first_dir.mkdir()
@@ -448,33 +451,48 @@ class DuplicateSafetyRegressionTests(unittest.TestCase):
             [result.status for result in results],
             [mover.MoveStatus.MOVED, mover.MoveStatus.MOVED],
         )
-        self.assertEqual(
-            [result.destination for result in results],
-            [destination, destination],
+        committed_destinations = [result.destination for result in results]
+        self.assertEqual(len(set(committed_destinations)), 2)
+        self.assertCountEqual(
+            [path.name for path in committed_destinations],
+            ["name.txt", "name(1).txt"],
         )
         self.assertFalse(first.exists())
         self.assertFalse(second.exists())
-        self.assertEqual(
+        self.assertCountEqual(
             [path.name for path in self.documents.iterdir()],
-            ["name.txt"],
+            ["name.txt", "name(1).txt"],
         )
-        self.assertIn(
-            destination.read_text(encoding="utf-8"),
-            {"content A", "content B"},
+        self.assertEqual(
+            results[0].destination.read_text(encoding="utf-8"),
+            "content A",
+        )
+        self.assertEqual(
+            results[1].destination.read_text(encoding="utf-8"),
+            "content B",
         )
 
         first_hash = hashlib.sha256(b"content A").hexdigest()
         second_hash = hashlib.sha256(b"content B").hexdigest()
         hash_db = hash_manager.load_hash_db(str(self.hash_db_file))
-        self.assertEqual(hash_db[first_hash], str(destination))
-        self.assertEqual(hash_db[second_hash], str(destination))
-        surviving_hash = hash_manager.calculate_file_hash(destination)
-        self.assertIn(surviving_hash, {first_hash, second_hash})
-        self.assertNotEqual(first_hash, second_hash)
+        self.assertEqual(hash_db[first_hash], str(results[0].destination))
+        self.assertEqual(hash_db[second_hash], str(results[1].destination))
+        self.assertEqual(
+            hash_manager.calculate_file_hash(Path(hash_db[first_hash])),
+            first_hash,
+        )
+        self.assertEqual(
+            hash_manager.calculate_file_hash(Path(hash_db[second_hash])),
+            second_hash,
+        )
         self.assertEqual(len(self._history()), 2)
+        self.assertEqual(
+            [entry["status"] for entry in self._history()],
+            ["moved", "moved"],
+        )
         self.assertEqual(self._stats()["total_files"], 2)
 
-    def test_unsafe_current_behavior_concurrent_alternative_name_clobbers(self):
+    def test_concurrent_alternative_name_collision_commits_distinct_files(self):
         self.documents.mkdir(parents=True)
         original = self.documents / "name.txt"
         original.write_text("pre-existing", encoding="utf-8")
@@ -497,28 +515,44 @@ class DuplicateSafetyRegressionTests(unittest.TestCase):
             [result.status for result in results],
             [mover.MoveStatus.MOVED, mover.MoveStatus.MOVED],
         )
-        self.assertEqual(
-            [result.destination for result in results],
-            [alternative, alternative],
+        committed_destinations = [result.destination for result in results]
+        self.assertEqual(len(set(committed_destinations)), 2)
+        self.assertCountEqual(
+            [path.name for path in committed_destinations],
+            ["name(1).txt", "name(2).txt"],
         )
         self.assertFalse(first.exists())
         self.assertFalse(second.exists())
         self.assertEqual(original.read_text(encoding="utf-8"), "pre-existing")
-        self.assertIn(
-            alternative.read_text(encoding="utf-8"),
-            {"content A", "content B"},
+        self.assertEqual(
+            results[0].destination.read_text(encoding="utf-8"),
+            "content A",
+        )
+        self.assertEqual(
+            results[1].destination.read_text(encoding="utf-8"),
+            "content B",
         )
         self.assertCountEqual(
             [path.name for path in self.documents.iterdir()],
-            ["name.txt", "name(1).txt"],
+            ["name.txt", "name(1).txt", "name(2).txt"],
         )
         first_hash = hashlib.sha256(b"content A").hexdigest()
         second_hash = hashlib.sha256(b"content B").hexdigest()
         hash_db = hash_manager.load_hash_db(str(self.hash_db_file))
-        self.assertEqual(hash_db[first_hash], str(alternative))
-        self.assertEqual(hash_db[second_hash], str(alternative))
+        self.assertEqual(hash_db[first_hash], str(results[0].destination))
+        self.assertEqual(hash_db[second_hash], str(results[1].destination))
+        self.assertEqual(
+            hash_manager.calculate_file_hash(Path(hash_db[first_hash])),
+            first_hash,
+        )
+        self.assertEqual(
+            hash_manager.calculate_file_hash(Path(hash_db[second_hash])),
+            second_hash,
+        )
+        self.assertEqual(len(self._history()), 2)
+        self.assertEqual(self._stats()["total_files"], 2)
 
-    def test_unsafe_current_behavior_external_destination_toctou_overwrites_sentinel(self):
+    def test_external_destination_toctou_preserves_sentinel(self):
         source = self._source("name.txt", "incoming bytes")
         sentinel_bytes = b"external sentinel"
         selected_destination = []
@@ -526,9 +560,10 @@ class DuplicateSafetyRegressionTests(unittest.TestCase):
 
         def create_sentinel_after_selection(destination_path):
             selected = real_generate(destination_path)
-            self.assertFalse(selected.exists())
-            selected.write_bytes(sentinel_bytes)
-            selected_destination.append(selected)
+            if not selected_destination:
+                self.assertFalse(selected.exists())
+                selected.write_bytes(sentinel_bytes)
+                selected_destination.append(selected)
             return selected
 
         with patch(
@@ -538,12 +573,22 @@ class DuplicateSafetyRegressionTests(unittest.TestCase):
             result = self._move(source)
 
         destination = self.documents / "name.txt"
+        committed_destination = self.documents / "name(1).txt"
         self.assertEqual(selected_destination, [destination])
         self.assertEqual(result.status, mover.MoveStatus.MOVED)
-        self.assertEqual(result.destination, destination)
+        self.assertEqual(result.destination, committed_destination)
         self.assertFalse(source.exists())
-        self.assertEqual(destination.read_bytes(), b"incoming bytes")
-        self.assertNotEqual(destination.read_bytes(), sentinel_bytes)
+        self.assertEqual(destination.read_bytes(), sentinel_bytes)
+        self.assertEqual(committed_destination.read_bytes(), b"incoming bytes")
+        incoming_hash = hashlib.sha256(b"incoming bytes").hexdigest()
+        hash_db = hash_manager.load_hash_db(str(self.hash_db_file))
+        self.assertEqual(hash_db, {incoming_hash: str(committed_destination)})
+        self.assertEqual(
+            hash_manager.calculate_file_hash(Path(hash_db[incoming_hash])),
+            incoming_hash,
+        )
+        self.assertEqual(self._history()[0]["status"], "moved")
+        self.assertEqual(self._stats()["total_files"], 1)
 
     def test_unsafe_current_behavior_hash_registration_failure_follows_committed_move(self):
         source = self._source(content="committed bytes")

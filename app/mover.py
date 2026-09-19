@@ -1,5 +1,5 @@
 import logging
-import shutil
+import os
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -32,9 +32,17 @@ class MoveResult:
     error: str | None = None
 
 
+class _SourceRemovalError(OSError):
+    def __init__(self, source: Path, destination: Path, error: OSError):
+        super().__init__(
+            f"Published {destination} but could not remove source {source}: {error}"
+        )
+        self.destination = destination
+
+
 def generate_unique_destination(destination_path: Path) -> Path:
     """Generate a unique name if the file already exists at the destination."""
-    if not destination_path.exists():
+    if not os.path.lexists(destination_path):
         return destination_path
 
     stem = destination_path.stem
@@ -45,9 +53,38 @@ def generate_unique_destination(destination_path: Path) -> Path:
     while True:
         new_name = f"{stem}({counter}){suffix}"
         new_path = parent / new_name
-        if not new_path.exists():
+        if not os.path.lexists(new_path):
             return new_path
         counter += 1
+
+
+def _move_no_clobber(source_file: Path, destination_file: Path) -> Path:
+    """Move one file without ever replacing an existing destination."""
+    if os.name == "nt":
+        os.rename(source_file, destination_file)
+        return destination_file
+
+    os.link(source_file, destination_file, follow_symlinks=False)
+    try:
+        os.unlink(source_file)
+    except OSError as error:
+        raise _SourceRemovalError(source_file, destination_file, error) from error
+    return destination_file
+
+
+def _move_to_unique_destination(
+    source_file: Path,
+    destination_file: Path,
+) -> Path:
+    """Select and atomically commit to an available destination path."""
+    while True:
+        candidate = generate_unique_destination(destination_file)
+        try:
+            return _move_no_clobber(source_file, candidate)
+        except FileExistsError:
+            logging.debug(
+                f"Destination collision while moving {source_file.name}: {candidate}"
+            )
 
 
 def get_dated_destination_dir(base_dir: Path, archive_by_date: bool) -> Path:
@@ -122,7 +159,6 @@ def move_file_with_retries(
                 try:
                     destination_dir.mkdir(parents=True, exist_ok=True)
                     destination_file = destination_dir / source_file.name
-                    final_destination = generate_unique_destination(destination_file)
                 except Exception as error:
                     last_error = error
                     result = MoveResult(
@@ -148,7 +184,19 @@ def move_file_with_retries(
                             break
 
                         try:
-                            shutil.move(str(source_file), str(final_destination))
+                            actual_destination = _move_to_unique_destination(
+                                source_file,
+                                destination_file,
+                            )
+                        except _SourceRemovalError as error:
+                            last_error = error
+                            result = MoveResult(
+                                MoveStatus.MOVE_FAILED,
+                                source_file,
+                                destination=error.destination,
+                                error=str(error),
+                            )
+                            break
                         except PermissionError as error:
                             last_error = error
                             logging.debug(
@@ -168,7 +216,7 @@ def move_file_with_retries(
                             try:
                                 register_file_hash(
                                     file_hash,
-                                    str(final_destination),
+                                    str(actual_destination),
                                     hash_db_file,
                                 )
                             except Exception as error:
@@ -176,14 +224,14 @@ def move_file_with_retries(
                                 result = MoveResult(
                                     MoveStatus.MOVE_FAILED,
                                     source_file,
-                                    destination=final_destination,
+                                    destination=actual_destination,
                                     error=str(error),
                                 )
                             else:
                                 result = MoveResult(
                                     MoveStatus.MOVED,
                                     source_file,
-                                    destination=final_destination,
+                                    destination=actual_destination,
                                 )
                             break
 
