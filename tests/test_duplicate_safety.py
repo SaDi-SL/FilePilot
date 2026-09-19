@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from app import hash_manager, mover
-from app.main import build_destination_folders
+from app.main import build_destination_folders, ensure_directories
 from app.stats import ensure_stats_file
 from app.watcher import NewFileHandler
 
@@ -58,6 +58,7 @@ class DuplicateSafetyRegressionTests(unittest.TestCase):
             hash_db_file=str(self.hash_db_file),
             archive_by_date=False,
             rules=self.rules,
+            organized_root=self.root / "organized",
             retries=retries,
             delay=0,
             category_override="documents",
@@ -640,7 +641,7 @@ class DuplicateSafetyRegressionTests(unittest.TestCase):
         self.assertEqual(hash_db, {original_hash: str(destination)})
         self.assertNotEqual(original_hash, replacement_hash)
 
-    def test_unsafe_current_behavior_configured_parent_category_escapes_organized_root(self):
+    def test_configured_parent_category_is_rejected(self):
         organized = self.root / "organized"
         rules = {"../escaped": [".txt"]}
         destination_folders = {
@@ -661,23 +662,24 @@ class DuplicateSafetyRegressionTests(unittest.TestCase):
             hash_db_file=str(self.hash_db_file),
             archive_by_date=False,
             rules=rules,
+            organized_root=organized,
             retries=1,
             delay=0,
             category_override="../escaped",
         )
 
         escaped_destination = self.root / "escaped" / source.name
-        self.assertEqual(result.status, mover.MoveStatus.MOVED)
-        self.assertEqual(result.destination, escaped_destination)
-        self.assertFalse(source.exists())
-        self.assertEqual(
-            escaped_destination.read_text(encoding="utf-8"),
-            "configured escape",
-        )
-        self.assertFalse(escaped_destination.is_relative_to(organized.resolve()))
-        self.assertTrue(escaped_destination.is_relative_to(self.root.resolve()))
+        self.assertEqual(result.status, mover.MoveStatus.MOVE_FAILED)
+        self.assertIsNone(result.destination)
+        self.assertIn("Unsafe category path", result.error)
+        self.assertTrue(source.exists())
+        self.assertEqual(source.read_text(encoding="utf-8"), "configured escape")
+        self.assertFalse(escaped_destination.exists())
+        self.assertEqual(self._history()[0]["status"], "failed")
+        self.assertEqual(self._stats()["total_files"], 0)
+        self.assertEqual(self._stats()["failed"], 1)
 
-    def test_unsafe_current_behavior_dynamic_parent_category_escapes_organized_root(self):
+    def test_dynamic_smart_parent_category_is_rejected(self):
         source = self._source("smart.txt", "smart escape")
         callback = MagicMock()
         handler = self._watcher(callback)
@@ -689,21 +691,15 @@ class DuplicateSafetyRegressionTests(unittest.TestCase):
             handler._process_file_thread(str(source), "created")
 
         escaped_destination = self.root / "smart-escaped" / source.name
-        organized = self.root / "organized"
-        self.assertFalse(source.exists())
-        self.assertEqual(
-            escaped_destination.read_text(encoding="utf-8"),
-            "smart escape",
-        )
-        self.assertFalse(escaped_destination.is_relative_to(organized.resolve()))
-        self.assertTrue(escaped_destination.is_relative_to(self.root.resolve()))
-        self.assertEqual(
-            Path(handler.destination_folders["../smart-escaped"]).resolve(),
-            escaped_destination.parent,
-        )
-        callback.assert_called_once_with(source.name, "../smart-escaped", "moved")
+        self.assertTrue(source.exists())
+        self.assertEqual(source.read_text(encoding="utf-8"), "smart escape")
+        self.assertFalse(escaped_destination.exists())
+        self.assertEqual(self._history()[0]["status"], "failed")
+        self.assertEqual(self._stats()["total_files"], 0)
+        self.assertEqual(self._stats()["failed"], 1)
+        callback.assert_called_once_with(source.name, "../smart-escaped", "failed")
 
-    def test_unsafe_current_behavior_dynamic_absolute_category_escapes_organized_root(self):
+    def test_dynamic_absolute_plugin_category_is_rejected(self):
         source = self._source("plugin.txt", "plugin escape")
         absolute_destination = (self.root / "absolute-escaped").resolve()
         plugin_manager = MagicMock()
@@ -732,20 +728,99 @@ class DuplicateSafetyRegressionTests(unittest.TestCase):
             handler._process_file_thread(str(source), "created")
 
         escaped_file = absolute_destination / source.name
-        organized = self.root / "organized"
-        self.assertFalse(source.exists())
-        self.assertEqual(escaped_file.read_text(encoding="utf-8"), "plugin escape")
-        self.assertFalse(escaped_file.is_relative_to(organized.resolve()))
-        self.assertTrue(escaped_file.is_relative_to(self.root.resolve()))
-        self.assertEqual(
-            Path(handler.destination_folders[str(absolute_destination)]),
-            absolute_destination,
-        )
+        self.assertTrue(source.exists())
+        self.assertEqual(source.read_text(encoding="utf-8"), "plugin escape")
+        self.assertFalse(escaped_file.exists())
+        self.assertEqual(self._history()[0]["status"], "failed")
+        self.assertEqual(self._stats()["total_files"], 0)
+        self.assertEqual(self._stats()["failed"], 1)
         callback.assert_called_once_with(
             source.name,
             str(absolute_destination),
-            "moved",
+            "failed",
         )
+
+    def test_backslash_parent_category_is_rejected(self):
+        organized = self.root / "organized"
+        category = r"..\backslash-escaped"
+        destination_folders = dict(self.destination_folders)
+        destination_folders[category] = str(organized / category)
+        source = self._source("backslash.txt", "backslash escape")
+
+        result = mover.move_file_with_retries(
+            source_file=source,
+            destination_folders=destination_folders,
+            extension_lookup={".txt": category},
+            stats_file=str(self.stats_file),
+            history_file=str(self.history_file),
+            hash_db_file=str(self.hash_db_file),
+            archive_by_date=False,
+            rules={category: [".txt"]},
+            organized_root=organized,
+            retries=1,
+            delay=0,
+            category_override=category,
+        )
+
+        self.assertEqual(result.status, mover.MoveStatus.MOVE_FAILED)
+        self.assertIn("Unsafe category path", result.error)
+        self.assertTrue(source.exists())
+        self.assertEqual(source.read_text(encoding="utf-8"), "backslash escape")
+        self.assertFalse((self.root / "backslash-escaped").exists())
+
+    def test_destination_mapping_outside_organized_root_is_rejected(self):
+        organized = self.root / "organized"
+        outside = self.root / "mapped-outside"
+        source = self._source("mapped.txt", "mapped escape")
+        destination_folders = {
+            "documents": str(outside),
+            "others": str(organized / "others"),
+        }
+
+        result = mover.move_file_with_retries(
+            source_file=source,
+            destination_folders=destination_folders,
+            extension_lookup={".txt": "documents"},
+            stats_file=str(self.stats_file),
+            history_file=str(self.history_file),
+            hash_db_file=str(self.hash_db_file),
+            archive_by_date=False,
+            rules=self.rules,
+            organized_root=organized,
+            retries=1,
+            delay=0,
+            category_override="documents",
+        )
+
+        self.assertEqual(result.status, mover.MoveStatus.MOVE_FAILED)
+        self.assertIn("Destination escapes organized root", result.error)
+        self.assertTrue(source.exists())
+        self.assertEqual(source.read_text(encoding="utf-8"), "mapped escape")
+        self.assertFalse(outside.exists())
+
+    def test_directory_initialization_rejects_outside_destination(self):
+        organized = self.root / "organized"
+        outside = self.root / "startup-escaped"
+        config = {
+            "organized_base_folder": str(organized),
+            "watch_folders": [],
+            "destination_folders": {
+                "documents": str(outside),
+                "others": str(organized / "others"),
+            },
+            "log_file": str(self.root / "reports" / "app.log"),
+            "stats_file": str(self.stats_file),
+            "history_file": str(self.history_file),
+            "hash_db_file": str(self.hash_db_file),
+        }
+
+        with self.assertRaisesRegex(
+            mover.UnsafeDestinationError,
+            "Destination escapes organized root",
+        ):
+            ensure_directories(config)
+
+        self.assertFalse(outside.exists())
 
     # Watcher propagation behavior
 

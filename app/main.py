@@ -5,6 +5,7 @@ from app.config_loader import load_config, resolve_runtime_path, get_plugins_dir
 from app.plugin_manager import PluginManager
 from app.hash_manager import ensure_hash_db
 from app.logger_setup import setup_logging
+from app.mover import resolve_contained_path
 from app.stats import ensure_stats_file
 from app.multi_watcher import MultiFolderMonitor
 
@@ -29,8 +30,10 @@ def ensure_directories(config: dict) -> None:
     if "source_folder" in config:
         Path(config["source_folder"]).mkdir(parents=True, exist_ok=True)
 
+    organized_root = Path(config["organized_base_folder"]).resolve(strict=False)
     for folder in config["destination_folders"].values():
-        Path(folder).mkdir(parents=True, exist_ok=True)
+        safe_folder = resolve_contained_path(organized_root, Path(folder))
+        safe_folder.mkdir(parents=True, exist_ok=True)
 
     Path(config["log_file"]).parent.mkdir(parents=True, exist_ok=True)
     Path(config["stats_file"]).parent.mkdir(parents=True, exist_ok=True)

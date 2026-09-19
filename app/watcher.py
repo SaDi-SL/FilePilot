@@ -33,6 +33,12 @@ class NewFileHandler(FileSystemEventHandler):
         self.extension_lookup = extension_lookup
         self.plugin_manager = plugin_manager
         self.destination_folders = config["destination_folders"]
+        self.organized_root = Path(
+            config.get(
+                "organized_base_folder",
+                Path(self.destination_folders["others"]).parent,
+            )
+        )
         self.rules = config["rules"]
         try:
             self.processing_wait_seconds = max(
@@ -219,8 +225,7 @@ class NewFileHandler(FileSystemEventHandler):
 
             # إنشاء مجلد فئة جديدة إذا لزم
             if final_category and final_category not in self.destination_folders:
-                new_folder = Path(self.destination_folders["others"]).parent / final_category
-                new_folder.mkdir(parents=True, exist_ok=True)
+                new_folder = self.organized_root / final_category
                 self.destination_folders[final_category] = str(new_folder)
 
             move_result = move_file_with_retries(
@@ -232,6 +237,7 @@ class NewFileHandler(FileSystemEventHandler):
                 hash_db_file=self.hash_db_file,
                 archive_by_date=self.archive_by_date,
                 rules=self.rules,
+                organized_root=self.organized_root,
                 retries=8,
                 delay=2,
                 classification_method=classification_method,

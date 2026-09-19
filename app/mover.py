@@ -4,7 +4,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from app.classifier import get_file_category
 from app.stats import update_stats, append_history
@@ -38,6 +38,40 @@ class _SourceRemovalError(OSError):
             f"Published {destination} but could not remove source {source}: {error}"
         )
         self.destination = destination
+
+
+class UnsafeDestinationError(ValueError):
+    pass
+
+
+def validate_category(category: object) -> str:
+    """Reject category values that can alter the organized destination root."""
+    if not isinstance(category, str) or not category:
+        raise UnsafeDestinationError("Category must be a non-empty string")
+
+    windows_path = PureWindowsPath(category)
+    posix_path = PurePosixPath(category)
+    path_parts = category.replace("\\", "/").split("/")
+    if (
+        windows_path.drive
+        or windows_path.root
+        or posix_path.is_absolute()
+        or any(part in {".", ".."} for part in path_parts)
+    ):
+        raise UnsafeDestinationError(f"Unsafe category path: {category!r}")
+
+    return category
+
+
+def resolve_contained_path(organized_root: Path, destination: Path) -> Path:
+    """Return a canonical destination only when it is within organized_root."""
+    resolved_root = organized_root.resolve(strict=False)
+    resolved_destination = destination.resolve(strict=False)
+    if not resolved_destination.is_relative_to(resolved_root):
+        raise UnsafeDestinationError(
+            f"Destination escapes organized root: {resolved_destination}"
+        )
+    return resolved_destination
 
 
 def generate_unique_destination(destination_path: Path) -> Path:
@@ -75,10 +109,12 @@ def _move_no_clobber(source_file: Path, destination_file: Path) -> Path:
 def _move_to_unique_destination(
     source_file: Path,
     destination_file: Path,
+    organized_root: Path,
 ) -> Path:
     """Select and atomically commit to an available destination path."""
     while True:
         candidate = generate_unique_destination(destination_file)
+        candidate = resolve_contained_path(organized_root, candidate)
         try:
             return _move_no_clobber(source_file, candidate)
         except FileExistsError:
@@ -106,6 +142,7 @@ def move_file_with_retries(
     hash_db_file: str,
     archive_by_date: bool,
     rules: dict,
+    organized_root: str | Path,
     retries: int = 8,
     delay: int = 2,
     classification_method: str = "extension",
@@ -121,9 +158,6 @@ def move_file_with_retries(
 
     logging.debug(f"Processing: {source_file.name} | suffix: {source_file.suffix!r} | category: {category}")
 
-    if category not in destination_folders:
-        category = "others"
-
     if not source_file.exists():
         logging.warning(f"File no longer exists before hashing: {source_file}")
         append_history(history_file, source_file.name, category, "disappeared")
@@ -134,14 +168,45 @@ def move_file_with_retries(
         )
 
     try:
+        category = validate_category(category)
+        organized_root_path = Path(organized_root).resolve(strict=False)
+        if category not in destination_folders:
+            category = "others"
+        base_destination_dir = Path(destination_folders[category])
+        destination_dir = get_dated_destination_dir(
+            base_destination_dir,
+            archive_by_date,
+        )
+        destination_file = resolve_contained_path(
+            organized_root_path,
+            destination_dir / source_file.name,
+        )
+    except (
+        KeyError,
+        OSError,
+        RuntimeError,
+        TypeError,
+        UnsafeDestinationError,
+    ) as error:
+        logging.error(f"Rejected unsafe destination for {source_file.name}: {error}")
+        update_stats(stats_file, category, rules, success=False)
+        append_history(
+            history_file,
+            source_file.name,
+            category,
+            "failed",
+            classification_method,
+            smart_source,
+        )
+        return MoveResult(MoveStatus.MOVE_FAILED, source_file, error=str(error))
+
+    try:
         file_hash = calculate_file_hash(source_file)
     except Exception as error:
         logging.error(f"Hash check failed for {source_file.name}: {error}")
         append_history(history_file, source_file.name, category, "hash_check_failed")
         return MoveResult(MoveStatus.HASH_CHECK_FAILED, source_file, error=str(error))
 
-    base_destination_dir = Path(destination_folders[category])
-    destination_dir = get_dated_destination_dir(base_destination_dir, archive_by_date)
     last_error = None
     result: MoveResult | None = None
     failure_history_status = "failed"
@@ -157,8 +222,7 @@ def move_file_with_retries(
                 )
             else:
                 try:
-                    destination_dir.mkdir(parents=True, exist_ok=True)
-                    destination_file = destination_dir / source_file.name
+                    destination_file.parent.mkdir(parents=True, exist_ok=True)
                 except Exception as error:
                     last_error = error
                     result = MoveResult(
@@ -187,7 +251,16 @@ def move_file_with_retries(
                             actual_destination = _move_to_unique_destination(
                                 source_file,
                                 destination_file,
+                                organized_root_path,
                             )
+                        except UnsafeDestinationError as error:
+                            last_error = error
+                            result = MoveResult(
+                                MoveStatus.MOVE_FAILED,
+                                source_file,
+                                error=str(error),
+                            )
+                            break
                         except _SourceRemovalError as error:
                             last_error = error
                             result = MoveResult(
