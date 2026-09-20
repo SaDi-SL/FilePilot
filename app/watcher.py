@@ -1,8 +1,11 @@
 import logging
+import math
 import os
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import dataclass
+from enum import Enum, auto
 from pathlib import Path
 
 from watchdog.observers import Observer
@@ -15,6 +18,21 @@ from app.path_topology import (
     validate_watch_root,
 )
 from app.smart_classifier import smart_classify
+
+
+class _ProcessingResult(Enum):
+    COMPLETED = auto()
+    RETRY_WHEN_STABLE = auto()
+    ABANDONED = auto()
+
+
+@dataclass(frozen=True)
+class _RetryJob:
+    file_path: str
+    deadline: float
+    retry_number: int
+    identity: tuple[int, int] | None
+    generation: int
 
 
 def should_ignore_file(file_path: Path, config: dict) -> bool:
@@ -123,7 +141,7 @@ class NewFileHandler(FileSystemEventHandler):
             if not source_path.is_file():
                 return None
             stat = source_path.stat()
-            return stat.st_size, stat.st_mtime_ns
+            return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns
         except OSError:
             return None
 
@@ -165,29 +183,37 @@ class NewFileHandler(FileSystemEventHandler):
         return False
 
     def _process_file_thread(self, file_path: str, source_event: str,
-                             stop_event=None) -> None:
+                              stop_event=None) -> _ProcessingResult:
         classification_method = "extension"
         smart_source = ""
         final_category = None
         status = "unknown"
         source_path = Path(file_path)
+        notify_callback = False
 
         if self._is_organized_output(source_path):
-            return
+            return _ProcessingResult.ABANDONED
 
         try:
             if not source_path.is_file():
-                return
+                return _ProcessingResult.ABANDONED
 
             if should_ignore_file(source_path, self.config):
                 logging.debug(f"Ignored: {source_path.name}")
-                return
+                return _ProcessingResult.ABANDONED
 
             logging.info(f"Detected: {source_path.name} | event: {source_event}")
             if not self._wait_until_stable(source_path, stop_event):
-                logging.info(f"File did not become stable: {source_path.name}")
-                return
+                if stop_event is not None and stop_event.is_set():
+                    logging.debug(f"Stability wait cancelled: {source_path.name}")
+                    return _ProcessingResult.ABANDONED
+                if source_path.is_file():
+                    logging.info(f"File is still changing; retry deferred: {source_path.name}")
+                    return _ProcessingResult.RETRY_WHEN_STABLE
+                logging.info(f"File disappeared before becoming stable: {source_path.name}")
+                return _ProcessingResult.ABANDONED
 
+            notify_callback = True
             self.last_processed_file = source_path.name
 
             # 1) Plugins
@@ -268,10 +294,11 @@ class NewFileHandler(FileSystemEventHandler):
         except Exception as error:
             logging.error(f"Error processing {file_path}: {error}", exc_info=True)
             status = "error"
+            notify_callback = True
 
         finally:
             # أبلغ الـ GUI لحظياً بانتهاء المعالجة
-            if self.file_processed_callback is not None:
+            if notify_callback and self.file_processed_callback is not None:
                 try:
                     self.file_processed_callback(
                         Path(file_path).name,
@@ -284,10 +311,14 @@ class NewFileHandler(FileSystemEventHandler):
                         exc_info=True,
                     )
 
+        return _ProcessingResult.COMPLETED
+
 
 class FileMonitor:
     # Two workers permit useful parallelism without overwhelming disks or movers.
     DEFAULT_PROCESSING_WORKERS = 2
+    DEFAULT_STABILITY_RETRY_DELAY_SECONDS = 2.0
+    DEFAULT_STABILITY_MAX_RETRIES = 3
 
     def __init__(self, config: dict, extension_lookup: dict, plugin_manager=None,
                  file_processed_callback=None,
@@ -311,15 +342,43 @@ class FileMonitor:
             )
         except (TypeError, ValueError):
             self.duplicate_event_window_seconds = 3.0
+        try:
+            retry_delay = float(config.get(
+                "processing_stability_retry_delay_seconds",
+                self.DEFAULT_STABILITY_RETRY_DELAY_SECONDS,
+            ))
+            if (not math.isfinite(retry_delay)
+                    or retry_delay < 0
+                    or retry_delay > threading.TIMEOUT_MAX):
+                raise ValueError
+            self.stability_retry_delay_seconds = retry_delay
+        except (TypeError, ValueError):
+            self.stability_retry_delay_seconds = (
+                self.DEFAULT_STABILITY_RETRY_DELAY_SECONDS
+            )
+        try:
+            retry_limit = int(config.get(
+                "processing_stability_max_retries",
+                self.DEFAULT_STABILITY_MAX_RETRIES,
+            ))
+            if retry_limit < 0:
+                raise ValueError
+            self.stability_max_retries = retry_limit
+        except (TypeError, ValueError, OverflowError):
+            self.stability_max_retries = self.DEFAULT_STABILITY_MAX_RETRIES
         self._condition = threading.Condition()
         self._state = "stopped"
         self._accepting_submissions = False
         self._generation = 0
         self._stop_event = None
         self._executor = None
+        self._retry_thread = None
         self._worker_local = threading.local()
         self._pending_paths: set[str] = set()
-        self._recent_submissions: dict[str, float] = {}
+        self._recent_submissions: dict[
+            str, tuple[float, tuple[int, int] | None]
+        ] = {}
+        self._retry_jobs: dict[str, _RetryJob] = {}
         self._next_event_cleanup_at = 0.0
         self._futures: set[Future] = set()
         self.event_handler = NewFileHandler(
@@ -353,30 +412,63 @@ class FileMonitor:
     def _path_key(file_path: str) -> str:
         return os.path.normcase(os.path.abspath(os.fspath(file_path)))
 
-    def submit(self, file_path: str, source_event: str) -> bool:
+    @staticmethod
+    def _file_identity(file_path: str | Path) -> tuple[int, int] | None:
+        try:
+            source_path = Path(file_path)
+            if not source_path.is_file():
+                return None
+            stat = source_path.stat()
+            return stat.st_dev, stat.st_ino
+        except OSError:
+            return None
+
+    def submit(self, file_path: str, source_event: str, *,
+               _retry_number=0, _expected_identity=None,
+               _generation=None, _bypass_recent=False,
+               _retry_promotion=False) -> bool:
         if self.event_handler._is_organized_output(file_path):
             return False
         key = self._path_key(file_path)
+        current_identity = self._file_identity(file_path)
         with self._condition:
             executor = self._executor
             stop_event = self._stop_event
             if not self._accepting_submissions or executor is None:
                 return False
+            generation = self._generation
+            if _generation is not None and _generation != generation:
+                return False
             if key in self._pending_paths:
                 return False
+
+            retry_job = self._retry_jobs.get(key)
+            if retry_job is not None:
+                same_file = (
+                    retry_job.identity is None
+                    or current_identity is None
+                    or retry_job.identity == current_identity
+                )
+                if not _retry_promotion and same_file:
+                    return False
+                self._retry_jobs.pop(key, None)
+                if not _retry_promotion:
+                    _bypass_recent = True
 
             submitted_at = time.monotonic()
             previous_submission = self._recent_submissions.get(key)
             if (previous_submission is not None
-                    and submitted_at - previous_submission
-                    < self.duplicate_event_window_seconds):
+                    and submitted_at - previous_submission[0]
+                    < self.duplicate_event_window_seconds
+                    and previous_submission[1] == current_identity
+                    and not _bypass_recent):
                 return False
 
             if submitted_at >= self._next_event_cleanup_at:
                 cutoff = submitted_at - self.duplicate_event_window_seconds
                 expired_paths = [
-                    path for path, timestamp in self._recent_submissions.items()
-                    if path not in self._pending_paths and timestamp <= cutoff
+                    path for path, submission in self._recent_submissions.items()
+                    if path not in self._pending_paths and submission[0] <= cutoff
                 ]
                 for path in expired_paths:
                     del self._recent_submissions[path]
@@ -385,7 +477,7 @@ class FileMonitor:
                 )
 
             self._pending_paths.add(key)
-            self._recent_submissions[key] = submitted_at
+            self._recent_submissions[key] = submitted_at, current_identity
             try:
                 future = executor.submit(
                     self._run_processing,
@@ -393,6 +485,9 @@ class FileMonitor:
                     source_event,
                     key,
                     stop_event,
+                    generation,
+                    _retry_number,
+                    _expected_identity or current_identity,
                 )
             except Exception:
                 self._pending_paths.discard(key)
@@ -405,19 +500,125 @@ class FileMonitor:
             return True
 
     def _run_processing(self, file_path: str, source_event: str, key: str,
-                        stop_event) -> None:
+                         stop_event, generation: int, retry_number: int,
+                         expected_identity) -> None:
         self._worker_local.active = True
         try:
-            self.event_handler._process_file_thread(
+            result = self.event_handler._process_file_thread(
                 file_path,
                 source_event,
                 stop_event,
             )
+            if result is _ProcessingResult.RETRY_WHEN_STABLE:
+                self._schedule_stability_retry(
+                    file_path,
+                    key,
+                    generation,
+                    retry_number,
+                    expected_identity,
+                    stop_event,
+                )
         finally:
             self._worker_local.active = False
             with self._condition:
                 self._pending_paths.discard(key)
                 self._condition.notify_all()
+
+    def _schedule_stability_retry(self, file_path: str, key: str,
+                                  generation: int, retry_number: int,
+                                  expected_identity, stop_event) -> None:
+        current_identity = self._file_identity(file_path)
+        if current_identity is None:
+            return
+        replaced = (
+            expected_identity is not None
+            and current_identity != expected_identity
+        )
+        if not replaced and retry_number >= self.stability_max_retries:
+            logging.warning(
+                f"Stability retry limit reached; leaving file in place: {file_path}"
+            )
+            return
+
+        next_retry_number = 0 if replaced else retry_number + 1
+
+        job = _RetryJob(
+            file_path=file_path,
+            deadline=time.monotonic() + self.stability_retry_delay_seconds,
+            retry_number=next_retry_number,
+            identity=current_identity,
+            generation=generation,
+        )
+        with self._condition:
+            if (not self._accepting_submissions
+                    or self._generation != generation
+                    or self._stop_event is not stop_event
+                    or stop_event.is_set()):
+                return
+            self._retry_jobs[key] = job
+            self._condition.notify_all()
+
+    def _run_retry_scheduler(self, generation: int, stop_event) -> None:
+        while True:
+            with self._condition:
+                while True:
+                    if (stop_event.is_set()
+                            or self._generation != generation
+                            or not self._accepting_submissions):
+                        return
+                    available = [
+                        (key, job)
+                        for key, job in self._retry_jobs.items()
+                        if (job.generation == generation
+                            and key not in self._pending_paths)
+                    ]
+                    if not available:
+                        self._condition.wait()
+                        continue
+                    key, job = min(
+                        available,
+                        key=lambda item: item[1].deadline,
+                    )
+                    remaining = job.deadline - time.monotonic()
+                    if remaining > 0:
+                        self._condition.wait(remaining)
+                        continue
+                    break
+
+            current_identity = self._file_identity(job.file_path)
+            if current_identity is None:
+                with self._condition:
+                    if self._retry_jobs.get(key) is job:
+                        del self._retry_jobs[key]
+                    self._condition.notify_all()
+                continue
+            retry_number = job.retry_number
+            if job.identity is not None and current_identity != job.identity:
+                retry_number = 0
+            try:
+                submitted = self.submit(
+                    job.file_path,
+                    "stability_retry",
+                    _retry_number=retry_number,
+                    _expected_identity=current_identity,
+                    _generation=generation,
+                    _bypass_recent=True,
+                    _retry_promotion=True,
+                )
+                if not submitted:
+                    with self._condition:
+                        if self._retry_jobs.get(key) is job:
+                            del self._retry_jobs[key]
+                        self._condition.notify_all()
+            except Exception:
+                logging.error(
+                    f"Failed to promote stability retry for {job.file_path}",
+                    exc_info=True,
+                )
+                with self._condition:
+                    if self._retry_jobs.get(key) is job:
+                        del self._retry_jobs[key]
+                    self._condition.notify_all()
 
     def _future_completed(self, future: Future) -> None:
         if not future.cancelled():
@@ -448,18 +649,26 @@ class FileMonitor:
         stop_event = threading.Event()
         executor = None
         observer = None
+        retry_thread = None
         try:
             executor = ThreadPoolExecutor(
                 max_workers=self.max_processing_workers,
                 thread_name_prefix=f"filepilot-{id(self):x}-g{generation}",
             )
             observer = Observer()
+            retry_thread = threading.Thread(
+                target=self._run_retry_scheduler,
+                args=(generation, stop_event),
+                name=f"filepilot-retry-{id(self):x}-g{generation}",
+            )
             with self._condition:
                 self._stop_event = stop_event
                 self._executor = executor
                 self.observer = observer
+                self._retry_thread = retry_thread
                 self._accepting_submissions = True
 
+            retry_thread.start()
             observer.schedule(self.event_handler, self.source_folder, recursive=False)
             observer.start()
             self.scan_existing_files()
@@ -467,20 +676,26 @@ class FileMonitor:
             with self._condition:
                 self._accepting_submissions = False
                 stop_event.set()
+                self._retry_jobs.clear()
+                self._condition.notify_all()
             if observer is not None:
                 try:
                     observer.stop()
                     observer.join()
                 except Exception:
                     pass
+            if retry_thread is not None and retry_thread.is_alive():
+                retry_thread.join()
             if executor is not None:
                 executor.shutdown(wait=True)
             with self._condition:
                 self._executor = None
                 self._stop_event = None
+                self._retry_thread = None
                 self.observer = None
                 self._pending_paths.clear()
                 self._recent_submissions.clear()
+                self._retry_jobs.clear()
                 self._next_event_cleanup_at = 0.0
                 self._futures.clear()
                 self._state = "stopped"
@@ -513,6 +728,11 @@ class FileMonitor:
             observer = self.observer
             executor = self._executor
             stop_event = self._stop_event
+            retry_thread = self._retry_thread
+            if stop_event is not None:
+                stop_event.set()
+            self._retry_jobs.clear()
+            self._condition.notify_all()
 
         errors = []
         if observer is not None:
@@ -526,6 +746,13 @@ class FileMonitor:
             except Exception as error:
                 errors.append(error)
                 logging.error("Failed while joining file observer", exc_info=True)
+
+        try:
+            if retry_thread is not None:
+                retry_thread.join()
+        except Exception as error:
+            errors.append(error)
+            logging.error("Failed while joining stability retry scheduler", exc_info=True)
 
         try:
             if executor is not None:
@@ -544,8 +771,11 @@ class FileMonitor:
                         self._executor = None
                     if self._stop_event is stop_event:
                         self._stop_event = None
+                    if self._retry_thread is retry_thread:
+                        self._retry_thread = None
                     self._pending_paths.clear()
                     self._recent_submissions.clear()
+                    self._retry_jobs.clear()
                     self._next_event_cleanup_at = 0.0
                     self._futures.clear()
                     self._state = "stopped"

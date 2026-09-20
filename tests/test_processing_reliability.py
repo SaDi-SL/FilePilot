@@ -83,9 +83,9 @@ class ProcessingReliabilityTests(unittest.TestCase):
             destination=Path(source).parent / "moved" / Path(source).name,
         )
 
-    def _start_monitor(self, callback=None, max_workers=2):
+    def _start_monitor(self, callback=None, max_workers=2, **config_overrides):
         monitor = FileMonitor(
-            self._config(),
+            self._config(**config_overrides),
             {".txt": "documents"},
             file_processed_callback=callback,
             max_processing_workers=max_workers,
@@ -101,7 +101,11 @@ class ProcessingReliabilityTests(unittest.TestCase):
     def _wait_for_idle(self, monitor):
         with monitor._condition:
             completed = monitor._condition.wait_for(
-                lambda: not monitor._pending_paths and not monitor._futures,
+                lambda: (
+                    not monitor._pending_paths
+                    and not monitor._futures
+                    and not monitor._retry_jobs
+                ),
                 timeout=5,
             )
         self.assertTrue(completed, "processing did not become idle")
@@ -188,6 +192,8 @@ class ProcessingReliabilityTests(unittest.TestCase):
                 processing_stability_interval_seconds=0.2,
                 processing_stability_checks=3,
                 processing_stability_timeout_seconds=9,
+                processing_stability_retry_delay_seconds=0.25,
+                processing_stability_max_retries=5,
             ),
             {".txt": "documents"},
         )
@@ -202,6 +208,35 @@ class ProcessingReliabilityTests(unittest.TestCase):
         self.assertEqual(
             configured_monitor.event_handler.stability_timeout_seconds,
             9,
+        )
+        self.assertEqual(default_monitor.stability_retry_delay_seconds, 2.0)
+        self.assertEqual(default_monitor.stability_max_retries, 3)
+        self.assertEqual(configured_monitor.stability_retry_delay_seconds, 0.25)
+        self.assertEqual(configured_monitor.stability_max_retries, 5)
+
+    def test_invalid_stability_retry_settings_use_safe_defaults(self):
+        monitor = FileMonitor(
+            self._config(
+                processing_stability_retry_delay_seconds=float("nan"),
+                processing_stability_max_retries=-1,
+            ),
+            {".txt": "documents"},
+        )
+        infinite_limit_monitor = FileMonitor(
+            self._config(processing_stability_max_retries=float("inf")),
+            {".txt": "documents"},
+        )
+        oversized_delay_monitor = FileMonitor(
+            self._config(processing_stability_retry_delay_seconds=1e308),
+            {".txt": "documents"},
+        )
+
+        self.assertEqual(monitor.stability_retry_delay_seconds, 2.0)
+        self.assertEqual(monitor.stability_max_retries, 3)
+        self.assertEqual(infinite_limit_monitor.stability_max_retries, 3)
+        self.assertEqual(
+            oversized_delay_monitor.stability_retry_delay_seconds,
+            2.0,
         )
 
     def test_same_path_events_coalesce_while_pending_or_running(self):
@@ -290,7 +325,7 @@ class ProcessingReliabilityTests(unittest.TestCase):
         self.assertEqual(order, ["sample", "sample", "sample", "classify", "move"])
         self.assertEqual(sleep_call.call_count, 2)
 
-    def test_changing_file_is_not_ready_after_one_wait(self):
+    def test_changing_file_defers_without_callback(self):
         source = self.incoming / "changing.txt"
         source.write_text("content", encoding="utf-8")
         callback = MagicMock()
@@ -314,8 +349,449 @@ class ProcessingReliabilityTests(unittest.TestCase):
         self.assertEqual(sleep_call.call_count, 4)
         classify.assert_not_called()
         move_file.assert_not_called()
-        callback.assert_called_once_with(source.name, "unknown", "unknown")
+        callback.assert_not_called()
         self.assertTrue(source.exists())
+
+    def test_unstable_file_is_retried_and_processed_without_new_event(self):
+        source = self.incoming / "eventually-stable.txt"
+        source.write_text("content", encoding="utf-8")
+        callback = MagicMock()
+        monitor = self._start_monitor(
+            callback=callback,
+            processing_stability_retry_delay_seconds=0,
+            processing_stability_max_retries=2,
+        )
+
+        with (
+            patch.object(
+                monitor.event_handler,
+                "_wait_until_stable",
+                side_effect=[False, True],
+            ) as stable_check,
+            patch("app.watcher.smart_classify", return_value=None),
+            patch(
+                "app.watcher.move_file_with_retries",
+                return_value=self._moved(source),
+            ) as move_file,
+        ):
+            self.assertTrue(monitor.submit(str(source), "created"))
+            self._wait_for_idle(monitor)
+
+        self.assertEqual(stable_check.call_count, 2)
+        move_file.assert_called_once()
+        callback.assert_called_once_with(source.name, "documents", "moved")
+        self.assertTrue(source.exists())
+
+    def test_stability_retries_are_bounded_without_callback(self):
+        source = self.incoming / "never-stable.txt"
+        source.write_text("content", encoding="utf-8")
+        callback = MagicMock()
+        monitor = self._start_monitor(
+            callback=callback,
+            processing_stability_retry_delay_seconds=0,
+            processing_stability_max_retries=2,
+        )
+
+        with (
+            patch.object(
+                monitor.event_handler,
+                "_wait_until_stable",
+                return_value=False,
+            ) as stable_check,
+            patch("app.watcher.smart_classify") as classify,
+            patch("app.watcher.move_file_with_retries") as move_file,
+        ):
+            self.assertTrue(monitor.submit(str(source), "created"))
+            self._wait_for_idle(monitor)
+
+        self.assertEqual(stable_check.call_count, 3)
+        classify.assert_not_called()
+        move_file.assert_not_called()
+        callback.assert_not_called()
+        self.assertTrue(source.exists())
+
+    def test_delayed_retry_does_not_occupy_processing_worker(self):
+        changing = self.incoming / "changing.txt"
+        ready = self.incoming / "ready.txt"
+        changing.write_text("changing", encoding="utf-8")
+        ready.write_text("ready", encoding="utf-8")
+        ready_moved = threading.Event()
+        monitor = self._start_monitor(
+            max_workers=1,
+            processing_stability_retry_delay_seconds=60,
+        )
+
+        def stable_check(source, _stop_event):
+            return source == ready
+
+        def move(**kwargs):
+            ready_moved.set()
+            return self._moved(kwargs["source_file"])
+
+        with (
+            patch.object(
+                monitor.event_handler,
+                "_wait_until_stable",
+                side_effect=stable_check,
+            ),
+            patch("app.watcher.smart_classify", return_value=None),
+            patch("app.watcher.move_file_with_retries", side_effect=move),
+        ):
+            self.assertTrue(monitor.submit(str(changing), "created"))
+            with monitor._condition:
+                self.assertTrue(monitor._condition.wait_for(
+                    lambda: bool(monitor._retry_jobs),
+                    timeout=5,
+                ))
+            self.assertTrue(monitor.submit(str(ready), "created"))
+            self.assertTrue(ready_moved.wait(timeout=5))
+
+    def test_event_storm_keeps_one_scheduled_retry_for_path(self):
+        source = self.incoming / "storm.txt"
+        source.write_text("content", encoding="utf-8")
+        monitor = self._start_monitor(
+            processing_stability_retry_delay_seconds=60,
+        )
+
+        with patch.object(
+            monitor.event_handler,
+            "_wait_until_stable",
+            return_value=False,
+        ) as stable_check:
+            self.assertTrue(monitor.submit(str(source), "created"))
+            with monitor._condition:
+                self.assertTrue(monitor._condition.wait_for(
+                    lambda: (
+                        bool(monitor._retry_jobs)
+                        and not monitor._pending_paths
+                        and not monitor._futures
+                    ),
+                    timeout=5,
+                ))
+            for _ in range(20):
+                self.assertFalse(monitor.submit(str(source), "modified"))
+
+        self.assertEqual(stable_check.call_count, 1)
+        self.assertEqual(len(monitor._retry_jobs), 1)
+        self.assertTrue(monitor._retry_thread.is_alive())
+
+    def test_stop_cancels_scheduled_retry_without_waiting_for_delay(self):
+        source = self.incoming / "cancel-retry.txt"
+        source.write_text("content", encoding="utf-8")
+        callback = MagicMock()
+        monitor = self._start_monitor(
+            callback=callback,
+            processing_stability_retry_delay_seconds=60,
+        )
+        retry_thread = monitor._retry_thread
+
+        with patch.object(
+            monitor.event_handler,
+            "_wait_until_stable",
+            return_value=False,
+        ) as stable_check:
+            self.assertTrue(monitor.submit(str(source), "created"))
+            with monitor._condition:
+                self.assertTrue(monitor._condition.wait_for(
+                    lambda: (
+                        bool(monitor._retry_jobs)
+                        and not monitor._pending_paths
+                        and not monitor._futures
+                    ),
+                    timeout=5,
+                ))
+
+            stop_done = threading.Event()
+            stop_thread = threading.Thread(
+                target=lambda: (monitor.stop(), stop_done.set())
+            )
+            stop_thread.start()
+            try:
+                self.assertTrue(stop_done.wait(timeout=1))
+                stop_thread.join(timeout=1)
+            finally:
+                stop_thread.join(timeout=5)
+
+        stable_check.assert_called_once()
+        callback.assert_not_called()
+        self.assertFalse(stop_thread.is_alive())
+        self.assertFalse(retry_thread.is_alive())
+        self.assertFalse(monitor._retry_jobs)
+
+    def test_restart_does_not_dispatch_retry_from_old_generation(self):
+        old_source = self.incoming / "old-generation.txt"
+        new_source = self.incoming / "new-generation.txt"
+        old_source.write_text("old", encoding="utf-8")
+        new_source.write_text("new", encoding="utf-8")
+        callbacks = []
+        monitor = self._start_monitor(
+            callback=lambda *args: callbacks.append(args),
+            processing_stability_retry_delay_seconds=60,
+        )
+        first_retry_thread = monitor._retry_thread
+
+        def stable_check(source, _stop_event):
+            return source == new_source
+
+        with (
+            patch.object(
+                monitor.event_handler,
+                "_wait_until_stable",
+                side_effect=stable_check,
+            ) as check,
+            patch("app.watcher.smart_classify", return_value=None),
+            patch(
+                "app.watcher.move_file_with_retries",
+                side_effect=lambda **kwargs: self._moved(kwargs["source_file"]),
+            ) as move_file,
+        ):
+            self.assertTrue(monitor.submit(str(old_source), "created"))
+            with monitor._condition:
+                self.assertTrue(monitor._condition.wait_for(
+                    lambda: bool(monitor._retry_jobs),
+                    timeout=5,
+                ))
+            monitor.stop()
+            self.assertFalse(first_retry_thread.is_alive())
+
+            with (
+                patch("app.watcher.Observer", ObserverDouble),
+                patch.object(monitor, "scan_existing_files"),
+            ):
+                monitor.start()
+            self.assertTrue(monitor.submit(str(new_source), "created"))
+            self._wait_for_idle(monitor)
+
+        self.assertEqual(
+            [call.args[0].name for call in check.call_args_list],
+            [old_source.name, new_source.name],
+        )
+        move_file.assert_called_once()
+        self.assertEqual(callbacks, [(new_source.name, "documents", "moved")])
+
+    def test_file_disappearing_before_retry_is_abandoned_quietly(self):
+        source = self.incoming / "disappears-before-retry.txt"
+        source.write_text("content", encoding="utf-8")
+        callback = MagicMock()
+        monitor = self._start_monitor(
+            callback=callback,
+            processing_stability_retry_delay_seconds=0,
+        )
+        real_identity = monitor._file_identity
+        identity_calls = 0
+
+        def identity(file_path):
+            nonlocal identity_calls
+            identity_calls += 1
+            if identity_calls == 3:
+                source.unlink()
+            return real_identity(file_path)
+
+        with (
+            patch.object(monitor, "_file_identity", side_effect=identity),
+            patch.object(
+                monitor.event_handler,
+                "_wait_until_stable",
+                return_value=False,
+            ) as stable_check,
+            patch("app.watcher.smart_classify") as classify,
+            patch("app.watcher.move_file_with_retries") as move_file,
+        ):
+            self.assertTrue(monitor.submit(str(source), "created"))
+            self._wait_for_idle(monitor)
+
+        stable_check.assert_called_once()
+        classify.assert_not_called()
+        move_file.assert_not_called()
+        callback.assert_not_called()
+
+    def test_file_moved_into_organized_tree_before_retry_is_not_processed(self):
+        source = self.incoming / "organized-before-retry.txt"
+        source.write_text("content", encoding="utf-8")
+        organized_source = self.root / "organized" / "documents" / source.name
+        organized_source.parent.mkdir(parents=True)
+        callback = MagicMock()
+        monitor = self._start_monitor(
+            callback=callback,
+            processing_stability_retry_delay_seconds=0,
+        )
+        real_identity = monitor._file_identity
+        scheduler_check = threading.Event()
+        release_check = threading.Event()
+        identity_calls = 0
+
+        def pause_retry_identity(file_path):
+            nonlocal identity_calls
+            identity_calls += 1
+            if identity_calls == 3:
+                scheduler_check.set()
+                if not release_check.wait(timeout=5):
+                    raise TimeoutError("retry identity check was not released")
+            return real_identity(file_path)
+
+        try:
+            with (
+                patch.object(
+                    monitor,
+                    "_file_identity",
+                    side_effect=pause_retry_identity,
+                ),
+                patch.object(
+                    monitor.event_handler,
+                    "_wait_until_stable",
+                    return_value=False,
+                ) as stable_check,
+                patch("app.watcher.smart_classify") as classify,
+                patch("app.watcher.move_file_with_retries") as move_file,
+            ):
+                self.assertTrue(monitor.submit(str(source), "created"))
+                self.assertTrue(scheduler_check.wait(timeout=5))
+                source.replace(organized_source)
+                release_check.set()
+                self._wait_for_idle(monitor)
+        finally:
+            release_check.set()
+
+        stable_check.assert_called_once()
+        classify.assert_not_called()
+        move_file.assert_not_called()
+        callback.assert_not_called()
+        self.assertTrue(organized_source.exists())
+
+    def test_retry_rejected_by_topology_is_removed_without_redispatch(self):
+        source = self.incoming / "becomes-internal.txt"
+        source.write_text("content", encoding="utf-8")
+        monitor = self._start_monitor(
+            processing_stability_retry_delay_seconds=0,
+        )
+        topology_checks = 0
+
+        def becomes_internal(_file_path):
+            nonlocal topology_checks
+            topology_checks += 1
+            return topology_checks >= 3
+
+        with (
+            patch.object(
+                monitor.event_handler,
+                "_is_organized_output",
+                side_effect=becomes_internal,
+            ),
+            patch.object(
+                monitor.event_handler,
+                "_wait_until_stable",
+                return_value=False,
+            ) as stable_check,
+            patch("app.watcher.smart_classify") as classify,
+            patch("app.watcher.move_file_with_retries") as move_file,
+        ):
+            self.assertTrue(monitor.submit(str(source), "created"))
+            self._wait_for_idle(monitor)
+
+        stable_check.assert_called_once()
+        classify.assert_not_called()
+        move_file.assert_not_called()
+        self.assertEqual(topology_checks, 3)
+        self.assertFalse(monitor._retry_jobs)
+
+    def test_replacement_during_pending_attempt_gets_fresh_retry_budget(self):
+        source = self.incoming / "replaced-while-pending.txt"
+        source.write_text("old", encoding="utf-8")
+        callback = MagicMock()
+        monitor = self._start_monitor(
+            callback=callback,
+            processing_stability_retry_delay_seconds=0,
+            processing_stability_max_retries=0,
+        )
+        identity_calls = 0
+        old_identity = (1, 100)
+        replacement_identity = (1, 200)
+        stability_calls = 0
+
+        def identity(_file_path):
+            nonlocal identity_calls
+            identity_calls += 1
+            if identity_calls == 1:
+                return old_identity
+            return replacement_identity
+
+        def replace_then_stabilize(_source, _stop_event):
+            nonlocal stability_calls
+            stability_calls += 1
+            if stability_calls == 1:
+                source.unlink()
+                source.write_text("replacement", encoding="utf-8")
+                return False
+            return True
+
+        with (
+            patch.object(monitor, "_file_identity", side_effect=identity),
+            patch.object(
+                monitor.event_handler,
+                "_wait_until_stable",
+                side_effect=replace_then_stabilize,
+            ) as stable_check,
+            patch("app.watcher.smart_classify", return_value=None),
+            patch(
+                "app.watcher.move_file_with_retries",
+                return_value=self._moved(source),
+            ) as move_file,
+        ):
+            self.assertTrue(monitor.submit(str(source), "created"))
+            self._wait_for_idle(monitor)
+
+        self.assertEqual(stable_check.call_count, 2)
+        move_file.assert_called_once()
+        callback.assert_called_once_with(source.name, "documents", "moved")
+
+    def test_replacement_at_same_path_is_processed_as_fresh_file(self):
+        source = self.incoming / "reused.txt"
+        source.write_text("old", encoding="utf-8")
+        callback = MagicMock()
+        monitor = self._start_monitor(
+            callback=callback,
+            processing_stability_retry_delay_seconds=0,
+            processing_stability_max_retries=1,
+        )
+        identity_calls = 0
+        old_identity = (1, 100)
+        replacement_identity = (1, 200)
+
+        def replace_before_retry(file_path):
+            nonlocal identity_calls
+            identity_calls += 1
+            if identity_calls == 3:
+                source.unlink()
+                source.write_text("replacement", encoding="utf-8")
+            if not Path(file_path).is_file():
+                return None
+            if identity_calls < 3:
+                return old_identity
+            return replacement_identity
+
+        with (
+            patch.object(
+                monitor,
+                "_file_identity",
+                side_effect=replace_before_retry,
+            ),
+            patch.object(
+                monitor.event_handler,
+                "_wait_until_stable",
+                side_effect=[False, False, True],
+            ) as stable_check,
+            patch("app.watcher.smart_classify", return_value=None),
+            patch(
+                "app.watcher.move_file_with_retries",
+                return_value=self._moved(source),
+            ) as move_file,
+        ):
+            self.assertTrue(monitor.submit(str(source), "created"))
+            self._wait_for_idle(monitor)
+
+        self.assertEqual(stable_check.call_count, 3)
+        move_file.assert_called_once()
+        callback.assert_called_once_with(source.name, "documents", "moved")
 
     def test_stability_wait_is_bounded(self):
         source = self.incoming / "never-stable.txt"
@@ -364,7 +840,7 @@ class ProcessingReliabilityTests(unittest.TestCase):
 
         classify.assert_not_called()
         move_file.assert_not_called()
-        callback.assert_called_once_with(source.name, "unknown", "unknown")
+        callback.assert_not_called()
 
     def test_stop_waits_for_processing_and_callback(self):
         source = self.incoming / "blocked.txt"
@@ -404,7 +880,7 @@ class ProcessingReliabilityTests(unittest.TestCase):
                 self.assertTrue(observer.stopped.wait(timeout=5))
                 self.assertFalse(stop_done.is_set())
                 self.assertTrue(monitor.is_running)
-                self.assertFalse(monitor._stop_event.is_set())
+                self.assertTrue(monitor._stop_event.is_set())
                 self.assertFalse(callback_done.is_set())
                 self.assertFalse(monitor.submit(
                     str(self.incoming / "during-stop.txt"),
