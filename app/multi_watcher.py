@@ -19,6 +19,11 @@ import logging
 import threading
 from pathlib import Path
 
+from app.path_topology import (
+    get_organized_root,
+    validate_configured_topology,
+    validate_watch_root,
+)
 from app.watcher import FileMonitor
 
 logger = logging.getLogger(__name__)
@@ -91,6 +96,7 @@ class MultiFolderMonitor:
         self._begin_lifecycle_operation("start_all")
         errors = []
         try:
+            validate_configured_topology(self.config)
             with self._lifecycle_lock:
                 monitors = []
                 for folder in self.config.get("watch_folders", []):
@@ -148,6 +154,7 @@ class MultiFolderMonitor:
         """
         self._begin_lifecycle_operation("start_folder")
         try:
+            validate_watch_root(path, get_organized_root(self.config))
             with self._lifecycle_lock:
                 path = str(Path(path).resolve())
                 if path not in self._monitors:
@@ -222,6 +229,7 @@ class MultiFolderMonitor:
             while self._lifecycle_operation is not None:
                 self._lifecycle_condition.wait()
             path = str(Path(path).resolve())
+            validate_watch_root(path, get_organized_root(self.config))
             folders = self.config.setdefault("watch_folders", [])
 
             # Check for duplicate
@@ -293,6 +301,7 @@ class MultiFolderMonitor:
         Called after settings are saved. Stops all, rebuilds monitors,
         does NOT auto-restart (caller decides).
         """
+        validate_configured_topology(new_config)
         self._begin_lifecycle_operation("reload_config")
         errors = []
         try:
@@ -325,6 +334,7 @@ class MultiFolderMonitor:
         """Create FileMonitor for each watch folder in config."""
         # Migrate legacy single-folder config
         self._migrate_legacy_config()
+        validate_configured_topology(self.config)
 
         for folder in self.config.get("watch_folders", []):
             path = str(Path(folder["path"]).resolve())
@@ -332,6 +342,7 @@ class MultiFolderMonitor:
 
     def _add_monitor(self, path: str) -> FileMonitor:
         """Create and register a FileMonitor for the given path."""
+        validate_watch_root(path, get_organized_root(self.config))
         # Build a per-folder config view (shares rules + organized_base)
         folder_config = dict(self.config)
         folder_config["source_folder"] = path

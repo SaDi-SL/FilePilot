@@ -6,6 +6,7 @@ from app.plugin_manager import PluginManager
 from app.hash_manager import ensure_hash_db
 from app.logger_setup import setup_logging
 from app.mover import resolve_contained_path
+from app.path_topology import validate_configured_topology
 from app.stats import ensure_stats_file
 from app.multi_watcher import MultiFolderMonitor
 
@@ -95,6 +96,7 @@ def build_monitor():
     config["history_file"]  = str(resolve_runtime_path(config["history_file"]))
     config["hash_db_file"]  = str(resolve_runtime_path(config["hash_db_file"]))
 
+    validate_configured_topology(config)
     ensure_directories(config)
     setup_logging(config["log_file"])
     ensure_stats_file(config["stats_file"], rules)

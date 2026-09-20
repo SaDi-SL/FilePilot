@@ -50,9 +50,10 @@ class ProcessingReliabilityTests(unittest.TestCase):
     def _config(self, processing_wait_seconds=0, **overrides):
         config = {
             "source_folder": str(self.incoming),
+            "organized_base_folder": str(self.root / "organized"),
             "destination_folders": {
-                "documents": str(self.root / "documents"),
-                "others": str(self.root / "others"),
+                "documents": str(self.root / "organized" / "documents"),
+                "others": str(self.root / "organized" / "others"),
             },
             "rules": {"documents": [".txt"]},
             "processing_wait_seconds": processing_wait_seconds,

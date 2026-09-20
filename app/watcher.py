@@ -9,6 +9,11 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
 from app.mover import MoveStatus, move_file_with_retries
+from app.path_topology import (
+    get_organized_root,
+    is_path_within,
+    validate_watch_root,
+)
 from app.smart_classifier import smart_classify
 
 
@@ -33,12 +38,7 @@ class NewFileHandler(FileSystemEventHandler):
         self.extension_lookup = extension_lookup
         self.plugin_manager = plugin_manager
         self.destination_folders = config["destination_folders"]
-        self.organized_root = Path(
-            config.get(
-                "organized_base_folder",
-                Path(self.destination_folders["others"]).parent,
-            )
-        )
+        self.organized_root = get_organized_root(config)
         self.rules = config["rules"]
         try:
             self.processing_wait_seconds = max(
@@ -100,10 +100,22 @@ class NewFileHandler(FileSystemEventHandler):
     # ---- Internal ----
 
     def _dispatch(self, file_path: str, source_event: str) -> None:
+        if self._is_organized_output(file_path):
+            return
         if self._submit_file is not None:
             self._submit_file(file_path, source_event)
         else:
             self._process_file_thread(file_path, source_event)
+
+    def _is_organized_output(self, file_path: str | Path) -> bool:
+        try:
+            inside_organized = is_path_within(file_path, self.organized_root)
+        except (OSError, RuntimeError):
+            logging.warning(f"Ignored path that could not be resolved safely: {file_path}")
+            return True
+        if inside_organized:
+            logging.debug(f"Ignored organized output: {file_path}")
+        return inside_organized
 
     @staticmethod
     def _sample_file_state(source_path: Path):
@@ -158,10 +170,12 @@ class NewFileHandler(FileSystemEventHandler):
         smart_source = ""
         final_category = None
         status = "unknown"
+        source_path = Path(file_path)
+
+        if self._is_organized_output(source_path):
+            return
 
         try:
-            source_path = Path(file_path)
-
             if not source_path.is_file():
                 return
 
@@ -281,6 +295,8 @@ class FileMonitor:
         self.config = config
         self.extension_lookup = extension_lookup
         self.source_folder = config["source_folder"]
+        self.organized_root = get_organized_root(config)
+        validate_watch_root(self.source_folder, self.organized_root)
         if max_processing_workers is None:
             max_processing_workers = config.get(
                 "processing_max_workers", self.DEFAULT_PROCESSING_WORKERS
@@ -338,6 +354,8 @@ class FileMonitor:
         return os.path.normcase(os.path.abspath(os.fspath(file_path)))
 
     def submit(self, file_path: str, source_event: str) -> bool:
+        if self.event_handler._is_organized_output(file_path):
+            return False
         key = self._path_key(file_path)
         with self._condition:
             executor = self._executor

@@ -17,10 +17,12 @@ class AIRuntimeSafetyTests(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def _config(self, ai=None):
+        organized_root = self.root / "organized"
         config = {
+            "organized_base_folder": str(organized_root),
             "destination_folders": {
-                "documents": str(self.root / "documents"),
-                "others": str(self.root / "others"),
+                "documents": str(organized_root / "documents"),
+                "others": str(organized_root / "others"),
             },
             "rules": {"documents": [".pdf"]},
             "processing_wait_seconds": 0,
@@ -45,7 +47,8 @@ class AIRuntimeSafetyTests(unittest.TestCase):
         return ai
 
     def _process(self, handler, filename, smart_category=None, ai=None):
-        source = self.root / filename
+        source = self.root / "incoming" / filename
+        source.parent.mkdir(exist_ok=True)
         source.write_text("test", encoding="utf-8")
         with (
             patch("app.watcher.smart_classify", return_value=smart_category),
@@ -111,7 +114,7 @@ class AIRuntimeSafetyTests(unittest.TestCase):
 
         self.assertEqual(move_file.call_args.kwargs["category_override"], "others")
         self.assertNotIn("untrusted-category", handler.destination_folders)
-        self.assertFalse((self.root / "untrusted-category").exists())
+        self.assertFalse((self.root / "organized" / "untrusted-category").exists())
 
     def test_plugin_smart_and_ai_classification_do_not_mutate_extension_lookup(self):
         extension_lookup = {}

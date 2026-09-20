@@ -18,6 +18,7 @@ from app.branding import APP_NAME, APP_COPYRIGHT, APP_DEVELOPER, APP_EMAIL, APP_
 from app.config_loader import get_config_path, resolve_runtime_path
 from app.i18n import t, get_language
 from app.main import build_monitor
+from app.path_topology import validate_configured_topology
 from app.smart_classifier import load_smart_rules, save_smart_rules
 from app.rule_tester import test_filename, RuleTestResult
 from app.startup_manager import enable_startup, disable_startup
@@ -859,6 +860,11 @@ class ActionsMixin:
                 "ollama_model": self.ollama_model_var.get().strip() or "mistral",
             }
 
+            validate_configured_topology(
+                config_data,
+                resolver=resolve_runtime_path,
+            )
+
             with open(config_path, "w", encoding="utf-8") as file:
                 json.dump(config_data, file, indent=2, ensure_ascii=False)
 
@@ -958,7 +964,15 @@ class ActionsMixin:
             return [f"Missing required keys: {', '.join(missing)}"]
 
         rules = config_data.get("rules", {})
-        return self.validate_rules(rules)
+        errors = self.validate_rules(rules)
+        try:
+            validate_configured_topology(
+                config_data,
+                resolver=resolve_runtime_path,
+            )
+        except (OSError, RuntimeError, ValueError) as error:
+            errors.append(str(error))
+        return errors
 
     def export_config(self):
         try:
