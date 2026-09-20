@@ -30,6 +30,7 @@ class MoveResult:
     destination: Path | None = None
     duplicate_of: Path | None = None
     error: str | None = None
+    metadata_error: str | None = None
 
 
 class _SourceRemovalError(OSError):
@@ -210,6 +211,8 @@ def move_file_with_retries(
     last_error = None
     result: MoveResult | None = None
     failure_history_status = "failed"
+    committed_destination: Path | None = None
+    metadata_errors: list[str] = []
 
     try:
         with hash_operation(file_hash):
@@ -253,6 +256,7 @@ def move_file_with_retries(
                                 destination_file,
                                 organized_root_path,
                             )
+                            committed_destination = actual_destination
                         except UnsafeDestinationError as error:
                             last_error = error
                             result = MoveResult(
@@ -287,25 +291,42 @@ def move_file_with_retries(
                             )
                         else:
                             try:
-                                register_file_hash(
-                                    file_hash,
-                                    str(actual_destination),
-                                    hash_db_file,
+                                committed_hash = calculate_file_hash(
+                                    actual_destination
                                 )
                             except Exception as error:
-                                last_error = error
-                                result = MoveResult(
-                                    MoveStatus.MOVE_FAILED,
-                                    source_file,
-                                    destination=actual_destination,
-                                    error=str(error),
+                                message = (
+                                    "Committed file hash calculation failed: "
+                                    f"{error}"
+                                )
+                                metadata_errors.append(message)
+                                logging.error(
+                                    f"{message} | destination: {actual_destination}"
                                 )
                             else:
-                                result = MoveResult(
-                                    MoveStatus.MOVED,
-                                    source_file,
-                                    destination=actual_destination,
-                                )
+                                if committed_hash != file_hash:
+                                    logging.warning(
+                                        "Source content changed before commit: "
+                                        f"{source_file.name} | original hash: {file_hash} "
+                                        f"| committed hash: {committed_hash}"
+                                    )
+                                try:
+                                    register_file_hash(
+                                        committed_hash,
+                                        str(actual_destination),
+                                        hash_db_file,
+                                    )
+                                except Exception as error:
+                                    message = f"Hash registration failed: {error}"
+                                    metadata_errors.append(message)
+                                    logging.error(
+                                        f"{message} | destination: {actual_destination}"
+                                    )
+                            result = MoveResult(
+                                MoveStatus.MOVED,
+                                source_file,
+                                destination=actual_destination,
+                            )
                             break
 
                         if attempt < retries:
@@ -318,8 +339,20 @@ def move_file_with_retries(
                             error=str(last_error) if last_error is not None else "No move attempts were made",
                         )
     except Exception as error:
-        last_error = error
-        result = MoveResult(MoveStatus.MOVE_FAILED, source_file, error=str(error))
+        if committed_destination is not None:
+            message = f"Post-commit processing failed: {error}"
+            metadata_errors.append(message)
+            logging.error(
+                f"{message} | destination: {committed_destination}"
+            )
+            result = MoveResult(
+                MoveStatus.MOVED,
+                source_file,
+                destination=committed_destination,
+            )
+        else:
+            last_error = error
+            result = MoveResult(MoveStatus.MOVE_FAILED, source_file, error=str(error))
 
     if result.status is MoveStatus.DUPLICATE:
         logging.info(
@@ -336,18 +369,42 @@ def move_file_with_retries(
         return result
 
     if result.status is MoveStatus.MOVED:
-        append_history(
-            history_file,
-            source_file.name,
-            category,
-            "moved",
-            classification_method,
-            smart_source,
-        )
-        update_stats(stats_file, category, rules, success=True)
-        logging.info(
-            f"Moved: {source_file.name} → {result.destination} | category: {category} | method: {classification_method}"
-        )
+        try:
+            append_history(
+                history_file,
+                source_file.name,
+                category,
+                "moved",
+                classification_method,
+                smart_source,
+            )
+        except Exception as error:
+            message = f"History update failed: {error}"
+            metadata_errors.append(message)
+            logging.error(f"{message} | destination: {result.destination}")
+
+        try:
+            update_stats(stats_file, category, rules, success=True)
+        except Exception as error:
+            message = f"Stats update failed: {error}"
+            metadata_errors.append(message)
+            logging.error(f"{message} | destination: {result.destination}")
+
+        if metadata_errors:
+            result = MoveResult(
+                MoveStatus.MOVED,
+                source_file,
+                destination=result.destination,
+                metadata_error="; ".join(metadata_errors),
+            )
+            logging.warning(
+                f"Moved with metadata errors: {source_file.name} → {result.destination} "
+                f"| errors: {result.metadata_error}"
+            )
+        else:
+            logging.info(
+                f"Moved: {source_file.name} → {result.destination} | category: {category} | method: {classification_method}"
+            )
         return result
 
     logging.error(

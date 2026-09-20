@@ -591,19 +591,28 @@ class DuplicateSafetyRegressionTests(unittest.TestCase):
         self.assertEqual(self._history()[0]["status"], "moved")
         self.assertEqual(self._stats()["total_files"], 1)
 
-    def test_unsafe_current_behavior_hash_registration_failure_follows_committed_move(self):
+    def test_hash_registration_failure_reports_moved_with_metadata_error(self):
         source = self._source(content="committed bytes")
 
-        with patch(
-            "app.mover.register_file_hash",
-            side_effect=OSError("simulated registration failure"),
+        with (
+            patch(
+                "app.mover._move_no_clobber",
+                wraps=mover._move_no_clobber,
+            ) as move_call,
+            patch(
+                "app.mover.register_file_hash",
+                side_effect=OSError("simulated registration failure"),
+            ),
         ):
             result = self._move(source)
 
         destination = self.documents / source.name
-        self.assertEqual(result.status, mover.MoveStatus.MOVE_FAILED)
+        self.assertEqual(result.status, mover.MoveStatus.MOVED)
         self.assertEqual(result.destination, destination)
-        self.assertIn("simulated registration failure", result.error)
+        self.assertIsNone(result.error)
+        self.assertIn("Hash registration failed", result.metadata_error)
+        self.assertIn("simulated registration failure", result.metadata_error)
+        self.assertEqual(move_call.call_count, 1)
         self.assertFalse(source.exists())
         self.assertTrue(destination.exists())
         self.assertEqual(destination.read_text(encoding="utf-8"), "committed bytes")
@@ -611,11 +620,11 @@ class DuplicateSafetyRegressionTests(unittest.TestCase):
             hash_manager.load_hash_db(str(self.hash_db_file)),
             {},
         )
-        self.assertEqual(self._history()[0]["status"], "failed")
-        self.assertEqual(self._stats()["total_files"], 0)
-        self.assertEqual(self._stats()["failed"], 1)
+        self.assertEqual(self._history()[0]["status"], "moved")
+        self.assertEqual(self._stats()["total_files"], 1)
+        self.assertEqual(self._stats()["failed"], 0)
 
-    def test_unsafe_current_behavior_source_mutation_after_hash_registers_wrong_digest(self):
+    def test_source_mutation_registers_committed_content_hash(self):
         source = self._source(content="content A")
         original_hash = hashlib.sha256(b"content A").hexdigest()
         replacement_hash = hashlib.sha256(b"content B").hexdigest()
@@ -623,7 +632,8 @@ class DuplicateSafetyRegressionTests(unittest.TestCase):
 
         def hash_then_mutate(file_path):
             calculated = real_calculate(file_path)
-            Path(file_path).write_text("content B", encoding="utf-8")
+            if Path(file_path) == source:
+                Path(file_path).write_text("content B", encoding="utf-8")
             return calculated
 
         with patch(
@@ -634,12 +644,56 @@ class DuplicateSafetyRegressionTests(unittest.TestCase):
 
         destination = self.documents / source.name
         self.assertEqual(result.status, mover.MoveStatus.MOVED)
+        self.assertEqual(result.destination, destination)
+        self.assertIsNone(result.metadata_error)
         self.assertFalse(source.exists())
         self.assertEqual(destination.read_text(encoding="utf-8"), "content B")
         self.assertEqual(hash_manager.calculate_file_hash(destination), replacement_hash)
         hash_db = hash_manager.load_hash_db(str(self.hash_db_file))
-        self.assertEqual(hash_db, {original_hash: str(destination)})
+        self.assertEqual(hash_db, {replacement_hash: str(destination)})
+        self.assertNotIn(original_hash, hash_db)
         self.assertNotEqual(original_hash, replacement_hash)
+
+    def test_history_and_stats_failures_do_not_downgrade_committed_move(self):
+        source = self._source(content="committed despite metadata failures")
+
+        with (
+            patch(
+                "app.mover._move_no_clobber",
+                wraps=mover._move_no_clobber,
+            ) as move_call,
+            patch(
+                "app.mover.append_history",
+                side_effect=OSError("simulated history failure"),
+            ),
+            patch(
+                "app.mover.update_stats",
+                side_effect=OSError("simulated stats failure"),
+            ),
+        ):
+            result = self._move(source)
+
+        destination = self.documents / source.name
+        committed_hash = hashlib.sha256(
+            b"committed despite metadata failures"
+        ).hexdigest()
+        self.assertEqual(result.status, mover.MoveStatus.MOVED)
+        self.assertEqual(result.destination, destination)
+        self.assertIsNone(result.error)
+        self.assertIn("History update failed", result.metadata_error)
+        self.assertIn("simulated history failure", result.metadata_error)
+        self.assertIn("Stats update failed", result.metadata_error)
+        self.assertIn("simulated stats failure", result.metadata_error)
+        self.assertEqual(move_call.call_count, 1)
+        self.assertFalse(source.exists())
+        self.assertEqual(
+            destination.read_text(encoding="utf-8"),
+            "committed despite metadata failures",
+        )
+        self.assertEqual(
+            hash_manager.load_hash_db(str(self.hash_db_file)),
+            {committed_hash: str(destination)},
+        )
 
     def test_configured_parent_category_is_rejected(self):
         organized = self.root / "organized"
