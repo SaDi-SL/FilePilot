@@ -1,5 +1,8 @@
+import errno
+import hashlib
 import logging
 import os
+import tempfile
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -43,6 +46,27 @@ class _SourceRemovalError(OSError):
 
 class UnsafeDestinationError(ValueError):
     pass
+
+
+@dataclass(frozen=True)
+class _FileState:
+    device: int
+    inode: int
+    size: int
+    modified_ns: int
+    changed_ns: int
+
+
+@dataclass(frozen=True)
+class _TemporaryCopy:
+    path: Path
+    state: _FileState
+    source_state: _FileState
+
+
+_WINDOWS_ERROR_NOT_SAME_DEVICE = 17
+_MAX_CROSS_VOLUME_COLLISIONS = 1000
+_COPY_CHUNK_SIZE = 1024 * 1024
 
 
 def validate_category(category: object) -> str:
@@ -107,10 +131,298 @@ def _move_no_clobber(source_file: Path, destination_file: Path) -> Path:
     return destination_file
 
 
+def _file_state(stat_result: os.stat_result) -> _FileState:
+    return _FileState(
+        device=stat_result.st_dev,
+        inode=stat_result.st_ino,
+        size=stat_result.st_size,
+        modified_ns=stat_result.st_mtime_ns,
+        changed_ns=stat_result.st_ctime_ns,
+    )
+
+
+def _is_cross_device_error(error: OSError) -> bool:
+    return (
+        error.errno == errno.EXDEV
+        or getattr(error, "winerror", None) == _WINDOWS_ERROR_NOT_SAME_DEVICE
+    )
+
+
+def _same_file_identity(first: _FileState, second: _FileState) -> bool:
+    return first.device == second.device and first.inode == second.inode
+
+
+def _same_source_version(first: _FileState, second: _FileState) -> bool:
+    return (
+        _same_file_identity(first, second)
+        and first.size == second.size
+        and first.modified_ns == second.modified_ns
+    )
+
+
+def _cleanup_temporary_copy(temporary: _TemporaryCopy) -> None:
+    """Remove only the exact private temporary file created by this operation."""
+    try:
+        current_state = _file_state(temporary.path.stat(follow_symlinks=False))
+        if not _same_file_identity(current_state, temporary.state):
+            logging.warning(
+                f"Temporary path changed before cleanup; preserving it: {temporary.path}"
+            )
+            return
+        os.unlink(temporary.path)
+    except FileNotFoundError:
+        return
+    except OSError as error:
+        logging.warning(
+            f"Could not clean up temporary copy {temporary.path}: {error}"
+        )
+
+
+def _copy_file_data(source, destination) -> str:
+    copied_hash = hashlib.sha256()
+    while chunk := source.read(_COPY_CHUNK_SIZE):
+        destination.write(chunk)
+        copied_hash.update(chunk)
+    return copied_hash.hexdigest()
+
+
+def _copy_to_verified_temporary(
+    source_file: Path,
+    destination_dir: Path,
+    organized_root: Path,
+    expected_hash: str,
+    expected_source_state: _FileState | None,
+) -> _TemporaryCopy:
+    """Copy source into a private destination-side file and verify its bytes."""
+    destination_dir = resolve_contained_path(organized_root, destination_dir)
+    descriptor = -1
+    temporary: _TemporaryCopy | None = None
+    temporary_path: Path | None = None
+    temporary_state: _FileState | None = None
+
+    try:
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=".filepilot-",
+            suffix=".tmp",
+            dir=destination_dir,
+        )
+        temporary_path = Path(temporary_name)
+        temporary_state = _file_state(os.fstat(descriptor))
+        temporary_path = resolve_contained_path(
+            organized_root,
+            temporary_path,
+        )
+
+        with open(source_file, "rb") as source, os.fdopen(
+            descriptor,
+            "wb",
+        ) as destination:
+            descriptor = -1
+            source_state = _file_state(os.fstat(source.fileno()))
+            if expected_source_state is None or not _same_source_version(
+                source_state,
+                expected_source_state,
+            ):
+                raise OSError(f"Source changed before cross-volume copy: {source_file}")
+            copied_hash = _copy_file_data(source, destination)
+            destination.flush()
+            os.fsync(destination.fileno())
+            if _file_state(os.fstat(source.fileno())) != source_state:
+                raise OSError(f"Source changed while copying: {source_file}")
+
+        current_temporary_state = _file_state(
+            temporary_path.stat(follow_symlinks=False)
+        )
+        temporary = _TemporaryCopy(
+            temporary_path,
+            temporary_state,
+            source_state,
+        )
+        if not _same_file_identity(current_temporary_state, temporary_state):
+            raise OSError(f"Temporary file changed while copying: {temporary_path}")
+        if copied_hash != expected_hash:
+            raise OSError(f"Source content changed before cross-volume copy: {source_file}")
+        if calculate_file_hash(temporary_path) != expected_hash:
+            raise OSError(f"Temporary copy verification failed: {temporary_path}")
+        return temporary
+    except Exception:
+        if descriptor != -1:
+            os.close(descriptor)
+        if (
+            temporary is None
+            and temporary_path is not None
+            and temporary_state is not None
+        ):
+            temporary = _TemporaryCopy(
+                temporary_path,
+                temporary_state,
+                _FileState(0, 0, 0, 0, 0),
+            )
+        if temporary is not None:
+            _cleanup_temporary_copy(temporary)
+        raise
+
+
+def _publish_temporary_no_clobber(
+    temporary: _TemporaryCopy,
+    destination_file: Path,
+    organized_root: Path,
+) -> Path:
+    """Atomically publish a verified temporary file without replacing collisions."""
+    for _ in range(_MAX_CROSS_VOLUME_COLLISIONS):
+        candidate = generate_unique_destination(destination_file)
+        candidate = resolve_contained_path(organized_root, candidate)
+        try:
+            return _move_no_clobber(temporary.path, candidate)
+        except FileExistsError:
+            logging.debug(
+                f"Destination collision while publishing {destination_file.name}: "
+                f"{candidate}"
+            )
+        except _SourceRemovalError as error:
+            # The no-clobber link is already the committed destination. Cleanup of
+            # the private temporary name is best effort and must not undo it.
+            _cleanup_temporary_copy(temporary)
+            return error.destination
+    raise FileExistsError(
+        f"Could not select a destination after "
+        f"{_MAX_CROSS_VOLUME_COLLISIONS} collisions: {destination_file}"
+    )
+
+
+def _remove_verified_source(
+    source_file: Path,
+    destination_file: Path,
+    expected_hash: str,
+    expected_state: _FileState,
+) -> None:
+    """Atomically isolate and delete only the verified source instance."""
+    staging_dir: Path | None = None
+    staged_source: Path | None = None
+    source_staged = False
+
+    def restore_staged_source() -> str | None:
+        if (
+            not source_staged
+            or staged_source is None
+            or not os.path.lexists(staged_source)
+        ):
+            return None
+        try:
+            _move_no_clobber(staged_source, source_file)
+            return None
+        except _SourceRemovalError:
+            # The source name was restored; only the private extra link remains.
+            return f"source restored but private staged link remains at {staged_source}"
+        except OSError as restore_error:
+            return f"verified source remains at {staged_source}: {restore_error}"
+
+    try:
+        before_hash_state = _file_state(source_file.stat())
+        if not _same_source_version(before_hash_state, expected_state):
+            raise OSError(f"Source changed before removal: {source_file}")
+        if calculate_file_hash(source_file) != expected_hash:
+            raise OSError(f"Source content changed before removal: {source_file}")
+        if not _same_source_version(_file_state(source_file.stat()), expected_state):
+            raise OSError(f"Source changed during removal verification: {source_file}")
+
+        staging_dir = Path(
+            tempfile.mkdtemp(prefix=".filepilot-remove-", dir=source_file.parent)
+        )
+        staged_source = staging_dir / source_file.name
+        os.rename(source_file, staged_source)
+        source_staged = True
+
+        staged_state = _file_state(staged_source.stat())
+        if not _same_source_version(staged_state, expected_state):
+            raise OSError(f"Source was replaced before removal: {source_file}")
+        if calculate_file_hash(staged_source) != expected_hash:
+            raise OSError(f"Staged source content did not match: {source_file}")
+        if not _same_source_version(
+            _file_state(staged_source.stat()),
+            expected_state,
+        ):
+            raise OSError(f"Staged source changed before removal: {source_file}")
+        if calculate_file_hash(destination_file) != expected_hash:
+            raise OSError(
+                f"Published destination changed before source removal: "
+                f"{destination_file}"
+            )
+        os.unlink(staged_source)
+        source_staged = False
+    except OSError as error:
+        restore_error = restore_staged_source()
+        if restore_error is not None:
+            error = OSError(f"{error}; {restore_error}")
+        raise _SourceRemovalError(source_file, destination_file, error) from error
+    finally:
+        if staging_dir is not None:
+            try:
+                os.rmdir(staging_dir)
+            except OSError as error:
+                logging.warning(
+                    f"Could not clean up source staging directory {staging_dir}: {error}"
+                )
+
+
+def _move_across_volumes(
+    source_file: Path,
+    destination_file: Path,
+    organized_root: Path,
+    expected_hash: str,
+    expected_source_state: _FileState | None,
+) -> Path:
+    """Copy, verify, publish, and only then remove a cross-volume source."""
+    if source_file.is_symlink():
+        raise OSError(f"Cross-volume symlink sources are not supported: {source_file}")
+    temporary = _copy_to_verified_temporary(
+        source_file,
+        destination_file.parent,
+        organized_root,
+        expected_hash,
+        expected_source_state,
+    )
+    published_destination: Path | None = None
+    try:
+        published_destination = _publish_temporary_no_clobber(
+            temporary,
+            destination_file,
+            organized_root,
+        )
+        try:
+            published_hash = calculate_file_hash(published_destination)
+        except OSError as error:
+            raise _SourceRemovalError(
+                source_file,
+                published_destination,
+                OSError(f"Published destination verification failed: {error}"),
+            ) from error
+        if published_hash != expected_hash:
+            raise _SourceRemovalError(
+                source_file,
+                published_destination,
+                OSError(
+                    f"Published destination content did not match source: "
+                    f"{published_destination}"
+                ),
+            )
+        _remove_verified_source(
+            source_file,
+            published_destination,
+            expected_hash,
+            temporary.source_state,
+        )
+        return published_destination
+    finally:
+        _cleanup_temporary_copy(temporary)
+
+
 def _move_to_unique_destination(
     source_file: Path,
     destination_file: Path,
     organized_root: Path,
+    expected_hash: str,
+    expected_source_state: _FileState | None,
 ) -> Path:
     """Select and atomically commit to an available destination path."""
     while True:
@@ -121,6 +433,19 @@ def _move_to_unique_destination(
         except FileExistsError:
             logging.debug(
                 f"Destination collision while moving {source_file.name}: {candidate}"
+            )
+        except OSError as error:
+            if not _is_cross_device_error(error):
+                raise
+            logging.debug(
+                f"Cross-volume move detected for {source_file}; using verified copy"
+            )
+            return _move_across_volumes(
+                source_file,
+                destination_file,
+                organized_root,
+                expected_hash,
+                expected_source_state,
             )
 
 
@@ -202,11 +527,34 @@ def move_file_with_retries(
         return MoveResult(MoveStatus.MOVE_FAILED, source_file, error=str(error))
 
     try:
+        pre_hash_source_state = _file_state(source_file.stat())
+    except OSError:
+        pre_hash_source_state = None
+
+    try:
         file_hash = calculate_file_hash(source_file)
     except Exception as error:
         logging.error(f"Hash check failed for {source_file.name}: {error}")
         append_history(history_file, source_file.name, category, "hash_check_failed")
         return MoveResult(MoveStatus.HASH_CHECK_FAILED, source_file, error=str(error))
+
+    try:
+        post_hash_source_state = _file_state(source_file.stat())
+    except OSError:
+        hashed_source_state = None
+    else:
+        if (
+            pre_hash_source_state is not None
+            and _same_source_version(
+                pre_hash_source_state,
+                post_hash_source_state,
+            )
+        ):
+            hashed_source_state = post_hash_source_state
+        else:
+            # Same-volume rename remains safe; cross-volume fallback will refuse
+            # to delete a source whose hash was not bound to one file instance.
+            hashed_source_state = None
 
     last_error = None
     result: MoveResult | None = None
@@ -255,6 +603,8 @@ def move_file_with_retries(
                                 source_file,
                                 destination_file,
                                 organized_root_path,
+                                file_hash,
+                                hashed_source_state,
                             )
                             committed_destination = actual_destination
                         except UnsafeDestinationError as error:
