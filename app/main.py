@@ -121,6 +121,10 @@ def build_monitor():
         assessment.operation.operation_id
         for assessment in recovery_report.assessments
         if assessment.source.exists
+        or (
+            assessment.operation.inverse_of_operation_id is not None
+            and assessment.destination.exists
+        )
     ]
     if unsafe_sources:
         raise RecoveryError(

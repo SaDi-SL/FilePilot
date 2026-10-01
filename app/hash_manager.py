@@ -130,6 +130,32 @@ def get_verified_file_path(file_hash: str, hash_db_file: str) -> str | None:
     return str(path)
 
 
+def peek_verified_file_path(
+    file_hash: str,
+    hash_db_file: str,
+) -> tuple[str | None, str | None]:
+    """Read a verified index entry without creating or changing the hash database."""
+    path = Path(hash_db_file)
+    if not path.is_file():
+        return None, None
+    try:
+        with open(path, "r", encoding="utf-8") as file:
+            indexed_path = json.load(file).get(file_hash)
+    except Exception as error:
+        return None, f"Hash index could not be read: {error}"
+    if indexed_path is None:
+        return None, None
+    try:
+        candidate = Path(indexed_path)
+        if not candidate.is_file():
+            return None, None
+        if calculate_file_hash(candidate) != file_hash:
+            return None, None
+    except Exception as error:
+        return None, f"Indexed duplicate evidence could not be verified: {error}"
+    return str(candidate), None
+
+
 def is_duplicate_file(file_path: Path, hash_db_file: str) -> tuple[bool, str]:
     """
     Check whether the file is a duplicate.

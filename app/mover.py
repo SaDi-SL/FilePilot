@@ -2,6 +2,7 @@ import errno
 import hashlib
 import logging
 import os
+import shutil
 import tempfile
 import time
 from dataclasses import dataclass, replace
@@ -15,6 +16,7 @@ from app.hash_manager import (
     calculate_file_hash,
     get_verified_file_path,
     hash_operation,
+    peek_verified_file_path,
     register_file_hash,
 )
 from app.operation_journal import (
@@ -46,6 +48,46 @@ class MoveResult:
     error: str | None = None
     metadata_error: str | None = None
     operation_id: str | None = None
+
+
+class PreviewStatus(str, Enum):
+    READY = "ready"
+    DUPLICATE = "duplicate"
+    SOURCE_MISSING = "source_missing"
+    HASH_FAILED = "hash_failed"
+    UNSAFE = "unsafe"
+
+
+class DuplicateStatus(str, Enum):
+    NOT_FOUND = "not_found"
+    PROVEN = "proven"
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class PreviewResult:
+    status: PreviewStatus
+    source: Path
+    category: str | None = None
+    proposed_destination: Path | None = None
+    archive_by_date: bool = False
+    destination_collision: bool = False
+    alternative_name_required: bool = False
+    duplicate_status: DuplicateStatus = DuplicateStatus.UNKNOWN
+    duplicate_of: Path | None = None
+    safety_validated: bool = False
+    execution_possible: bool = False
+    classification_source: str | None = None
+    warning: str | None = None
+    error: str | None = None
+
+
+@dataclass(frozen=True)
+class _MovePlan:
+    category: str
+    destination: Path
+    proposed_destination: Path
+    collision: bool
 
 
 class _SourceRemovalError(OSError):
@@ -338,6 +380,12 @@ def _same_source_version(first: _FileState, second: _FileState) -> bool:
     )
 
 
+def _require_directory_state(path: Path, expected: _FileState) -> None:
+    current = _file_state(path.stat(follow_symlinks=False))
+    if path.is_symlink() or not path.is_dir() or not _same_file_identity(current, expected):
+        raise OSError(f"Restore destination directory changed: {path}")
+
+
 def _cleanup_temporary_copy(temporary: _TemporaryCopy) -> None:
     """Remove only the exact private temporary file created by this operation."""
     try:
@@ -371,6 +419,7 @@ def _copy_to_verified_temporary(
     expected_hash: str,
     expected_source_state: _FileState | None,
     journal_move: _JournaledMove | None = None,
+    preserve_metadata: bool = False,
 ) -> _TemporaryCopy:
     """Copy source into a private destination-side file and verify its bytes."""
     destination_dir = resolve_contained_path(organized_root, destination_dir)
@@ -416,6 +465,11 @@ def _copy_to_verified_temporary(
             os.fsync(destination.fileno())
             if _file_state(os.fstat(source.fileno())) != source_state:
                 raise OSError(f"Source changed while copying: {source_file}")
+
+        if preserve_metadata:
+            shutil.copystat(source_file, temporary_path, follow_symlinks=False)
+            with open(temporary_path, "r+b") as copied_file:
+                os.fsync(copied_file.fileno())
 
         current_temporary_state = _file_state(
             temporary_path.stat(follow_symlinks=False)
@@ -463,10 +517,16 @@ def _publish_temporary_no_clobber(
     destination_file: Path,
     organized_root: Path,
     journal_move: _JournaledMove | None = None,
+    allow_alternative: bool = True,
 ) -> Path:
     """Atomically publish a verified temporary file without replacing collisions."""
-    for _ in range(_MAX_CROSS_VOLUME_COLLISIONS):
-        candidate = generate_unique_destination(destination_file)
+    attempts = _MAX_CROSS_VOLUME_COLLISIONS if allow_alternative else 1
+    for _ in range(attempts):
+        candidate = (
+            generate_unique_destination(destination_file)
+            if allow_alternative
+            else destination_file
+        )
         candidate = resolve_contained_path(organized_root, candidate)
         try:
             if journal_move is not None:
@@ -479,11 +539,15 @@ def _publish_temporary_no_clobber(
                     ),
                 )
             published = _move_no_clobber(temporary.path, candidate)
+            published_state = _file_state(published.stat(follow_symlinks=False))
+            if not _same_file_identity(published_state, temporary.state):
+                raise _JournalAfterFilesystemError(
+                    "Published object does not match the verified temporary object",
+                    published,
+                    physical_complete=False,
+                )
             if journal_move is not None:
                 try:
-                    published_state = _file_state(
-                        published.stat(follow_symlinks=False)
-                    )
                     journal_move.transition(
                         PhysicalPhase.DESTINATION_PUBLISHED,
                         TransitionEvidence(
@@ -543,6 +607,7 @@ def _remove_verified_source(
     expected_hash: str,
     expected_state: _FileState,
     journal_move: _JournaledMove | None = None,
+    expected_destination_identity: str | None = None,
 ) -> None:
     """Atomically isolate and delete only the verified source instance."""
     staging_dir: Path | None = None
@@ -630,6 +695,15 @@ def _remove_verified_source(
         verified_destination_state = _file_state(
             destination_file.stat(follow_symlinks=False)
         )
+        if (
+            expected_destination_identity is not None
+            and _identity_text(verified_destination_state)
+            != expected_destination_identity
+        ):
+            raise OSError(
+                f"Published destination identity changed before source removal: "
+                f"{destination_file}"
+            )
         if calculate_file_hash(destination_file) != expected_hash:
             raise OSError(
                 f"Published destination changed before source removal: "
@@ -674,6 +748,14 @@ def _remove_verified_source(
                     f"Published destination changed before source deletion: "
                     f"{destination_file}"
                 )
+        final_staged_state = _file_state(staged_source.stat(follow_symlinks=False))
+        if (
+            not _same_source_version(final_staged_state, expected_state)
+            or calculate_file_hash(staged_source) != expected_hash
+            or _file_state(staged_source.stat(follow_symlinks=False))
+            != final_staged_state
+        ):
+            raise OSError(f"Staged source changed before final deletion: {source_file}")
         os.unlink(staged_source)
         source_staged = False
         if journal_move is not None:
@@ -720,10 +802,15 @@ def _move_across_volumes(
     expected_hash: str,
     expected_source_state: _FileState | None,
     journal_move: _JournaledMove | None = None,
+    allow_alternative: bool = True,
+    preserve_metadata: bool = False,
+    expected_destination_root_state: _FileState | None = None,
 ) -> Path:
     """Copy, verify, publish, and only then remove a cross-volume source."""
     if source_file.is_symlink():
         raise OSError(f"Cross-volume symlink sources are not supported: {source_file}")
+    if expected_destination_root_state is not None:
+        _require_directory_state(organized_root, expected_destination_root_state)
     temporary = _copy_to_verified_temporary(
         source_file,
         destination_file.parent,
@@ -731,14 +818,18 @@ def _move_across_volumes(
         expected_hash,
         expected_source_state,
         journal_move,
+        preserve_metadata,
     )
     published_destination: Path | None = None
     try:
+        if expected_destination_root_state is not None:
+            _require_directory_state(organized_root, expected_destination_root_state)
         published_destination = _publish_temporary_no_clobber(
             temporary,
             destination_file,
             organized_root,
             journal_move,
+            allow_alternative,
         )
         try:
             published_hash = calculate_file_hash(published_destination)
@@ -791,6 +882,7 @@ def _move_across_volumes(
                 expected_hash,
                 temporary.source_state,
                 journal_move,
+                _identity_text(temporary.state),
             )
         return published_destination
     finally:
@@ -860,6 +952,94 @@ def _move_to_unique_destination(
             )
 
 
+def _move_to_exact_destination(
+    source_file: Path,
+    destination_file: Path,
+    destination_root: Path,
+    expected_hash: str,
+    expected_source_state: _FileState,
+    journal_move: _JournaledMove,
+    expected_destination_root_state: _FileState,
+) -> Path:
+    """Restore to one exact target without alternate naming or stale evidence."""
+    destination_file = resolve_contained_path(destination_root, destination_file)
+    _require_directory_state(destination_root, expected_destination_root_state)
+    current_state = _file_state(source_file.stat(follow_symlinks=False))
+    if (
+        source_file.is_symlink()
+        or not _same_source_version(current_state, expected_source_state)
+        or calculate_file_hash(source_file) != expected_hash
+        or not _same_source_version(
+            _file_state(source_file.stat(follow_symlinks=False)), current_state
+        )
+    ):
+        raise OSError(f"Restore source changed before undo: {source_file}")
+    if os.path.lexists(destination_file):
+        raise FileExistsError(f"Restore target is occupied: {destination_file}")
+    journal_move.transition(
+        PhysicalPhase.RENAME_INTENT,
+        TransitionEvidence(actual_destination=destination_file),
+    )
+    _require_directory_state(destination_root, expected_destination_root_state)
+    try:
+        restored = _move_no_clobber(source_file, destination_file)
+    except OSError as error:
+        if not _is_cross_device_error(error):
+            raise
+        journal_move.transition(PhysicalPhase.TEMP_CREATE_INTENT)
+        return _move_across_volumes(
+            source_file,
+            destination_file,
+            destination_root,
+            expected_hash,
+            expected_source_state,
+            journal_move,
+            allow_alternative=False,
+            preserve_metadata=True,
+            expected_destination_root_state=expected_destination_root_state,
+        )
+    try:
+        restored_state = _file_state(restored.stat(follow_symlinks=False))
+        restored_hash = calculate_file_hash(restored)
+        if (
+            not _same_file_identity(restored_state, expected_source_state)
+            or restored_hash != expected_hash
+        ):
+            try:
+                _move_no_clobber(restored, source_file)
+            except OSError as rollback_error:
+                raise _JournalAfterFilesystemError(
+                    "Unexpected object was restored and could not be returned: "
+                    f"{rollback_error}",
+                    restored,
+                    physical_complete=False,
+                ) from rollback_error
+            raise _JournalAfterFilesystemError(
+                f"Restore source identity changed; unexpected object was returned to "
+                f"{source_file}",
+                source_file,
+                physical_complete=False,
+            )
+        journal_move.transition(
+            PhysicalPhase.PHYSICAL_COMMITTED,
+            TransitionEvidence(
+                actual_destination=restored,
+                destination_identity=_identity_text(restored_state),
+                destination_hash=restored_hash,
+                destination_size=restored_state.size,
+            ),
+        )
+    except _JournalAfterFilesystemError:
+        raise
+    except Exception as error:
+        raise _JournalAfterFilesystemError(
+            f"File was restored but journal update failed: {error}",
+            restored,
+            physical_complete=True,
+        ) from error
+    return restored
+
+
 def get_dated_destination_dir(base_dir: Path, archive_by_date: bool) -> Path:
     """
     If date-based archiving is enabled, add a date subfolder like 2026-03.
@@ -868,6 +1048,145 @@ def get_dated_destination_dir(base_dir: Path, archive_by_date: bool) -> Path:
         return base_dir
     date_folder = datetime.now().strftime("%Y-%m")
     return base_dir / date_folder
+
+
+def _plan_move_destination(
+    source_file: Path,
+    destination_folders: dict,
+    extension_lookup: dict,
+    archive_by_date: bool,
+    organized_root: str | Path,
+    category_override: str | None = None,
+    analyze_collision: bool = False,
+) -> _MovePlan:
+    category = (
+        category_override
+        if category_override is not None
+        else get_file_category(source_file, extension_lookup)
+    )
+    category = validate_category(category)
+    organized_root_path = Path(organized_root).resolve(strict=False)
+    if category not in destination_folders:
+        category = "others"
+    base_destination_dir = Path(destination_folders[category])
+    destination_dir = get_dated_destination_dir(base_destination_dir, archive_by_date)
+    destination = resolve_contained_path(
+        organized_root_path,
+        destination_dir / source_file.name,
+    )
+    proposed = destination
+    if analyze_collision:
+        proposed = resolve_contained_path(
+            organized_root_path,
+            generate_unique_destination(destination),
+        )
+    return _MovePlan(
+        category=category,
+        destination=destination,
+        proposed_destination=proposed,
+        collision=proposed != destination,
+    )
+
+
+def preview_move(
+    source_file: Path,
+    destination_folders: dict,
+    extension_lookup: dict,
+    hash_db_file: str,
+    archive_by_date: bool,
+    organized_root: str | Path,
+    *,
+    category_override: str | None = None,
+    classification_source: str | None = None,
+) -> PreviewResult:
+    """Plan a move without mutating user files, metadata, or the journal."""
+    source_file = Path(source_file)
+    if not source_file.is_file() or source_file.is_symlink():
+        return PreviewResult(
+            PreviewStatus.SOURCE_MISSING,
+            source_file,
+            error="Source is missing or is not a regular file",
+        )
+    try:
+        plan = _plan_move_destination(
+            source_file,
+            destination_folders,
+            extension_lookup,
+            archive_by_date,
+            organized_root,
+            category_override,
+            analyze_collision=True,
+        )
+    except (KeyError, OSError, RuntimeError, TypeError, UnsafeDestinationError) as error:
+        return PreviewResult(
+            PreviewStatus.UNSAFE,
+            source_file,
+            category=category_override,
+            archive_by_date=archive_by_date,
+            classification_source=classification_source,
+            error=str(error),
+        )
+    try:
+        file_hash = calculate_file_hash(source_file)
+    except Exception as error:
+        return PreviewResult(
+            PreviewStatus.HASH_FAILED,
+            source_file,
+            category=plan.category,
+            proposed_destination=plan.proposed_destination,
+            archive_by_date=archive_by_date,
+            destination_collision=plan.collision,
+            alternative_name_required=plan.collision,
+            safety_validated=True,
+            classification_source=classification_source,
+            error=str(error),
+        )
+    duplicate, duplicate_warning = peek_verified_file_path(file_hash, hash_db_file)
+    if duplicate_warning is not None:
+        return PreviewResult(
+            PreviewStatus.UNSAFE,
+            source_file,
+            category=plan.category,
+            proposed_destination=plan.proposed_destination,
+            archive_by_date=archive_by_date,
+            destination_collision=plan.collision,
+            alternative_name_required=plan.collision,
+            duplicate_status=DuplicateStatus.UNKNOWN,
+            safety_validated=True,
+            execution_possible=False,
+            classification_source=classification_source,
+            warning=duplicate_warning,
+        )
+    if duplicate is not None:
+        return PreviewResult(
+            PreviewStatus.DUPLICATE,
+            source_file,
+            category=plan.category,
+            proposed_destination=plan.proposed_destination,
+            archive_by_date=archive_by_date,
+            destination_collision=plan.collision,
+            alternative_name_required=plan.collision,
+            duplicate_status=DuplicateStatus.PROVEN,
+            duplicate_of=Path(duplicate),
+            safety_validated=True,
+            execution_possible=False,
+            classification_source=classification_source,
+            warning="Execution would retain the source as a verified duplicate",
+        )
+    return PreviewResult(
+        PreviewStatus.READY,
+        source_file,
+        category=plan.category,
+        proposed_destination=plan.proposed_destination,
+        archive_by_date=archive_by_date,
+        destination_collision=plan.collision,
+        alternative_name_required=plan.collision,
+        duplicate_status=DuplicateStatus.NOT_FOUND,
+        safety_validated=True,
+        execution_possible=True,
+        classification_source=classification_source,
+        warning="Preview is advisory; execution revalidates duplicates and collisions",
+    )
 
 
 def move_file_with_retries(
@@ -906,19 +1225,17 @@ def move_file_with_retries(
         )
 
     try:
-        category = validate_category(category)
-        organized_root_path = Path(organized_root).resolve(strict=False)
-        if category not in destination_folders:
-            category = "others"
-        base_destination_dir = Path(destination_folders[category])
-        destination_dir = get_dated_destination_dir(
-            base_destination_dir,
+        plan = _plan_move_destination(
+            source_file,
+            destination_folders,
+            extension_lookup,
             archive_by_date,
+            organized_root,
+            category_override,
         )
-        destination_file = resolve_contained_path(
-            organized_root_path,
-            destination_dir / source_file.name,
-        )
+        category = plan.category
+        organized_root_path = Path(organized_root).resolve(strict=False)
+        destination_file = plan.destination
     except (
         KeyError,
         OSError,

@@ -1231,6 +1231,115 @@ class OperationJournal:
             with self._read_transaction(connection):
                 return self._select_operation(connection, operation_id)
 
+    def get_inverse_operation(
+        self,
+        original_operation_id: str,
+    ) -> OperationRecord | None:
+        original_operation_id = _operation_reference(
+            original_operation_id, "original_operation_id"
+        )
+        with self._connection() as connection:
+            with self._read_transaction(connection):
+                row = connection.execute(
+                    """
+                    SELECT * FROM operations
+                    WHERE inverse_of_operation_id = ?
+                    ORDER BY started_at_utc, operation_id
+                    LIMIT 1
+                    """,
+                    (original_operation_id,),
+                ).fetchone()
+                return _operation_from_row(row) if row is not None else None
+
+    def create_inverse_operation(
+        self,
+        original_operation_id: str,
+        *,
+        source_path: str | Path,
+        organized_root: str | Path,
+        intended_destination: str | Path,
+        source_identity: str,
+        source_hash: str,
+        source_size: int,
+        source_mtime_ns: int,
+        application_version: str | None = None,
+    ) -> OperationRecord:
+        """Atomically reserve the sole inverse operation for a completed move."""
+        original_operation_id = _operation_reference(
+            original_operation_id, "original_operation_id"
+        )
+        values = {
+            "operation_id": str(uuid.uuid4()),
+            "operation_type": OperationType.MOVE.value,
+            "physical_phase": PhysicalPhase.PREPARED.value,
+            "operation_status": OperationStatus.OPEN.value,
+            "source_path": _absolute_path_text(source_path, "source_path"),
+            "source_identity": _bounded_text(source_identity, "source_identity", 512),
+            "source_hash": _bounded_text(source_hash, "source_hash", 256),
+            "source_size": _nonnegative_integer(source_size, "source_size"),
+            "source_mtime_ns": _nonnegative_integer(
+                source_mtime_ns, "source_mtime_ns"
+            ),
+            "source_object_type": SourceObjectType.FILE.value,
+            "organized_root": _absolute_path_text(organized_root, "organized_root"),
+            "intended_destination": _absolute_path_text(
+                intended_destination, "intended_destination"
+            ),
+            "move_mode": MoveMode.UNKNOWN.value,
+            "timestamp": _utc_now(),
+            "parent_operation_id": original_operation_id,
+            "inverse_of_operation_id": original_operation_id,
+            "application_version": _bounded_text(
+                application_version, "application_version", 64
+            ),
+        }
+        with self._connection() as connection:
+            with self._transaction(connection):
+                original = self._select_operation(connection, original_operation_id)
+                if (
+                    original.inverse_of_operation_id is not None
+                    or original.operation_status is not OperationStatus.COMPLETE
+                    or original.physical_phase is not PhysicalPhase.PHYSICAL_COMMITTED
+                ):
+                    raise JournalConflictError(
+                        "Only a completed original move can have an inverse operation"
+                    )
+                existing = connection.execute(
+                    "SELECT operation_id FROM operations WHERE inverse_of_operation_id = ?",
+                    (original_operation_id,),
+                ).fetchone()
+                if existing is not None:
+                    raise JournalConflictError(
+                        "An inverse operation already exists for this move"
+                    )
+                connection.execute(
+                    """
+                    INSERT INTO operations (
+                        operation_id, operation_type, physical_phase, operation_status,
+                        source_path, source_identity, source_hash, source_size,
+                        source_mtime_ns, source_object_type, organized_root,
+                        intended_destination, move_mode, started_at_utc, updated_at_utc,
+                        parent_operation_id, inverse_of_operation_id, application_version
+                    ) VALUES (
+                        :operation_id, :operation_type, :physical_phase, :operation_status,
+                        :source_path, :source_identity, :source_hash, :source_size,
+                        :source_mtime_ns, :source_object_type, :organized_root,
+                        :intended_destination, :move_mode, :timestamp, :timestamp,
+                        :parent_operation_id, :inverse_of_operation_id, :application_version
+                    )
+                    """,
+                    values,
+                )
+                self._append_event(
+                    connection,
+                    values["operation_id"],
+                    EventKind.OPERATION_CREATED,
+                    values["timestamp"],
+                    to_phase=PhysicalPhase.PREPARED,
+                    to_status=OperationStatus.OPEN,
+                )
+                return self._select_operation(connection, values["operation_id"])
+
     def list_incomplete_operations(self) -> list[OperationRecord]:
         with self._connection() as connection:
             with self._read_transaction(connection):

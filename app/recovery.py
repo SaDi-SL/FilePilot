@@ -638,6 +638,7 @@ def _reconcile_once(
                 operation.source_hash,
                 source_state,
                 journal_move,
+                operation.destination_identity,
             )
             return
     if decision is RecoveryDecision.SAFE_RESUME_STAGING:
@@ -709,6 +710,15 @@ def _reconcile_once(
                 size=operation.destination_size or operation.source_size,
             ):
                 raise RecoveryError("Destination changed before recovery deletion")
+            final_staged = _inspect(operation.staging_path, operation.source_hash)
+            if not _matches(
+                final_staged,
+                identity=operation.staging_identity,
+                content_hash=operation.source_hash,
+                size=operation.source_size,
+                modified_ns=operation.source_mtime_ns,
+            ):
+                raise RecoveryError("Staged source changed before final recovery deletion")
             os.unlink(current.path)
             _cleanup_empty_staging_directory(operation)
             return
