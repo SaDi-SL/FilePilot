@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 
 from app.classifier import build_extension_lookup
@@ -10,6 +11,7 @@ from app.path_topology import validate_configured_topology
 from app.stats import ensure_stats_file
 from app.multi_watcher import MultiFolderMonitor
 from app.operation_journal import OperationJournal
+from app.recovery import RecoveryError, reconcile_incomplete_operations
 
 
 def build_destination_folders(base_folder: str, rules: dict) -> dict:
@@ -105,6 +107,27 @@ def build_monitor():
     ensure_history_file(config["history_file"])
     ensure_hash_db(config["hash_db_file"])
 
+    recovery_report = reconcile_incomplete_operations(
+        operation_journal,
+        hash_db_file=config["hash_db_file"],
+    )
+    for assessment in recovery_report.assessments:
+        logging.warning(
+            "Recovery requires review for operation %s: %s",
+            assessment.operation.operation_id,
+            assessment.reason,
+        )
+    unsafe_sources = [
+        assessment.operation.operation_id
+        for assessment in recovery_report.assessments
+        if assessment.source.exists
+    ]
+    if unsafe_sources:
+        raise RecoveryError(
+            "Recovery requires review before source monitoring can start: "
+            + ", ".join(unsafe_sources)
+        )
+
     extension_lookup = build_extension_lookup(rules)
     plugins_dir = get_plugins_dir()
     plugin_manager = PluginManager(plugins_dir)
@@ -120,5 +143,6 @@ def build_monitor():
         plugin_manager=plugin_manager,
         operation_journal=operation_journal,
     )
+    monitor.recovery_report = recovery_report
 
     return config, monitor

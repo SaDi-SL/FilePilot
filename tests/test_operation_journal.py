@@ -284,6 +284,31 @@ class OperationJournalTests(unittest.TestCase):
         self.assertIsNotNone(completed.completed_at_utc)
         self.assertEqual(journal.list_incomplete_operations(), [])
 
+    def test_review_outcome_preserves_last_physical_phase(self):
+        journal = self._journal()
+        operation = self._create(journal)
+        journal.transition_phase(
+            operation.operation_id,
+            PhysicalPhase.PREPARED,
+            PhysicalPhase.RENAME_INTENT,
+        )
+
+        reviewed = journal.mark_needs_review(
+            operation.operation_id,
+            expected_phase=PhysicalPhase.RENAME_INTENT,
+            error_code="RECOVERY_AMBIGUOUS",
+            error_message="Source path was reused",
+        )
+
+        self.assertEqual(reviewed.physical_phase, PhysicalPhase.RENAME_INTENT)
+        self.assertEqual(reviewed.operation_status, OperationStatus.NEEDS_REVIEW)
+        self.assertEqual(reviewed.error_code, "RECOVERY_AMBIGUOUS")
+        self.assertEqual(reviewed.error_message, "Source path was reused")
+        self.assertEqual(
+            journal.get_events(operation.operation_id)[-1].to_phase,
+            PhysicalPhase.RENAME_INTENT,
+        )
+
     def test_same_volume_transition_path_is_legal_and_ordered(self):
         journal = self._journal()
         operation = self._create(journal)

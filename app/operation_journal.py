@@ -1520,6 +1520,64 @@ class OperationJournal:
                 )
                 return self._select_operation(connection, operation_id)
 
+    def mark_needs_review(
+        self,
+        operation_id: str,
+        *,
+        expected_phase: PhysicalPhase,
+        error_code: str,
+        error_message: str,
+    ) -> OperationRecord:
+        """Stop automatic recovery without discarding the last physical phase."""
+        operation_id = _operation_reference(operation_id, "operation_id")
+        _required_enum(expected_phase, PhysicalPhase, "expected_phase")
+        error_code, error_message = _error_values(error_code, error_message)
+        timestamp = _utc_now()
+        with self._connection() as connection:
+            with self._transaction(connection):
+                cursor = connection.execute(
+                    """
+                    UPDATE operations
+                    SET operation_status = ?, updated_at_utc = ?,
+                        error_code = ?, error_message = ?
+                    WHERE operation_id = ? AND physical_phase = ?
+                      AND operation_status = ?
+                    """,
+                    (
+                        OperationStatus.NEEDS_REVIEW.value,
+                        timestamp,
+                        error_code,
+                        error_message,
+                        operation_id,
+                        expected_phase.value,
+                        OperationStatus.OPEN.value,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    if connection.execute(
+                        "SELECT 1 FROM operations WHERE operation_id = ?",
+                        (operation_id,),
+                    ).fetchone() is None:
+                        raise JournalNotFoundError(
+                            f"Operation not found: {operation_id}"
+                        )
+                    raise JournalConflictError(
+                        "Operation phase or status changed before review outcome"
+                    )
+                self._append_event(
+                    connection,
+                    operation_id,
+                    EventKind.OUTCOME_RECORDED,
+                    timestamp,
+                    from_phase=expected_phase,
+                    to_phase=expected_phase,
+                    from_status=OperationStatus.OPEN,
+                    to_status=OperationStatus.NEEDS_REVIEW,
+                    error_code=error_code,
+                    error_message=error_message,
+                )
+                return self._select_operation(connection, operation_id)
+
     def initialize_effect(
         self,
         operation_id: str,
