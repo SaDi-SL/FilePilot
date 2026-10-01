@@ -49,9 +49,9 @@ def should_ignore_file(file_path: Path, config: dict) -> bool:
 
 class NewFileHandler(FileSystemEventHandler):
     def __init__(self, config: dict, extension_lookup: dict, plugin_manager=None,
-                 file_processed_callback=None, submit_file=None,
-                 stability_interval_seconds=None, stable_intervals=None,
-                 stability_timeout_seconds=None):
+                  file_processed_callback=None, submit_file=None,
+                  stability_interval_seconds=None, stable_intervals=None,
+                  stability_timeout_seconds=None, operation_journal=None):
         self.config = config
         self.extension_lookup = extension_lookup
         self.plugin_manager = plugin_manager
@@ -68,6 +68,7 @@ class NewFileHandler(FileSystemEventHandler):
         self.stats_file = config["stats_file"]
         self.history_file = config["history_file"]
         self.hash_db_file = config["hash_db_file"]
+        self.operation_journal = operation_journal
         self._submit_file = submit_file
         if stability_interval_seconds is None:
             stability_interval_seconds = config.get(
@@ -283,6 +284,7 @@ class NewFileHandler(FileSystemEventHandler):
                 classification_method=classification_method,
                 smart_source=smart_source,
                 category_override=final_category,
+                journal=self.operation_journal,
             )
             status = {
                 MoveStatus.MOVED: "moved",
@@ -321,8 +323,8 @@ class FileMonitor:
     DEFAULT_STABILITY_MAX_RETRIES = 3
 
     def __init__(self, config: dict, extension_lookup: dict, plugin_manager=None,
-                 file_processed_callback=None,
-                 max_processing_workers=None):
+                  file_processed_callback=None,
+                  max_processing_workers=None, operation_journal=None):
         self.config = config
         self.extension_lookup = extension_lookup
         self.source_folder = config["source_folder"]
@@ -385,6 +387,7 @@ class FileMonitor:
             config, extension_lookup, plugin_manager,
             file_processed_callback=file_processed_callback,
             submit_file=self.submit,
+            operation_journal=operation_journal,
         )
         self.observer = None
         self.is_running = False

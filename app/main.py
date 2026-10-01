@@ -9,6 +9,7 @@ from app.mover import resolve_contained_path
 from app.path_topology import validate_configured_topology
 from app.stats import ensure_stats_file
 from app.multi_watcher import MultiFolderMonitor
+from app.operation_journal import OperationJournal
 
 
 def build_destination_folders(base_folder: str, rules: dict) -> dict:
@@ -97,6 +98,7 @@ def build_monitor():
     config["hash_db_file"]  = str(resolve_runtime_path(config["hash_db_file"]))
 
     validate_configured_topology(config)
+    operation_journal = OperationJournal()
     ensure_directories(config)
     setup_logging(config["log_file"])
     ensure_stats_file(config["stats_file"], rules)
@@ -116,6 +118,7 @@ def build_monitor():
         config=config,
         extension_lookup=extension_lookup,
         plugin_manager=plugin_manager,
+        operation_journal=operation_journal,
     )
 
     return config, monitor

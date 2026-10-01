@@ -439,6 +439,8 @@ _PHASE_TRANSITIONS = {
         PhysicalPhase.NEEDS_REVIEW,
     },
     PhysicalPhase.RENAME_INTENT: {
+        PhysicalPhase.RENAME_INTENT,
+        PhysicalPhase.TEMP_CREATE_INTENT,
         PhysicalPhase.PHYSICAL_COMMITTED,
         PhysicalPhase.ABORTED,
         PhysicalPhase.NEEDS_REVIEW,
@@ -459,6 +461,7 @@ _PHASE_TRANSITIONS = {
         PhysicalPhase.NEEDS_REVIEW,
     },
     PhysicalPhase.PUBLISH_INTENT: {
+        PhysicalPhase.PUBLISH_INTENT,
         PhysicalPhase.DESTINATION_PUBLISHED,
         PhysicalPhase.ABORTED,
         PhysicalPhase.NEEDS_REVIEW,
@@ -1457,6 +1460,63 @@ class OperationJournal:
                     to_phase=expected_phase,
                     from_status=OperationStatus.OPEN,
                     to_status=OperationStatus.DUPLICATE,
+                )
+                return self._select_operation(connection, operation_id)
+
+    def complete_operation(self, operation_id: str) -> OperationRecord:
+        """Complete a physical operation only after every required effect applied."""
+        operation_id = _operation_reference(operation_id, "operation_id")
+        timestamp = _utc_now()
+        with self._connection() as connection:
+            with self._transaction(connection):
+                operation = self._select_operation(connection, operation_id)
+                if (
+                    operation.operation_status is not OperationStatus.OPEN
+                    or operation.physical_phase is not PhysicalPhase.PHYSICAL_COMMITTED
+                ):
+                    raise JournalConflictError(
+                        "Only an open physically committed operation can complete"
+                    )
+                missing_required = connection.execute(
+                    """
+                    SELECT 1 FROM operation_effects
+                    WHERE operation_id = ? AND required = 1 AND state != ?
+                    LIMIT 1
+                    """,
+                    (operation_id, EffectState.APPLIED.value),
+                ).fetchone()
+                if missing_required is not None:
+                    raise JournalConflictError(
+                        "Required operation effects have not all been applied"
+                    )
+                cursor = connection.execute(
+                    """
+                    UPDATE operations
+                    SET operation_status = ?, updated_at_utc = ?, completed_at_utc = ?
+                    WHERE operation_id = ? AND physical_phase = ? AND operation_status = ?
+                    """,
+                    (
+                        OperationStatus.COMPLETE.value,
+                        timestamp,
+                        timestamp,
+                        operation_id,
+                        PhysicalPhase.PHYSICAL_COMMITTED.value,
+                        OperationStatus.OPEN.value,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise JournalConflictError(
+                        "Operation phase or status changed before completion"
+                    )
+                self._append_event(
+                    connection,
+                    operation_id,
+                    EventKind.OUTCOME_RECORDED,
+                    timestamp,
+                    from_phase=PhysicalPhase.PHYSICAL_COMMITTED,
+                    to_phase=PhysicalPhase.PHYSICAL_COMMITTED,
+                    from_status=OperationStatus.OPEN,
+                    to_status=OperationStatus.COMPLETE,
                 )
                 return self._select_operation(connection, operation_id)
 

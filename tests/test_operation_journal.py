@@ -245,6 +245,45 @@ class OperationJournalTests(unittest.TestCase):
         self.assertIsNotNone(incomplete[0].physically_committed_at_utc)
         self.assertIsNone(incomplete[0].completed_at_utc)
 
+    def test_completion_requires_physical_commit_and_applied_required_effects(self):
+        journal = self._journal()
+        operation = self._create(journal)
+        journal.initialize_effect(operation.operation_id, EffectType.HASH_INDEX)
+
+        with self.assertRaises(JournalConflictError):
+            journal.complete_operation(operation.operation_id)
+
+        journal.transition_phase(
+            operation.operation_id,
+            PhysicalPhase.PREPARED,
+            PhysicalPhase.RENAME_INTENT,
+        )
+        journal.transition_phase(
+            operation.operation_id,
+            PhysicalPhase.RENAME_INTENT,
+            PhysicalPhase.PHYSICAL_COMMITTED,
+        )
+        with self.assertRaises(JournalConflictError):
+            journal.complete_operation(operation.operation_id)
+
+        journal.transition_effect(
+            operation.operation_id,
+            EffectType.HASH_INDEX,
+            EffectState.NOT_STARTED,
+            EffectState.PENDING,
+        )
+        journal.transition_effect(
+            operation.operation_id,
+            EffectType.HASH_INDEX,
+            EffectState.PENDING,
+            EffectState.APPLIED,
+        )
+        completed = journal.complete_operation(operation.operation_id)
+
+        self.assertEqual(completed.operation_status, OperationStatus.COMPLETE)
+        self.assertIsNotNone(completed.completed_at_utc)
+        self.assertEqual(journal.list_incomplete_operations(), [])
+
     def test_same_volume_transition_path_is_legal_and_ordered(self):
         journal = self._journal()
         operation = self._create(journal)

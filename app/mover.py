@@ -4,7 +4,7 @@ import logging
 import os
 import tempfile
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import Enum
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -16,6 +16,17 @@ from app.hash_manager import (
     get_verified_file_path,
     hash_operation,
     register_file_hash,
+)
+from app.operation_journal import (
+    EffectState,
+    EffectType,
+    JournalConflictError,
+    JournalError,
+    MoveMode,
+    OperationJournal,
+    PhysicalPhase,
+    SourceObjectType,
+    TransitionEvidence,
 )
 
 
@@ -34,6 +45,7 @@ class MoveResult:
     duplicate_of: Path | None = None
     error: str | None = None
     metadata_error: str | None = None
+    operation_id: str | None = None
 
 
 class _SourceRemovalError(OSError):
@@ -42,6 +54,19 @@ class _SourceRemovalError(OSError):
             f"Published {destination} but could not remove source {source}: {error}"
         )
         self.destination = destination
+
+
+class _JournalAfterFilesystemError(RuntimeError):
+    def __init__(
+        self,
+        message: str,
+        destination: Path,
+        *,
+        physical_complete: bool,
+    ):
+        super().__init__(message)
+        self.destination = destination
+        self.physical_complete = physical_complete
 
 
 class UnsafeDestinationError(ValueError):
@@ -67,6 +92,159 @@ class _TemporaryCopy:
 _WINDOWS_ERROR_NOT_SAME_DEVICE = 17
 _MAX_CROSS_VOLUME_COLLISIONS = 1000
 _COPY_CHUNK_SIZE = 1024 * 1024
+
+
+def _identity_text(state: _FileState) -> str:
+    return f"stat-v1:{state.device}:{state.inode}"
+
+
+def _source_object_type(path: Path) -> SourceObjectType:
+    try:
+        if path.is_symlink():
+            return SourceObjectType.SYMLINK
+        if path.is_file():
+            return SourceObjectType.FILE
+    except OSError:
+        pass
+    return SourceObjectType.OTHER
+
+
+def _with_operation_id(
+    result: MoveResult,
+    operation_id: str | None,
+) -> MoveResult:
+    if operation_id is None or result.operation_id is not None:
+        return result
+    return replace(result, operation_id=operation_id)
+
+
+class _JournaledMove:
+    """Bind one journal operation to the mover's existing physical phases."""
+
+    def __init__(self, journal: OperationJournal, operation_id: str):
+        self.journal = journal
+        self.operation_id = operation_id
+        self.phase = PhysicalPhase.PREPARED
+
+    def transition(
+        self,
+        new_phase: PhysicalPhase,
+        evidence: TransitionEvidence | None = None,
+    ) -> None:
+        self.journal.transition_phase(
+            self.operation_id,
+            self.phase,
+            new_phase,
+            evidence=evidence,
+        )
+        self.phase = new_phase
+
+    def stop(
+        self,
+        error: Exception,
+        destination: Path | None = None,
+        *,
+        force_review: bool = False,
+    ) -> None:
+        if self.phase in {
+            PhysicalPhase.PHYSICAL_COMMITTED,
+            PhysicalPhase.ABORTED,
+            PhysicalPhase.NEEDS_REVIEW,
+        }:
+            return
+        post_publication = self.phase in {
+            PhysicalPhase.DESTINATION_PUBLISHED,
+            PhysicalPhase.DESTINATION_VERIFIED,
+            PhysicalPhase.SOURCE_STAGE_INTENT,
+            PhysicalPhase.SOURCE_STAGED,
+            PhysicalPhase.SOURCE_DELETE_INTENT,
+        }
+        target = PhysicalPhase.NEEDS_REVIEW if (
+            force_review or post_publication
+        ) else PhysicalPhase.ABORTED
+        evidence = (
+            TransitionEvidence(actual_destination=destination)
+            if destination is not None
+            else None
+        )
+        try:
+            self.journal.transition_phase(
+                self.operation_id,
+                self.phase,
+                target,
+                evidence=evidence,
+                error_code="MOVE_FAILED",
+                error_message=str(error),
+            )
+            self.phase = target
+        except JournalError:
+            logging.error(
+                "Could not record terminal journal state for operation %s",
+                self.operation_id,
+                exc_info=True,
+            )
+
+
+def _run_effect(
+    journal_move: _JournaledMove | None,
+    effect_type: EffectType,
+    action,
+) -> str | None:
+    """Run one legacy projection with durable pending/applied visibility."""
+    if journal_move is None:
+        try:
+            action()
+        except Exception as error:
+            return str(error)
+        return None
+    try:
+        journal_move.journal.initialize_effect(
+            journal_move.operation_id,
+            effect_type,
+            initial_state=EffectState.PENDING,
+        )
+    except JournalConflictError:
+        try:
+            journal_move.journal.transition_effect(
+                journal_move.operation_id,
+                effect_type,
+                EffectState.NOT_STARTED,
+                EffectState.PENDING,
+            )
+        except Exception as error:
+            return f"Journal could not start {effect_type.value}: {error}"
+    except Exception as error:
+        return f"Journal could not initialize {effect_type.value}: {error}"
+    try:
+        action()
+    except Exception as error:
+        try:
+            journal_move.journal.transition_effect(
+                journal_move.operation_id,
+                effect_type,
+                EffectState.PENDING,
+                EffectState.FAILED,
+                error_code="WRITE_FAILED",
+                error_message=str(error),
+            )
+        except JournalError:
+            logging.error(
+                "Could not record failed %s effect for operation %s",
+                effect_type.value,
+                journal_move.operation_id,
+                exc_info=True,
+            )
+        return str(error)
+    try:
+        journal_move.journal.transition_effect(
+            journal_move.operation_id,
+            effect_type,
+            EffectState.PENDING,
+            EffectState.APPLIED,
+        )
+    except Exception as error:
+        return f"Journal could not confirm {effect_type.value}: {error}"
+    return None
 
 
 def validate_category(category: object) -> str:
@@ -192,6 +370,7 @@ def _copy_to_verified_temporary(
     organized_root: Path,
     expected_hash: str,
     expected_source_state: _FileState | None,
+    journal_move: _JournaledMove | None = None,
 ) -> _TemporaryCopy:
     """Copy source into a private destination-side file and verify its bytes."""
     destination_dir = resolve_contained_path(organized_root, destination_dir)
@@ -212,6 +391,14 @@ def _copy_to_verified_temporary(
             organized_root,
             temporary_path,
         )
+        if journal_move is not None:
+            journal_move.transition(
+                PhysicalPhase.TEMP_CREATED,
+                TransitionEvidence(
+                    temp_path=temporary_path,
+                    temp_identity=_identity_text(temporary_state),
+                ),
+            )
 
         with open(source_file, "rb") as source, os.fdopen(
             descriptor,
@@ -244,6 +431,14 @@ def _copy_to_verified_temporary(
             raise OSError(f"Source content changed before cross-volume copy: {source_file}")
         if calculate_file_hash(temporary_path) != expected_hash:
             raise OSError(f"Temporary copy verification failed: {temporary_path}")
+        if journal_move is not None:
+            journal_move.transition(
+                PhysicalPhase.TEMP_VERIFIED,
+                TransitionEvidence(
+                    temp_path=temporary_path,
+                    temp_identity=_identity_text(temporary_state),
+                ),
+            )
         return temporary
     except Exception:
         if descriptor != -1:
@@ -267,13 +462,45 @@ def _publish_temporary_no_clobber(
     temporary: _TemporaryCopy,
     destination_file: Path,
     organized_root: Path,
+    journal_move: _JournaledMove | None = None,
 ) -> Path:
     """Atomically publish a verified temporary file without replacing collisions."""
     for _ in range(_MAX_CROSS_VOLUME_COLLISIONS):
         candidate = generate_unique_destination(destination_file)
         candidate = resolve_contained_path(organized_root, candidate)
         try:
-            return _move_no_clobber(temporary.path, candidate)
+            if journal_move is not None:
+                journal_move.transition(
+                    PhysicalPhase.PUBLISH_INTENT,
+                    TransitionEvidence(
+                        actual_destination=candidate,
+                        temp_path=temporary.path,
+                        temp_identity=_identity_text(temporary.state),
+                    ),
+                )
+            published = _move_no_clobber(temporary.path, candidate)
+            if journal_move is not None:
+                try:
+                    published_state = _file_state(
+                        published.stat(follow_symlinks=False)
+                    )
+                    journal_move.transition(
+                        PhysicalPhase.DESTINATION_PUBLISHED,
+                        TransitionEvidence(
+                            actual_destination=published,
+                            destination_identity=_identity_text(published_state),
+                            destination_size=published_state.size,
+                            temp_path=temporary.path,
+                            temp_identity=_identity_text(temporary.state),
+                        ),
+                    )
+                except Exception as error:
+                    raise _JournalAfterFilesystemError(
+                        f"Destination was published but journal update failed: {error}",
+                        published,
+                        physical_complete=False,
+                    ) from error
+            return published
         except FileExistsError:
             logging.debug(
                 f"Destination collision while publishing {destination_file.name}: "
@@ -283,6 +510,26 @@ def _publish_temporary_no_clobber(
             # The no-clobber link is already the committed destination. Cleanup of
             # the private temporary name is best effort and must not undo it.
             _cleanup_temporary_copy(temporary)
+            if journal_move is not None:
+                try:
+                    published_state = _file_state(
+                        error.destination.stat(follow_symlinks=False)
+                    )
+                    journal_move.transition(
+                        PhysicalPhase.DESTINATION_PUBLISHED,
+                        TransitionEvidence(
+                            actual_destination=error.destination,
+                            destination_identity=_identity_text(published_state),
+                            destination_size=published_state.size,
+                        ),
+                    )
+                except Exception as journal_error:
+                    raise _JournalAfterFilesystemError(
+                        "Destination was published but journal update failed: "
+                        f"{journal_error}",
+                        error.destination,
+                        physical_complete=False,
+                    ) from journal_error
             return error.destination
     raise FileExistsError(
         f"Could not select a destination after "
@@ -295,6 +542,7 @@ def _remove_verified_source(
     destination_file: Path,
     expected_hash: str,
     expected_state: _FileState,
+    journal_move: _JournaledMove | None = None,
 ) -> None:
     """Atomically isolate and delete only the verified source instance."""
     staging_dir: Path | None = None
@@ -330,10 +578,46 @@ def _remove_verified_source(
             tempfile.mkdtemp(prefix=".filepilot-remove-", dir=source_file.parent)
         )
         staged_source = staging_dir / source_file.name
+        if journal_move is not None:
+            try:
+                journal_move.transition(
+                    PhysicalPhase.SOURCE_STAGE_INTENT,
+                    TransitionEvidence(
+                        actual_destination=destination_file,
+                        staging_path=staged_source,
+                    ),
+                )
+            except Exception as error:
+                try:
+                    os.rmdir(staging_dir)
+                except OSError:
+                    pass
+                staging_dir = None
+                raise _JournalAfterFilesystemError(
+                    f"Source staging intent could not be journaled: {error}",
+                    destination_file,
+                    physical_complete=False,
+                ) from error
         os.rename(source_file, staged_source)
         source_staged = True
 
         staged_state = _file_state(staged_source.stat())
+        if journal_move is not None:
+            try:
+                journal_move.transition(
+                    PhysicalPhase.SOURCE_STAGED,
+                    TransitionEvidence(
+                        actual_destination=destination_file,
+                        staging_path=staged_source,
+                        staging_identity=_identity_text(staged_state),
+                    ),
+                )
+            except Exception as error:
+                raise _JournalAfterFilesystemError(
+                    f"Source was staged but journal update failed: {error}",
+                    destination_file,
+                    physical_complete=False,
+                ) from error
         if not _same_source_version(staged_state, expected_state):
             raise OSError(f"Source was replaced before removal: {source_file}")
         if calculate_file_hash(staged_source) != expected_hash:
@@ -343,13 +627,77 @@ def _remove_verified_source(
             expected_state,
         ):
             raise OSError(f"Staged source changed before removal: {source_file}")
+        verified_destination_state = _file_state(
+            destination_file.stat(follow_symlinks=False)
+        )
         if calculate_file_hash(destination_file) != expected_hash:
             raise OSError(
                 f"Published destination changed before source removal: "
                 f"{destination_file}"
             )
+        if _file_state(
+            destination_file.stat(follow_symlinks=False)
+        ) != verified_destination_state:
+            raise OSError(
+                f"Published destination changed during source verification: "
+                f"{destination_file}"
+            )
+        if journal_move is not None:
+            try:
+                journal_move.transition(
+                    PhysicalPhase.SOURCE_DELETE_INTENT,
+                    TransitionEvidence(
+                        actual_destination=destination_file,
+                        destination_identity=_identity_text(
+                            verified_destination_state
+                        ),
+                        staging_path=staged_source,
+                        staging_identity=_identity_text(staged_state),
+                        destination_hash=expected_hash,
+                        destination_size=verified_destination_state.size,
+                    ),
+                )
+            except Exception as error:
+                raise _JournalAfterFilesystemError(
+                    f"Source deletion intent could not be journaled: {error}",
+                    destination_file,
+                    physical_complete=False,
+                ) from error
+            if (
+                _file_state(destination_file.stat(follow_symlinks=False))
+                != verified_destination_state
+                or calculate_file_hash(destination_file) != expected_hash
+                or _file_state(destination_file.stat(follow_symlinks=False))
+                != verified_destination_state
+            ):
+                raise OSError(
+                    f"Published destination changed before source deletion: "
+                    f"{destination_file}"
+                )
         os.unlink(staged_source)
         source_staged = False
+        if journal_move is not None:
+            try:
+                destination_state = _file_state(
+                    destination_file.stat(follow_symlinks=False)
+                )
+                journal_move.transition(
+                    PhysicalPhase.PHYSICAL_COMMITTED,
+                    TransitionEvidence(
+                        actual_destination=destination_file,
+                        destination_identity=_identity_text(destination_state),
+                        destination_hash=expected_hash,
+                        destination_size=destination_state.size,
+                        staging_path=staged_source,
+                        staging_identity=_identity_text(staged_state),
+                    ),
+                )
+            except Exception as error:
+                raise _JournalAfterFilesystemError(
+                    f"Source was removed but journal update failed: {error}",
+                    destination_file,
+                    physical_complete=True,
+                ) from error
     except OSError as error:
         restore_error = restore_staged_source()
         if restore_error is not None:
@@ -371,6 +719,7 @@ def _move_across_volumes(
     organized_root: Path,
     expected_hash: str,
     expected_source_state: _FileState | None,
+    journal_move: _JournaledMove | None = None,
 ) -> Path:
     """Copy, verify, publish, and only then remove a cross-volume source."""
     if source_file.is_symlink():
@@ -381,6 +730,7 @@ def _move_across_volumes(
         organized_root,
         expected_hash,
         expected_source_state,
+        journal_move,
     )
     published_destination: Path | None = None
     try:
@@ -388,6 +738,7 @@ def _move_across_volumes(
             temporary,
             destination_file,
             organized_root,
+            journal_move,
         )
         try:
             published_hash = calculate_file_hash(published_destination)
@@ -406,12 +757,41 @@ def _move_across_volumes(
                     f"{published_destination}"
                 ),
             )
-        _remove_verified_source(
-            source_file,
-            published_destination,
-            expected_hash,
-            temporary.source_state,
-        )
+        if journal_move is not None:
+            try:
+                published_state = _file_state(
+                    published_destination.stat(follow_symlinks=False)
+                )
+                journal_move.transition(
+                    PhysicalPhase.DESTINATION_VERIFIED,
+                    TransitionEvidence(
+                        actual_destination=published_destination,
+                        destination_identity=_identity_text(published_state),
+                        destination_hash=published_hash,
+                        destination_size=published_state.size,
+                    ),
+                )
+            except Exception as error:
+                raise _JournalAfterFilesystemError(
+                    f"Destination was verified but journal update failed: {error}",
+                    published_destination,
+                    physical_complete=False,
+                ) from error
+        if journal_move is None:
+            _remove_verified_source(
+                source_file,
+                published_destination,
+                expected_hash,
+                temporary.source_state,
+            )
+        else:
+            _remove_verified_source(
+                source_file,
+                published_destination,
+                expected_hash,
+                temporary.source_state,
+                journal_move,
+            )
         return published_destination
     finally:
         _cleanup_temporary_copy(temporary)
@@ -423,13 +803,41 @@ def _move_to_unique_destination(
     organized_root: Path,
     expected_hash: str,
     expected_source_state: _FileState | None,
+    journal_move: _JournaledMove | None = None,
 ) -> Path:
     """Select and atomically commit to an available destination path."""
     while True:
         candidate = generate_unique_destination(destination_file)
         candidate = resolve_contained_path(organized_root, candidate)
         try:
-            return _move_no_clobber(source_file, candidate)
+            if journal_move is not None:
+                journal_move.transition(
+                    PhysicalPhase.RENAME_INTENT,
+                    TransitionEvidence(actual_destination=candidate),
+                )
+            destination = _move_no_clobber(source_file, candidate)
+            if journal_move is not None:
+                try:
+                    destination_state = _file_state(
+                        destination.stat(follow_symlinks=False)
+                    )
+                    destination_hash = calculate_file_hash(destination)
+                    journal_move.transition(
+                        PhysicalPhase.PHYSICAL_COMMITTED,
+                        TransitionEvidence(
+                            actual_destination=destination,
+                            destination_identity=_identity_text(destination_state),
+                            destination_hash=destination_hash,
+                            destination_size=destination_state.size,
+                        ),
+                    )
+                except Exception as error:
+                    raise _JournalAfterFilesystemError(
+                        f"File was moved but journal update failed: {error}",
+                        destination,
+                        physical_complete=True,
+                    ) from error
+            return destination
         except FileExistsError:
             logging.debug(
                 f"Destination collision while moving {source_file.name}: {candidate}"
@@ -440,12 +848,15 @@ def _move_to_unique_destination(
             logging.debug(
                 f"Cross-volume move detected for {source_file}; using verified copy"
             )
+            if journal_move is not None:
+                journal_move.transition(PhysicalPhase.TEMP_CREATE_INTENT)
             return _move_across_volumes(
                 source_file,
                 destination_file,
                 organized_root,
                 expected_hash,
                 expected_source_state,
+                journal_move,
             )
 
 
@@ -474,6 +885,7 @@ def move_file_with_retries(
     classification_method: str = "extension",
     smart_source: str = "",
     category_override: str | None = None,
+    journal: OperationJournal | None = None,
 ) -> MoveResult:
     """Attempt to move the file with retries, hash-based duplicate check, and date archiving."""
     category = (
@@ -561,17 +973,96 @@ def move_file_with_retries(
     failure_history_status = "failed"
     committed_destination: Path | None = None
     metadata_errors: list[str] = []
+    journal_move: _JournaledMove | None = None
+    operation_id: str | None = None
 
     try:
         with hash_operation(file_hash):
-            existing_path = get_verified_file_path(file_hash, hash_db_file)
-            if existing_path is not None:
-                result = MoveResult(
-                    MoveStatus.DUPLICATE,
-                    source_file,
-                    duplicate_of=Path(existing_path),
+            if not source_file.exists():
+                last_error = FileNotFoundError(
+                    f"Source file disappeared before move: {source_file}"
                 )
-            else:
+                failure_history_status = "disappeared"
+                result = MoveResult(
+                    MoveStatus.MOVE_FAILED,
+                    source_file,
+                    error=str(last_error),
+                )
+
+            if journal is not None and result is None:
+                try:
+                    operation = journal.create_operation(
+                        source_path=source_file.resolve(strict=False),
+                        organized_root=organized_root_path,
+                        intended_destination=destination_file,
+                        source_identity=(
+                            _identity_text(hashed_source_state)
+                            if hashed_source_state is not None
+                            else None
+                        ),
+                        source_hash=file_hash,
+                        source_size=(
+                            hashed_source_state.size
+                            if hashed_source_state is not None
+                            else None
+                        ),
+                        source_mtime_ns=(
+                            hashed_source_state.modified_ns
+                            if hashed_source_state is not None
+                            else None
+                        ),
+                        source_object_type=_source_object_type(source_file),
+                    )
+                    operation_id = operation.operation_id
+                    journal_move = _JournaledMove(journal, operation_id)
+                    for effect_type in (
+                        EffectType.HASH_INDEX,
+                        EffectType.LEGACY_CSV_HISTORY,
+                        EffectType.LEGACY_STATISTICS,
+                    ):
+                        journal.initialize_effect(
+                            operation_id,
+                            effect_type,
+                            required=True,
+                        )
+                except Exception as error:
+                    last_error = error
+                    if journal_move is not None:
+                        journal_move.stop(error)
+                    result = MoveResult(
+                        MoveStatus.MOVE_FAILED,
+                        source_file,
+                        error=f"Operation journal initialization failed: {error}",
+                    )
+
+            existing_path = (
+                get_verified_file_path(file_hash, hash_db_file)
+                if result is None
+                else None
+            )
+            if existing_path is not None:
+                if journal_move is not None:
+                    try:
+                        journal.mark_duplicate(
+                            operation_id,
+                            expected_phase=PhysicalPhase.PREPARED,
+                            duplicate_of_path=existing_path,
+                        )
+                    except Exception as error:
+                        last_error = error
+                        result = MoveResult(
+                            MoveStatus.MOVE_FAILED,
+                            source_file,
+                            error=f"Could not record duplicate outcome: {error}",
+                        )
+                        journal_move.stop(error)
+                if result is None:
+                    result = MoveResult(
+                        MoveStatus.DUPLICATE,
+                        source_file,
+                        duplicate_of=Path(existing_path),
+                    )
+            elif result is None:
                 try:
                     destination_file.parent.mkdir(parents=True, exist_ok=True)
                 except Exception as error:
@@ -581,6 +1072,8 @@ def move_file_with_retries(
                         source_file,
                         error=str(error),
                     )
+                    if journal_move is not None:
+                        journal_move.stop(error)
                 else:
                     for attempt in range(1, retries + 1):
                         if not source_file.exists():
@@ -596,6 +1089,8 @@ def move_file_with_retries(
                                 source_file,
                                 error=str(last_error),
                             )
+                            if journal_move is not None:
+                                journal_move.stop(last_error)
                             break
 
                         try:
@@ -605,6 +1100,7 @@ def move_file_with_retries(
                                 organized_root_path,
                                 file_hash,
                                 hashed_source_state,
+                                journal_move,
                             )
                             committed_destination = actual_destination
                         except UnsafeDestinationError as error:
@@ -614,6 +1110,8 @@ def move_file_with_retries(
                                 source_file,
                                 error=str(error),
                             )
+                            if journal_move is not None:
+                                journal_move.stop(error)
                             break
                         except _SourceRemovalError as error:
                             last_error = error
@@ -623,6 +1121,36 @@ def move_file_with_retries(
                                 destination=error.destination,
                                 error=str(error),
                             )
+                            if journal_move is not None:
+                                journal_move.stop(
+                                    error,
+                                    error.destination,
+                                    force_review=True,
+                                )
+                            break
+                        except _JournalAfterFilesystemError as error:
+                            last_error = error
+                            if error.physical_complete:
+                                committed_destination = error.destination
+                                metadata_errors.append(str(error))
+                                result = MoveResult(
+                                    MoveStatus.MOVED,
+                                    source_file,
+                                    destination=error.destination,
+                                )
+                            else:
+                                result = MoveResult(
+                                    MoveStatus.MOVE_FAILED,
+                                    source_file,
+                                    destination=error.destination,
+                                    error=str(error),
+                                )
+                            if journal_move is not None:
+                                journal_move.stop(
+                                    error,
+                                    error.destination,
+                                    force_review=True,
+                                )
                             break
                         except PermissionError as error:
                             last_error = error
@@ -660,14 +1188,17 @@ def move_file_with_retries(
                                         f"{source_file.name} | original hash: {file_hash} "
                                         f"| committed hash: {committed_hash}"
                                     )
-                                try:
-                                    register_file_hash(
+                                effect_error = _run_effect(
+                                    journal_move,
+                                    EffectType.HASH_INDEX,
+                                    lambda: register_file_hash(
                                         committed_hash,
                                         str(actual_destination),
                                         hash_db_file,
-                                    )
-                                except Exception as error:
-                                    message = f"Hash registration failed: {error}"
+                                    ),
+                                )
+                                if effect_error is not None:
+                                    message = f"Hash registration failed: {effect_error}"
                                     metadata_errors.append(message)
                                     logging.error(
                                         f"{message} | destination: {actual_destination}"
@@ -679,10 +1210,29 @@ def move_file_with_retries(
                             )
                             break
 
+                        if (
+                            journal_move is not None
+                            and result is None
+                            and (
+                                journal_move.phase is not PhysicalPhase.RENAME_INTENT
+                                or attempt == retries
+                            )
+                        ):
+                            journal_move.stop(last_error or RuntimeError("Move failed"))
+                            result = MoveResult(
+                                MoveStatus.MOVE_FAILED,
+                                source_file,
+                                error=str(last_error),
+                            )
+                            break
                         if attempt < retries:
                             time.sleep(delay)
 
                     if result is None:
+                        if journal_move is not None:
+                            journal_move.stop(
+                                last_error or RuntimeError("No move attempts were made")
+                            )
                         result = MoveResult(
                             MoveStatus.MOVE_FAILED,
                             source_file,
@@ -702,43 +1252,69 @@ def move_file_with_retries(
             )
         else:
             last_error = error
+            if journal_move is not None:
+                journal_move.stop(error)
             result = MoveResult(MoveStatus.MOVE_FAILED, source_file, error=str(error))
 
     if result.status is MoveStatus.DUPLICATE:
         logging.info(
             f"Duplicate retained: {source_file.name} | category: {category} | existing: {result.duplicate_of}"
         )
-        append_history(
-            history_file,
-            source_file.name,
-            category,
-            "duplicate_skipped",
-            classification_method,
-            smart_source,
+        history_error = _run_effect(
+            journal_move,
+            EffectType.LEGACY_CSV_HISTORY,
+            lambda: append_history(
+                history_file,
+                source_file.name,
+                category,
+                "duplicate_skipped",
+                classification_method,
+                smart_source,
+            ),
         )
-        return result
+        if history_error is not None:
+            logging.error(
+                "Duplicate history update failed for %s: %s",
+                source_file.name,
+                history_error,
+            )
+        return _with_operation_id(result, operation_id)
 
     if result.status is MoveStatus.MOVED:
-        try:
-            append_history(
+        history_error = _run_effect(
+            journal_move,
+            EffectType.LEGACY_CSV_HISTORY,
+            lambda: append_history(
                 history_file,
                 source_file.name,
                 category,
                 "moved",
                 classification_method,
                 smart_source,
-            )
-        except Exception as error:
-            message = f"History update failed: {error}"
+            ),
+        )
+        if history_error is not None:
+            message = f"History update failed: {history_error}"
             metadata_errors.append(message)
             logging.error(f"{message} | destination: {result.destination}")
 
-        try:
-            update_stats(stats_file, category, rules, success=True)
-        except Exception as error:
-            message = f"Stats update failed: {error}"
+        stats_error = _run_effect(
+            journal_move,
+            EffectType.LEGACY_STATISTICS,
+            lambda: update_stats(stats_file, category, rules, success=True),
+        )
+        if stats_error is not None:
+            message = f"Stats update failed: {stats_error}"
             metadata_errors.append(message)
             logging.error(f"{message} | destination: {result.destination}")
+
+        if journal_move is not None and journal_move.phase is PhysicalPhase.PHYSICAL_COMMITTED:
+            try:
+                journal_move.journal.complete_operation(journal_move.operation_id)
+            except Exception as error:
+                message = f"Operation journal completion failed: {error}"
+                metadata_errors.append(message)
+                logging.error(f"{message} | destination: {result.destination}")
 
         if metadata_errors:
             result = MoveResult(
@@ -746,6 +1322,7 @@ def move_file_with_retries(
                 source_file,
                 destination=result.destination,
                 metadata_error="; ".join(metadata_errors),
+                operation_id=operation_id,
             )
             logging.warning(
                 f"Moved with metadata errors: {source_file.name} → {result.destination} "
@@ -755,7 +1332,7 @@ def move_file_with_retries(
             logging.info(
                 f"Moved: {source_file.name} → {result.destination} | category: {category} | method: {classification_method}"
             )
-        return result
+        return _with_operation_id(result, operation_id)
 
     logging.error(
         f"Failed to move after {retries} retries: {source_file.name} | error: {last_error}"
@@ -763,4 +1340,4 @@ def move_file_with_retries(
     if failure_history_status == "failed":
         update_stats(stats_file, category, rules, success=False)
     append_history(history_file, source_file.name, category, failure_history_status)
-    return result
+    return _with_operation_id(result, operation_id)

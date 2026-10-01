@@ -48,11 +48,13 @@ class MultiFolderMonitor:
         extension_lookup: dict,
         plugin_manager=None,
         file_processed_callback=None,
+        operation_journal=None,
     ) -> None:
         self.config            = config
         self.extension_lookup  = extension_lookup
         self.plugin_manager    = plugin_manager
         self._callback         = file_processed_callback
+        self.operation_journal = operation_journal
 
         # path_str → FileMonitor
         self._monitors: dict[str, FileMonitor] = {}
@@ -347,12 +349,15 @@ class MultiFolderMonitor:
         folder_config = dict(self.config)
         folder_config["source_folder"] = path
 
-        monitor = FileMonitor(
-            config=folder_config,
-            extension_lookup=self.extension_lookup,
-            plugin_manager=self.plugin_manager,
-            file_processed_callback=self._callback,
-        )
+        monitor_arguments = {
+            "config": folder_config,
+            "extension_lookup": self.extension_lookup,
+            "plugin_manager": self.plugin_manager,
+            "file_processed_callback": self._callback,
+        }
+        if self.operation_journal is not None:
+            monitor_arguments["operation_journal"] = self.operation_journal
+        monitor = FileMonitor(**monitor_arguments)
         self._monitors[path] = monitor
         return monitor
 
