@@ -13,6 +13,7 @@ def build_stylesheet() -> str:
         QScrollArea#OverviewScrollArea,
         QWidget#OverviewViewport,
         QWidget#OverviewContent,
+        QWidget#ActivityPage,
         QWidget[pageSurface="true"] {{
             background-color: {c.background};
         }}
@@ -130,6 +131,17 @@ def build_stylesheet() -> str:
             background-color: {c.surface};
             border-color: {c.error};
         }}
+        QPushButton[variant="quiet"] {{
+            min-height: 30px;
+            padding: 0 10px;
+            color: {c.primary_hover};
+            background-color: transparent;
+            border-color: transparent;
+        }}
+        QPushButton[variant="quiet"]:hover {{
+            background-color: {c.surface_hover};
+            border-color: {c.border};
+        }}
         QPushButton[navItem="true"] {{
             min-height: 40px;
             padding: 0 12px;
@@ -226,6 +238,53 @@ def build_stylesheet() -> str:
         }}
         QScrollArea#OverviewScrollArea > QWidget > QWidget {{
             background-color: {c.background};
+        }}
+        QTreeWidget[activityTable="true"] {{
+            background-color: {c.surface};
+            alternate-background-color: {c.surface};
+            border: 1px solid {c.border};
+            border-radius: {r.card}px;
+            outline: none;
+            selection-background-color: {c.surface_hover};
+            selection-color: {c.text_primary};
+        }}
+        QTreeWidget[activityTable="true"]::item {{
+            min-height: 34px;
+            padding: 2px 6px;
+            border-bottom: 1px solid {c.border};
+        }}
+        QTreeWidget[activityTable="true"]::item:hover {{
+            background-color: {c.surface_hover};
+        }}
+        QTreeWidget[activityTable="true"]::item:selected {{
+            background-color: {c.surface_hover};
+            color: {c.text_primary};
+        }}
+        QHeaderView::section {{
+            color: {c.text_secondary};
+            background-color: {c.surface_elevated};
+            border: none;
+            border-bottom: 1px solid {c.border_strong};
+            padding: 8px 6px;
+            font-size: 12px;
+            font-weight: 650;
+        }}
+        QComboBox {{
+            min-height: 36px;
+            padding: 0 30px 0 10px;
+            color: {c.text_primary};
+            background-color: {c.surface_elevated};
+            border: 1px solid {c.border_strong};
+            border-radius: {r.control}px;
+        }}
+        QComboBox:hover, QComboBox:focus {{
+            border-color: {c.focus};
+        }}
+        QComboBox QAbstractItemView {{
+            color: {c.text_primary};
+            background-color: {c.surface_elevated};
+            border: 1px solid {c.border_strong};
+            selection-background-color: {c.surface_hover};
         }}
         QScrollBar:vertical {{
             background: transparent;

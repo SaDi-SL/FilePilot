@@ -1329,6 +1329,9 @@ def move_file_with_retries(
                             else None
                         ),
                         source_object_type=_source_object_type(source_file),
+                        category=category,
+                        classification_method=classification_method,
+                        classification_source=smart_source or None,
                     )
                     operation_id = operation.operation_id
                     journal_move = _JournaledMove(journal, operation_id)

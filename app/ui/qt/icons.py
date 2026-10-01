@@ -28,6 +28,22 @@ def brand_icon() -> QIcon:
     return navigation_icon("brand")
 
 
+def status_icon(color: str, size: int = 12) -> QIcon:
+    ratio = 2
+    pixmap = QPixmap(size * ratio, size * ratio)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QColor(color))
+    inset = 3 * ratio
+    diameter = (size * ratio) - (inset * 2)
+    painter.drawEllipse(QRectF(inset, inset, diameter, diameter))
+    painter.end()
+    pixmap.setDevicePixelRatio(ratio)
+    return QIcon(pixmap)
+
+
 def _draw_icon(name: str, size: int, color: str) -> QPixmap:
     ratio = 2
     pixmap = QPixmap(size * ratio, size * ratio)

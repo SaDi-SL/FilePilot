@@ -2,15 +2,21 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass, replace
+from datetime import datetime, timezone
 
-from PySide6.QtCore import QObject, QThread, Qt, Signal, Slot
+from PySide6.QtCore import QObject, QThread, QTimer, Qt, Signal, Slot
 
 from app.application_service import (
     ActivityEvent,
+    ActivityRecord,
     FilePilotService,
     MonitorState,
+    ProductDataState,
+    ProductMetrics,
+    ProductSnapshot,
     StartupResult,
     StartupStatus,
+    product_record_from_activity_event,
 )
 
 
@@ -29,6 +35,8 @@ class _ServiceWorker(QObject):
     command_finished = Signal(str, object, int)
     command_failed = Signal(str, str, int)
     shutdown_finished = Signal(int)
+    product_read_finished = Signal(int, object, int, int)
+    product_read_failed = Signal(int, str, int, int)
 
     def __init__(self, service: FilePilotService) -> None:
         super().__init__()
@@ -67,6 +75,30 @@ class _ServiceWorker(QObject):
             return
         self.shutdown_finished.emit(threading.get_ident())
 
+    @Slot(int, int, int)
+    def read_product_data(
+        self,
+        request_id: int,
+        limit: int,
+        activity_revision: int,
+    ) -> None:
+        try:
+            snapshot = self._service.get_product_snapshot(limit)
+        except Exception as error:
+            self.product_read_failed.emit(
+                request_id,
+                str(error),
+                activity_revision,
+                threading.get_ident(),
+            )
+            return
+        self.product_read_finished.emit(
+            request_id,
+            snapshot,
+            activity_revision,
+            threading.get_ident(),
+        )
+
     def _run_command(self, name: str, command) -> None:
         try:
             result = command()
@@ -81,6 +113,8 @@ class QtServiceBridge(QObject):
     state_changed = Signal(object)
     startup_completed = Signal(object)
     activity_received = Signal(object)
+    product_snapshot_changed = Signal(object)
+    product_read_failed = Signal(str)
     command_completed = Signal(str, object)
     command_failed = Signal(str, str)
     operation_thread_observed = Signal(str, int)
@@ -90,6 +124,7 @@ class QtServiceBridge(QObject):
     _start_worker = Signal()
     _stop_worker = Signal()
     _shutdown_worker = Signal()
+    _product_read_worker = Signal(int, int, int)
     _state_relay = Signal(object)
     _activity_relay = Signal(object)
 
@@ -108,6 +143,17 @@ class QtServiceBridge(QObject):
         self._inflight_running: bool | None = None
         self._closing = False
         self._closed = False
+        self._product_snapshot = ProductSnapshot.loading()
+        self._live_activity: dict[str, ActivityRecord] = {}
+        self._live_sequence = 0
+        self._activity_revision = 0
+        self._product_limit = 100
+        self._product_request_sequence = 0
+        self._product_request_active = False
+        self._active_product_request_id: int | None = None
+        self._product_refresh_pending = False
+        self._pending_product_limit = 100
+        self._product_retry_revision: int | None = None
 
         self._unsubscribe_state = None
         self._unsubscribe_activity = None
@@ -134,6 +180,10 @@ class QtServiceBridge(QObject):
             self._worker.shutdown,
             Qt.ConnectionType.QueuedConnection,
         )
+        self._product_read_worker.connect(
+            self._worker.read_product_data,
+            Qt.ConnectionType.QueuedConnection,
+        )
         self._state_relay.connect(
             self._accept_service_state,
             Qt.ConnectionType.QueuedConnection,
@@ -147,6 +197,8 @@ class QtServiceBridge(QObject):
         self._worker.command_finished.connect(self._on_command_finished)
         self._worker.command_failed.connect(self._on_command_failed)
         self._worker.shutdown_finished.connect(self._on_worker_shutdown)
+        self._worker.product_read_finished.connect(self._on_product_read_finished)
+        self._worker.product_read_failed.connect(self._on_product_read_failed)
         self._worker.shutdown_finished.connect(
             self._worker.deleteLater,
             Qt.ConnectionType.DirectConnection,
@@ -165,6 +217,10 @@ class QtServiceBridge(QObject):
     @property
     def is_closed(self) -> bool:
         return self._closed
+
+    @property
+    def product_snapshot(self) -> ProductSnapshot:
+        return self._merged_product_snapshot()
 
     @Slot()
     def bootstrap(self) -> None:
@@ -188,11 +244,24 @@ class QtServiceBridge(QObject):
         self._dispatch_lifecycle_command()
 
     @Slot()
+    def request_product_refresh(self, limit: int = 100) -> None:
+        if self._closing:
+            return
+        bounded_limit = max(1, min(int(limit), 100))
+        self._pending_product_limit = max(
+            bounded_limit,
+            self._pending_product_limit if self._product_refresh_pending else 0,
+        )
+        if self._product_request_active:
+            self._product_refresh_pending = True
+            return
+        self._dispatch_product_read(self._pending_product_limit)
+
+    @Slot()
     def shutdown(self) -> None:
         if self._closing:
             return
         self._closing = True
-        self._unsubscribe()
         self._shutdown_worker.emit()
 
     def wait_for_shutdown(self, timeout_ms: int = 5000) -> bool:
@@ -217,13 +286,26 @@ class QtServiceBridge(QObject):
         else:
             self._stop_worker.emit()
 
+    def _dispatch_product_read(self, limit: int) -> None:
+        self._product_refresh_pending = False
+        self._pending_product_limit = limit
+        self._product_request_sequence += 1
+        self._active_product_request_id = self._product_request_sequence
+        self._product_request_active = True
+        self._product_limit = limit
+        self._product_read_worker.emit(
+            self._active_product_request_id,
+            limit,
+            self._activity_revision,
+        )
+
     def _on_service_state(self, state: MonitorState) -> None:
         if self._closing:
             return
         self._state_relay.emit(self._snapshot_from_service(state))
 
     def _on_service_activity(self, event: ActivityEvent) -> None:
-        if not self._closing:
+        if not self._closed:
             self._activity_relay.emit(event)
 
     @Slot(object)
@@ -234,8 +316,20 @@ class QtServiceBridge(QObject):
 
     @Slot(object)
     def _accept_service_activity(self, event: ActivityEvent) -> None:
-        if not self._closing:
-            self.activity_received.emit(event)
+        self._activity_revision += 1
+        self._live_sequence += 1
+        record_id = event.operation_id or f"live:{self._live_sequence}"
+        self._live_activity[record_id] = product_record_from_activity_event(
+            event,
+            record_id,
+        )
+        while len(self._live_activity) > 100:
+            self._live_activity.pop(next(iter(self._live_activity)))
+        if self._closing:
+            return
+        self.activity_received.emit(event)
+        self.product_snapshot_changed.emit(self._merged_product_snapshot())
+        self.request_product_refresh(self._product_limit)
 
     @Slot(object, int)
     def _on_bootstrap_finished(
@@ -250,6 +344,128 @@ class QtServiceBridge(QObject):
         self.operation_thread_observed.emit("bootstrap", worker_thread_id)
         self.startup_completed.emit(result)
         self._publish_snapshot(self._snapshot_from_service())
+        self.request_product_refresh(self._product_limit)
+
+    @Slot(int, object, int, int)
+    def _on_product_read_finished(
+        self,
+        request_id: int,
+        snapshot: ProductSnapshot,
+        activity_revision: int,
+        worker_thread_id: int,
+    ) -> None:
+        if request_id != self._active_product_request_id:
+            return
+        self._product_request_active = False
+        self._active_product_request_id = None
+        if self._closing:
+            return
+        self.operation_thread_observed.emit("product_read", worker_thread_id)
+        if (
+            activity_revision == self._activity_revision
+            and not self._product_refresh_pending
+        ):
+            self._product_snapshot = self._converge_product_snapshot(snapshot)
+            self.product_snapshot_changed.emit(self._merged_product_snapshot())
+            if snapshot.state is ProductDataState.AVAILABLE:
+                self._product_retry_revision = None
+            else:
+                self._schedule_live_confirmation_retry(activity_revision)
+        else:
+            self._product_refresh_pending = True
+        self._dispatch_pending_product_read()
+
+    @Slot(int, str, int, int)
+    def _on_product_read_failed(
+        self,
+        request_id: int,
+        message: str,
+        activity_revision: int,
+        worker_thread_id: int,
+    ) -> None:
+        if request_id != self._active_product_request_id:
+            return
+        self._product_request_active = False
+        self._active_product_request_id = None
+        if self._closing:
+            return
+        self.operation_thread_observed.emit("product_read", worker_thread_id)
+        if (
+            activity_revision == self._activity_revision
+            and not self._product_refresh_pending
+        ):
+            self._product_snapshot = ProductSnapshot(
+                ProductDataState.ERROR,
+                ProductMetrics.unavailable(),
+                error=message,
+            )
+            self.product_read_failed.emit(message)
+            self.product_snapshot_changed.emit(self._merged_product_snapshot())
+            self._schedule_live_confirmation_retry(activity_revision)
+        else:
+            self._product_refresh_pending = True
+        self._dispatch_pending_product_read()
+
+    def _schedule_live_confirmation_retry(self, activity_revision: int) -> None:
+        if (
+            not self._live_activity
+            or self._product_retry_revision == activity_revision
+        ):
+            return
+        self._product_retry_revision = activity_revision
+        QTimer.singleShot(
+            250,
+            lambda revision=activity_revision: self._retry_live_confirmation(revision),
+        )
+
+    def _retry_live_confirmation(self, activity_revision: int) -> None:
+        if (
+            self._closing
+            or activity_revision != self._activity_revision
+            or self._product_retry_revision != activity_revision
+        ):
+            return
+        self.request_product_refresh(self._product_limit)
+
+    def _dispatch_pending_product_read(self) -> None:
+        if self._product_refresh_pending and not self._closing:
+            self._dispatch_product_read(self._pending_product_limit)
+
+    def _converge_product_snapshot(
+        self,
+        snapshot: ProductSnapshot,
+    ) -> ProductSnapshot:
+        converged = []
+        for durable in snapshot.activity:
+            self._live_activity.pop(
+                durable.operation_id or durable.record_id,
+                None,
+            )
+            converged.append(durable)
+        return replace(snapshot, activity=tuple(converged))
+
+    def _merged_product_snapshot(self) -> ProductSnapshot:
+        records = list(self._product_snapshot.activity)
+        durable_ids = {
+            record.operation_id or record.record_id for record in records
+        }
+        records.extend(
+            record
+            for key, record in self._live_activity.items()
+            if key not in durable_ids
+        )
+        minimum = datetime.min.replace(tzinfo=timezone.utc)
+        records.sort(
+            key=lambda record: (
+                record.occurred_at_utc or minimum,
+                record.record_id,
+            ),
+            reverse=True,
+        )
+        return replace(
+            self._product_snapshot,
+            activity=tuple(records[: self._product_limit]),
+        )
 
     @Slot(str, object, int)
     def _on_command_finished(
@@ -258,13 +474,13 @@ class QtServiceBridge(QObject):
         result: object,
         worker_thread_id: int,
     ) -> None:
+        desired_changed = self._desired_running != self._inflight_running
+        self._command_active = False
+        self._inflight_running = None
         if self._closing:
             return
         self.operation_thread_observed.emit(command, worker_thread_id)
         self.command_completed.emit(command, result)
-        desired_changed = self._desired_running != self._inflight_running
-        self._command_active = False
-        self._inflight_running = None
         self._publish_snapshot(self._snapshot_from_service())
         if desired_changed:
             self._dispatch_lifecycle_command()
@@ -280,6 +496,11 @@ class QtServiceBridge(QObject):
         if command == "bootstrap":
             self._bootstrap_active = False
         if command == "shutdown":
+            self._command_active = False
+            self._inflight_running = None
+            self._product_request_active = False
+            self._active_product_request_id = None
+            self._product_refresh_pending = False
             self._closing = False
             self._subscribe()
             self.command_failed.emit(command, message)
@@ -289,6 +510,8 @@ class QtServiceBridge(QObject):
                 error=message,
             )
             self._publish_snapshot(failed)
+            self.product_snapshot_changed.emit(self._merged_product_snapshot())
+            self.request_product_refresh(self._product_limit)
             return
         self._command_active = False
         self._inflight_running = None
@@ -312,6 +535,7 @@ class QtServiceBridge(QObject):
 
     @Slot(int)
     def _on_worker_shutdown(self, worker_thread_id: int) -> None:
+        self._unsubscribe()
         self.operation_thread_observed.emit("shutdown", worker_thread_id)
 
     @Slot()

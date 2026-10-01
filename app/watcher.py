@@ -269,6 +269,7 @@ class NewFileHandler(FileSystemEventHandler):
             # 5) Others
             if not final_category:
                 final_category = "others"
+                classification_method = "fallback"
 
             # إنشاء مجلد فئة جديدة إذا لزم
             if final_category and final_category not in self.destination_folders:

@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
 from app.branding import APP_NAME, APP_VERSION
 from app.ui.qt.icons import navigation_icon
 from app.ui.qt.navigation import NAVIGATION_ITEMS, NavigationSidebar
+from app.ui.qt.pages.activity import ActivityPage
 from app.ui.qt.pages.overview import OverviewPage
 from app.ui.qt.pages.placeholder import PlaceholderPage
 from app.ui.qt.service_bridge import QtServiceBridge
@@ -60,7 +61,11 @@ class MainWindow(QMainWindow):
         self._page_indexes["overview"] = self.page_stack.addWidget(overview)
         self.overview_page = overview
 
-        for item in NAVIGATION_ITEMS[1:]:
+        activity = ActivityPage(self.bridge)
+        self._page_indexes["activity"] = self.page_stack.addWidget(activity)
+        self.activity_page = activity
+
+        for item in NAVIGATION_ITEMS[2:]:
             page = PlaceholderPage(
                 item.label,
                 PLACEHOLDER_COPY[item.key],
@@ -69,6 +74,9 @@ class MainWindow(QMainWindow):
             self._page_indexes[item.key] = self.page_stack.addWidget(page)
 
         self.navigation.page_selected.connect(self.show_page)
+        self.overview_page.view_all_requested.connect(
+            lambda: self.show_page("activity")
+        )
         self.bridge.closed.connect(self._finish_close)
         self.bridge.command_failed.connect(self._handle_command_failure)
         self.show_page("overview")
@@ -78,6 +86,10 @@ class MainWindow(QMainWindow):
         if screen is None:
             return
         available = screen.availableGeometry()
+        self.resize(
+            min(self.width(), max(self.minimumWidth(), int(available.width() * 0.94))),
+            min(self.height(), max(self.minimumHeight(), int(available.height() * 0.90))),
+        )
         frame = self.frameGeometry()
         frame.moveCenter(available.center())
         self.move(frame.topLeft())
@@ -88,6 +100,8 @@ class MainWindow(QMainWindow):
             return
         self.page_stack.setCurrentIndex(index)
         self.navigation.select(key)
+        if key == "activity":
+            self.bridge.request_product_refresh(100)
 
     def resizeEvent(self, event) -> None:
         self.navigation.set_compact(event.size().width() < self.COMPACT_THRESHOLD)

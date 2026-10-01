@@ -13,9 +13,11 @@ from typing import Iterator, Mapping
 
 # "FPJ1" encoded as a stable positive 32-bit SQLite application identifier.
 APPLICATION_ID = 0x46504A31
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 _BUSY_TIMEOUT_MS = 5000
+_READ_BUSY_TIMEOUT_MS = 1000
 _MAX_ERROR_MESSAGE_LENGTH = 512
+MAX_RECENT_OPERATIONS = 100
 _ERROR_CODE_PATTERN = re.compile(r"^[A-Z0-9_.-]{1,64}$")
 
 
@@ -197,6 +199,31 @@ class OperationEffect:
     error_message: str | None
 
 
+@dataclass(frozen=True)
+class OperationContext:
+    operation_id: str
+    category: str
+    classification_method: str | None
+    classification_source: str | None
+
+
+@dataclass(frozen=True)
+class OperationCounts:
+    total_operations: int
+    completed: int
+    failed: int
+    duplicates: int
+    needs_review: int
+
+
+@dataclass(frozen=True)
+class OperationReadSnapshot:
+    operations: tuple[OperationRecord, ...]
+    effects: tuple[OperationEffect, ...]
+    contexts: tuple[OperationContext, ...]
+    counts: OperationCounts
+
+
 def resolve_default_journal_path(
     environment: Mapping[str, str] | None = None,
 ) -> Path:
@@ -248,7 +275,7 @@ _EFFECT_TYPES = _enum_sql_values(EffectType)
 _EFFECT_STATES = _enum_sql_values(EffectState)
 
 
-_SCHEMA_STATEMENTS = (
+_V1_SCHEMA_STATEMENTS = (
     f"""
     CREATE TABLE operations (
         operation_id TEXT PRIMARY KEY,
@@ -339,6 +366,17 @@ _SCHEMA_STATEMENTS = (
     """,
 )
 
+_OPERATION_CONTEXT_SCHEMA = """
+    CREATE TABLE operation_context (
+        operation_id TEXT PRIMARY KEY REFERENCES operations(operation_id) ON DELETE CASCADE,
+        category TEXT NOT NULL,
+        classification_method TEXT,
+        classification_source TEXT
+    )
+    """
+
+_SCHEMA_STATEMENTS = _V1_SCHEMA_STATEMENTS + (_OPERATION_CONTEXT_SCHEMA,)
+
 
 _EXPECTED_COLUMNS = {
     "operations": {
@@ -400,6 +438,12 @@ _EXPECTED_COLUMNS = {
         "error_code",
         "error_message",
     },
+    "operation_context": {
+        "operation_id",
+        "category",
+        "classification_method",
+        "classification_source",
+    },
 }
 
 
@@ -407,6 +451,7 @@ _EXPECTED_TABLE_SQL = {
     "operations": _SCHEMA_STATEMENTS[0],
     "operation_events": _SCHEMA_STATEMENTS[1],
     "operation_effects": _SCHEMA_STATEMENTS[2],
+    "operation_context": _OPERATION_CONTEXT_SCHEMA,
 }
 
 
@@ -510,11 +555,15 @@ _EFFECT_TRANSITIONS = {
 
 
 def _migrate_to_v1(connection: sqlite3.Connection) -> None:
-    for statement in _SCHEMA_STATEMENTS:
+    for statement in _V1_SCHEMA_STATEMENTS:
         connection.execute(statement)
 
 
-_MIGRATIONS = {1: _migrate_to_v1}
+def _migrate_to_v2(connection: sqlite3.Connection) -> None:
+    connection.execute(_OPERATION_CONTEXT_SCHEMA)
+
+
+_MIGRATIONS = {1: _migrate_to_v1, 2: _migrate_to_v2}
 
 
 def _utc_now() -> str:
@@ -693,6 +742,15 @@ def _effect_from_row(row: sqlite3.Row) -> OperationEffect:
     )
 
 
+def _context_from_row(row: sqlite3.Row) -> OperationContext:
+    return OperationContext(
+        operation_id=row["operation_id"],
+        category=row["category"],
+        classification_method=row["classification_method"],
+        classification_source=row["classification_source"],
+    )
+
+
 class OperationJournal:
     """Short-transaction SQLite evidence store; it performs no filesystem actions."""
 
@@ -709,6 +767,7 @@ class OperationJournal:
         if selected_path.exists() and selected_path.is_dir():
             raise JournalPathError("The operation journal path is a directory")
         self.database_path = selected_path
+        self._read_only = False
         try:
             self.database_path.parent.mkdir(parents=True, exist_ok=True)
         except OSError as error:
@@ -717,20 +776,61 @@ class OperationJournal:
             ) from error
         self._initialize_or_validate()
 
+    @classmethod
+    def open_existing_read_only(
+        cls,
+        database_path: str | Path | None = None,
+    ) -> "OperationJournal":
+        """Open an initialized journal without creating or migrating storage."""
+        selected_path = (
+            resolve_default_journal_path()
+            if database_path is None
+            else Path(database_path).expanduser()
+        )
+        if not selected_path.is_absolute():
+            raise JournalPathError("The operation journal path must be absolute")
+        if _is_network_path(selected_path):
+            raise JournalPathError("The operation journal cannot use a network path")
+        if not selected_path.is_file():
+            raise JournalNotFoundError("The operation journal is not available")
+
+        journal = cls.__new__(cls)
+        journal.database_path = selected_path
+        journal._read_only = True
+        with journal._connection() as connection:
+            with journal._read_transaction(connection):
+                pass
+        return journal
+
     def _open_sqlite(self, require_wal: bool) -> sqlite3.Connection:
+        read_only = getattr(self, "_read_only", False)
+        timeout_ms = _READ_BUSY_TIMEOUT_MS if read_only else _BUSY_TIMEOUT_MS
+        if read_only:
+            wal_path = Path(f"{self.database_path}-wal")
+            shm_path = Path(f"{self.database_path}-shm")
+            if wal_path.exists() != shm_path.exists():
+                raise JournalDatabaseError(
+                    "The operation journal requires recovery before read-only access"
+                )
+            target = f"{self.database_path.as_uri()}?mode=ro"
+        else:
+            target = str(self.database_path)
         connection = sqlite3.connect(
-            self.database_path,
-            timeout=_BUSY_TIMEOUT_MS / 1000,
+            target,
+            timeout=timeout_ms / 1000,
             isolation_level=None,
+            uri=read_only,
         )
         try:
             connection.row_factory = sqlite3.Row
-            connection.execute(f"PRAGMA busy_timeout = {_BUSY_TIMEOUT_MS}")
+            connection.execute(f"PRAGMA busy_timeout = {timeout_ms}")
             connection.execute("PRAGMA foreign_keys = ON")
-            connection.execute("PRAGMA synchronous = FULL")
-            locking_mode = connection.execute(
-                "PRAGMA locking_mode = NORMAL"
-            ).fetchone()[0]
+            if read_only:
+                connection.execute("PRAGMA query_only = ON")
+            else:
+                connection.execute("PRAGMA synchronous = FULL")
+                connection.execute("PRAGMA locking_mode = NORMAL")
+            locking_mode = connection.execute("PRAGMA locking_mode").fetchone()[0]
             if str(locking_mode).lower() != "normal":
                 raise JournalDatabaseError(
                     "SQLite did not activate NORMAL locking mode"
@@ -785,6 +885,8 @@ class OperationJournal:
         *,
         validate_database: bool = True,
     ) -> Iterator[None]:
+        if getattr(self, "_read_only", False):
+            raise JournalDatabaseError("The operation journal is open read-only")
         connection.execute("BEGIN IMMEDIATE")
         try:
             if validate_database:
@@ -918,7 +1020,7 @@ class OperationJournal:
             next_version = current_version + 1
             migration = _MIGRATIONS.get(next_version)
             if migration is None:
-                raise JournalIncompatibleError(
+                raise JournalSchemaError(
                     f"No migration is available for schema version {next_version}"
                 )
             migration(connection)
@@ -1133,6 +1235,9 @@ class OperationJournal:
         application_version: str | None = None,
         parent_operation_id: str | None = None,
         inverse_of_operation_id: str | None = None,
+        category: str | None = None,
+        classification_method: str | None = None,
+        classification_source: str | None = None,
     ) -> OperationRecord:
         _required_enum(operation_type, OperationType, "operation_type")
         _required_enum(source_object_type, SourceObjectType, "source_object_type")
@@ -1168,7 +1273,21 @@ class OperationJournal:
             "application_version": _bounded_text(
                 application_version, "application_version", 64
             ),
+            "category": _bounded_text(category, "category", 512),
+            "classification_method": _bounded_text(
+                classification_method, "classification_method", 64
+            ),
+            "classification_source": _bounded_text(
+                classification_source, "classification_source", 512
+            ),
         }
+        if values["category"] is None and (
+            values["classification_method"] is not None
+            or values["classification_source"] is not None
+        ):
+            raise JournalValidationError(
+                "classification context requires a category"
+            )
         with self._connection() as connection:
             with self._transaction(connection):
                 connection.execute(
@@ -1223,6 +1342,21 @@ class OperationJournal:
                     to_phase=PhysicalPhase.PREPARED,
                     to_status=OperationStatus.OPEN,
                 )
+                if values["category"] is not None:
+                    connection.execute(
+                        """
+                        INSERT INTO operation_context (
+                            operation_id, category, classification_method,
+                            classification_source
+                        ) VALUES (?, ?, ?, ?)
+                        """,
+                        (
+                            values["operation_id"],
+                            values["category"],
+                            values["classification_method"],
+                            values["classification_source"],
+                        ),
+                    )
                 return self._select_operation(connection, values["operation_id"])
 
     def get_operation(self, operation_id: str) -> OperationRecord:
@@ -1355,6 +1489,108 @@ class OperationJournal:
                     ),
                 ).fetchall()
                 return [_operation_from_row(row) for row in rows]
+
+    def read_recent_operations(
+        self,
+        limit: int = 20,
+    ) -> OperationReadSnapshot:
+        """Read one bounded, deterministic product snapshot without mutation."""
+        if not isinstance(limit, int) or isinstance(limit, bool):
+            raise JournalValidationError("limit must be an integer")
+        if limit < 1 or limit > MAX_RECENT_OPERATIONS:
+            raise JournalValidationError(
+                f"limit must be between 1 and {MAX_RECENT_OPERATIONS}"
+            )
+
+        with self._connection() as connection:
+            with self._read_transaction(connection):
+                rows = []
+                for status in OperationStatus:
+                    rows.extend(
+                        connection.execute(
+                            """
+                            SELECT * FROM operations
+                            WHERE operation_status = ?
+                            ORDER BY updated_at_utc DESC, operation_id DESC
+                            LIMIT ?
+                            """,
+                            (status.value, limit),
+                        ).fetchall()
+                    )
+                rows.sort(
+                    key=lambda row: (row["updated_at_utc"], row["operation_id"]),
+                    reverse=True,
+                )
+                operation_rows = rows[:limit]
+                operations = tuple(
+                    _operation_from_row(row) for row in operation_rows
+                )
+
+                effects: tuple[OperationEffect, ...] = ()
+                contexts: tuple[OperationContext, ...] = ()
+                operation_ids = tuple(
+                    operation.operation_id for operation in operations
+                )
+                if operation_ids:
+                    placeholders = ", ".join("?" for _ in operation_ids)
+                    effect_rows = connection.execute(
+                        f"""
+                        SELECT * FROM operation_effects
+                        WHERE operation_id IN ({placeholders})
+                        ORDER BY operation_id, effect_type
+                        """,
+                        operation_ids,
+                    ).fetchall()
+                    effects = tuple(_effect_from_row(row) for row in effect_rows)
+                    context_rows = connection.execute(
+                        f"""
+                        SELECT * FROM operation_context
+                        WHERE operation_id IN ({placeholders})
+                        ORDER BY operation_id
+                        """,
+                        operation_ids,
+                    ).fetchall()
+                    contexts = tuple(
+                        _context_from_row(row) for row in context_rows
+                    )
+
+                def count_operations(
+                    status: OperationStatus | None = None,
+                    *,
+                    original_only: bool = False,
+                ) -> int:
+                    if status is None:
+                        return connection.execute(
+                            "SELECT COUNT(*) FROM operations"
+                        ).fetchone()[0]
+                    inverse_filter = (
+                        " AND inverse_of_operation_id IS NULL"
+                        if original_only
+                        else ""
+                    )
+                    return connection.execute(
+                        f"""
+                        SELECT COUNT(*) FROM operations
+                        WHERE operation_status = ?
+                        {inverse_filter}
+                        """,
+                        (status.value,),
+                    ).fetchone()[0]
+
+                counts = OperationCounts(
+                    total_operations=count_operations(),
+                    completed=count_operations(
+                        OperationStatus.COMPLETE,
+                        original_only=True,
+                    ),
+                    failed=count_operations(OperationStatus.ABORTED),
+                    duplicates=count_operations(
+                        OperationStatus.DUPLICATE,
+                        original_only=True,
+                    ),
+                    needs_review=count_operations(OperationStatus.NEEDS_REVIEW),
+                )
+                return OperationReadSnapshot(operations, effects, contexts, counts)
 
     def get_events(self, operation_id: str) -> list[OperationEvent]:
         operation_id = _operation_reference(operation_id, "operation_id")

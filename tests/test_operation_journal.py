@@ -161,6 +161,7 @@ class OperationJournalTests(unittest.TestCase):
                 ("table", "operations"),
                 ("table", "operation_events"),
                 ("table", "operation_effects"),
+                ("table", "operation_context"),
                 ("index", "idx_operations_status_updated"),
                 ("index", "idx_operations_parent"),
                 ("index", "idx_operations_inverse"),
@@ -180,6 +181,110 @@ class OperationJournalTests(unittest.TestCase):
         self.assertEqual(settings["busy_timeout"], 5000)
         self.assertEqual(settings["locking_mode"], "normal")
         self.assertEqual(settings["quick_check"], "ok")
+
+    def test_version_one_journal_migrates_additive_product_context(self):
+        self.database_path.parent.mkdir(parents=True)
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            connection.execute("PRAGMA foreign_keys = ON")
+            for statement in operation_journal._V1_SCHEMA_STATEMENTS:
+                connection.execute(statement)
+            connection.execute(
+                """
+                INSERT INTO operations (
+                    operation_id, operation_type, physical_phase,
+                    operation_status, source_path, source_identity,
+                    source_hash, source_size, source_mtime_ns,
+                    source_object_type, organized_root, intended_destination,
+                    actual_destination, move_mode, started_at_utc,
+                    updated_at_utc, completed_at_utc, application_version
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "00000000-0000-0000-0000-000000000001",
+                    "move",
+                    "physical_committed",
+                    "complete",
+                    str(self.root / "incoming" / "legacy.txt"),
+                    "volume:file-id",
+                    "sha256:legacy",
+                    42,
+                    123456789,
+                    "file",
+                    str(self.root / "organized"),
+                    str(self.root / "organized" / "documents" / "legacy.txt"),
+                    str(self.root / "organized" / "documents" / "legacy.txt"),
+                    "same_volume",
+                    "2026-01-01T00:00:00+00:00",
+                    "2026-01-01T00:00:01+00:00",
+                    "2026-01-01T00:00:01+00:00",
+                    "0.6b-legacy",
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO operation_events (
+                    operation_id, sequence_number, event_kind,
+                    to_phase, to_status, occurred_at_utc
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "00000000-0000-0000-0000-000000000001",
+                    1,
+                    "operation_created",
+                    "prepared",
+                    "open",
+                    "2026-01-01T00:00:00+00:00",
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO operation_effects (
+                    operation_id, effect_type, state, required, updated_at_utc
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    "00000000-0000-0000-0000-000000000001",
+                    "hash_index",
+                    "applied",
+                    1,
+                    "2026-01-01T00:00:01+00:00",
+                ),
+            )
+            connection.commit()
+            connection.execute(f"PRAGMA application_id = {APPLICATION_ID}")
+            connection.execute("PRAGMA user_version = 1")
+
+        journal = OperationJournal(self.database_path)
+
+        with closing(sqlite3.connect(self.database_path)) as connection:
+            self.assertEqual(
+                connection.execute("PRAGMA user_version").fetchone()[0],
+                SCHEMA_VERSION,
+            )
+            self.assertIsNotNone(
+                connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE name = 'operation_context'"
+                ).fetchone()
+            )
+        operation_id = "00000000-0000-0000-0000-000000000001"
+        operation = journal.get_operation(operation_id)
+        self.assertEqual(operation.source_identity, "volume:file-id")
+        self.assertEqual(operation.source_hash, "sha256:legacy")
+        self.assertEqual(operation.application_version, "0.6b-legacy")
+        self.assertEqual(len(journal.get_events(operation_id)), 1)
+        self.assertEqual(
+            journal.get_effects(operation_id)[0].state,
+            EffectState.APPLIED,
+        )
+        self.assertEqual(journal.read_recent_operations().contexts, ())
+
+    def test_classification_evidence_requires_category(self):
+        journal = self._journal()
+
+        with self.assertRaises(JournalValidationError):
+            self._create(journal, classification_method="extension")
+
+        self.assertEqual(journal.read_recent_operations().counts.total_operations, 0)
 
     def test_operation_creation_retrieval_and_initial_event(self):
         journal = self._journal()

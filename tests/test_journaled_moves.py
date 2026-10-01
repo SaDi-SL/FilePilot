@@ -99,6 +99,7 @@ class JournaledMoveTests(unittest.TestCase):
             effect.effect_type: effect.state
             for effect in self.journal.get_effects(result.operation_id)
         }
+        contexts = self.journal.read_recent_operations().contexts
         self.assertIs(result.status, mover.MoveStatus.MOVED)
         self.assertFalse(source.exists())
         self.assertEqual(operation.operation_status, OperationStatus.COMPLETE)
@@ -121,6 +122,10 @@ class JournaledMoveTests(unittest.TestCase):
             },
         )
         self.assertEqual(self.journal.list_incomplete_operations(), [])
+        self.assertEqual(len(contexts), 1)
+        self.assertEqual(contexts[0].operation_id, result.operation_id)
+        self.assertEqual(contexts[0].category, "documents")
+        self.assertEqual(contexts[0].classification_method, "extension")
 
     def test_cross_volume_move_records_every_physical_boundary(self):
         source = self._source(content="cross-volume journal")

@@ -71,6 +71,7 @@ class AIRuntimeSafetyTests(unittest.TestCase):
 
         get_ai.assert_not_called()
         self.assertEqual(move_file.call_args.kwargs["category_override"], "others")
+        self.assertEqual(move_file.call_args.kwargs["classification_method"], "fallback")
 
     def test_ai_is_disabled_when_enabled_is_false(self):
         handler = NewFileHandler(self._config({"enabled": False}), {})

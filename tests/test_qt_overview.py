@@ -16,7 +16,11 @@ except ImportError as error:
         "PySide6 is required for Qt tests; install requirements-qt.txt"
     ) from error
 
-from app.application_service import MonitorState, StartupStatus
+from app.application_service import (
+    MonitorState,
+    ProductSnapshot,
+    StartupStatus,
+)
 from app.ui.qt.application import create_application
 from app.ui.qt.main_window import MainWindow
 from app.ui.qt.pages.overview import OverviewPage
@@ -26,22 +30,28 @@ from app.ui.qt.theme.tokens import COLORS
 
 class BridgeStub(QObject):
     state_changed = Signal(object)
+    product_snapshot_changed = Signal(object)
     closed = Signal()
     command_failed = Signal(str, str)
 
     def __init__(self, snapshot=None):
         super().__init__()
         self.snapshot = snapshot or ServiceSnapshot(None, MonitorState.STOPPED)
+        self.product_snapshot = ProductSnapshot.loading()
         self.start_calls = 0
         self.stop_calls = 0
         self.shutdown_calls = 0
         self.auto_close = True
+        self.refresh_calls = 0
 
     def request_start(self):
         self.start_calls += 1
 
     def request_stop(self):
         self.stop_calls += 1
+
+    def request_product_refresh(self, limit=100):
+        self.refresh_calls += 1
 
     def shutdown(self):
         self.shutdown_calls += 1
@@ -198,7 +208,7 @@ class QtOverviewTests(unittest.TestCase):
             0,
         )
         self.assertEqual(window.overview_page.metrics_layout.getItemPosition(0)[:2], (0, 0))
-        self.assertEqual(window.overview_page.metrics_layout.getItemPosition(2)[:2], (0, 2))
+        self.assertEqual(window.overview_page.metrics_layout.getItemPosition(3)[:2], (0, 3))
 
         window.resize(760, 520)
         self.app.processEvents()
@@ -206,8 +216,8 @@ class QtOverviewTests(unittest.TestCase):
             window.navigation.width(),
             window.navigation.COMPACT_WIDTH,
         )
-        self.assertEqual(window.overview_page.metrics_layout.getItemPosition(2)[:2], (2, 0))
-        self.assertEqual(window.overview_page.metrics_layout.columnStretch(1), 0)
+        self.assertEqual(window.overview_page.metrics_layout.getItemPosition(3)[:2], (1, 1))
+        self.assertEqual(window.overview_page.metrics_layout.columnStretch(2), 0)
 
     def test_dark_palette_covers_scroll_viewport_and_page_surfaces(self):
         bridge = BridgeStub(snapshot(MonitorState.STOPPED))
@@ -300,6 +310,9 @@ class QtOverviewTests(unittest.TestCase):
             "app.operation_journal",
             "app.recovery",
             "app.main",
+            "app.stats",
+            "app.config_loader",
+            "app.hash_manager",
         ):
             self.assertNotIn(forbidden, joined)
         self.assertIsNone(re.search(r"service\s*\.\s*monitor(?!_)", joined))

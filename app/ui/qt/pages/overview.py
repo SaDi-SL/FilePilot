@@ -1,24 +1,32 @@
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QPushButton,
     QScrollArea,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
 
-from app.application_service import MonitorState, StartupStatus
+from app.application_service import (
+    ProductDataState,
+    ProductSnapshot,
+    StartupStatus,
+)
 from app.ui.qt.service_bridge import QtServiceBridge, ServiceSnapshot
 from app.ui.qt.theme.tokens import SPACING
 from app.ui.qt.widgets.metric_card import MetricCard
+from app.ui.qt.widgets.activity_table import ActivityTable
 from app.ui.qt.widgets.section_card import SectionCard
 from app.ui.qt.widgets.state_panel import StatePanel
 
 
 class OverviewPage(QWidget):
+    view_all_requested = Signal()
+
     def __init__(
         self,
         bridge: QtServiceBridge,
@@ -86,33 +94,64 @@ class OverviewPage(QWidget):
         self.metrics_layout.setContentsMargins(0, 0, 0, 0)
         self.metrics_layout.setHorizontalSpacing(SPACING.lg)
         self.metrics_layout.setVerticalSpacing(SPACING.lg)
-        self.monitoring_card = MetricCard(
-            "Monitoring",
-            "Initializing",
-            "Waiting for lifecycle state",
+        self.processed_card = MetricCard(
+            "Processed",
+            "Loading",
+            "Durable completed moves",
         )
-        self.startup_card = MetricCard(
-            "Startup",
-            "Checking",
-            "Configuration and recovery",
+        self.failed_card = MetricCard(
+            "Failed",
+            "Loading",
+            "Journaled failed operations",
         )
-        self.recovery_card = MetricCard(
-            "Recovery",
-            "Not checked",
-            "No result is available yet",
+        self.duplicates_card = MetricCard(
+            "Duplicates",
+            "Loading",
+            "Verified duplicate outcomes",
+        )
+        self.review_card = MetricCard(
+            "Needs review",
+            "Loading",
+            "Operations requiring attention",
         )
         self._metric_cards = (
-            self.monitoring_card,
-            self.startup_card,
-            self.recovery_card,
+            self.processed_card,
+            self.failed_card,
+            self.duplicates_card,
+            self.review_card,
         )
-        self._arrange_metrics(3)
+        self._arrange_metrics(4)
         self.page_layout.addWidget(self.metrics_widget)
 
         self.state_panel = StatePanel()
         self.state_panel.start_requested.connect(self.bridge.request_start)
         self.state_panel.stop_requested.connect(self.bridge.request_stop)
         self.page_layout.addWidget(self.state_panel)
+
+        self.recent_activity = SectionCard()
+        self.recent_activity.setAccessibleName("Recent activity")
+        recent_header = QHBoxLayout()
+        recent_heading = QLabel("Recent Activity")
+        recent_heading.setProperty("role", "sectionTitle")
+        recent_header.addWidget(recent_heading)
+        recent_header.addStretch(1)
+        self.view_all_button = QPushButton("View all")
+        self.view_all_button.setProperty("variant", "quiet")
+        self.view_all_button.setAccessibleName("View all FilePilot activity")
+        self.view_all_button.clicked.connect(self.view_all_requested)
+        recent_header.addWidget(self.view_all_button)
+        self.recent_activity.content_layout.addLayout(recent_header)
+
+        self.recent_state_label = QLabel("Loading authoritative activity...")
+        self.recent_state_label.setProperty("role", "secondary")
+        self.recent_state_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.recent_state_label.setWordWrap(True)
+        self.recent_state_label.setMinimumHeight(96)
+        self.recent_activity.content_layout.addWidget(self.recent_state_label)
+        self.recent_table = ActivityTable(compact=True)
+        self.recent_activity.content_layout.addWidget(self.recent_table)
+        self.recent_table.hide()
+        self.page_layout.addWidget(self.recent_activity)
 
         self.system_status = SectionCard()
         self.system_status.setAccessibleName("System status summary")
@@ -147,7 +186,9 @@ class OverviewPage(QWidget):
         self.page_layout.addStretch(1)
 
         self.bridge.state_changed.connect(self.render_state)
+        self.bridge.product_snapshot_changed.connect(self.render_product_snapshot)
         self.render_state(self.bridge.snapshot)
+        self.render_product_snapshot(self.bridge.product_snapshot)
 
     def _status_row(self, name: str, value: str) -> QLabel:
         row = QHBoxLayout()
@@ -173,87 +214,78 @@ class OverviewPage(QWidget):
         )
         if snapshot.startup_status is StartupStatus.BLOCKED:
             recovery_text = "Action required"
-            recovery_detail = "Recovery review blocks monitoring"
         elif snapshot.startup_status is StartupStatus.READY:
             recovery_text = "Ready"
-            recovery_detail = "No blocking recovery case"
         else:
             recovery_text = "Not checked"
-            recovery_detail = "Runtime recovery has not completed"
 
-        monitoring_tone = {
-            MonitorState.STOPPED: "neutral",
-            MonitorState.STARTING: "info",
-            MonitorState.RUNNING: "success",
-            MonitorState.STOPPING: "warning",
-            MonitorState.BLOCKED: "error",
-            MonitorState.ERROR: "error",
-        }[snapshot.monitor_state]
-        startup_tone = {
-            None: "info",
-            StartupStatus.READY: "success",
-            StartupStatus.SETUP_REQUIRED: "warning",
-            StartupStatus.BLOCKED: "error",
-            StartupStatus.ERROR: "error",
-        }[snapshot.startup_status]
-        recovery_tone = (
-            "error"
-            if snapshot.startup_status is StartupStatus.BLOCKED
-            else "success"
-            if snapshot.startup_status is StartupStatus.READY
-            else "info"
-        )
-
-        self.monitoring_card.set_value(
-            monitor_text,
-            self._monitoring_detail(snapshot.monitor_state),
-            monitoring_tone,
-        )
-        self.startup_card.set_value(
-            startup_text,
-            self._startup_detail(snapshot),
-            startup_tone,
-        )
-        self.recovery_card.set_value(recovery_text, recovery_detail, recovery_tone)
         self._set_status_value(self.monitoring_status_value, "Monitoring", monitor_text)
         self._set_status_value(self.startup_status_value, "Startup state", startup_text)
         self._set_status_value(self.recovery_status_value, "Recovery", recovery_text)
 
-    @staticmethod
-    def _startup_detail(snapshot: ServiceSnapshot) -> str:
-        if snapshot.error:
-            return snapshot.error
-        return {
-            None: "Configuration and recovery checks in progress",
-            StartupStatus.READY: "Configuration and recovery checks passed",
-            StartupStatus.SETUP_REQUIRED: "Initial configuration is required",
-            StartupStatus.BLOCKED: "Recovery review prevents startup",
-            StartupStatus.ERROR: "Startup did not complete",
-        }[snapshot.startup_status]
+    def render_product_snapshot(self, snapshot: ProductSnapshot) -> None:
+        if snapshot.state is ProductDataState.AVAILABLE:
+            metrics = snapshot.metrics
+            self.processed_card.set_value(
+                str(metrics.total_processed),
+                "Durable completed moves",
+                "success",
+            )
+            self.failed_card.set_value(
+                str(metrics.failed),
+                "Journaled failed operations",
+                "error" if metrics.failed else "neutral",
+            )
+            self.duplicates_card.set_value(
+                str(metrics.duplicates),
+                "Verified duplicate outcomes",
+                "warning" if metrics.duplicates else "neutral",
+            )
+            self.review_card.set_value(
+                str(metrics.needs_review),
+                "Operations requiring attention",
+                "error" if metrics.needs_review else "neutral",
+            )
+        else:
+            value = "Loading" if snapshot.state is ProductDataState.LOADING else "Unavailable"
+            detail = snapshot.error or "Waiting for authoritative journal data"
+            tone = "info" if snapshot.state is ProductDataState.LOADING else "warning"
+            for card in self._metric_cards:
+                card.set_value(value, detail, tone)
+
+        if snapshot.activity:
+            self.recent_state_label.hide()
+            self.recent_table.show()
+            self.recent_table.set_records(snapshot.activity[:6])
+        elif snapshot.state is ProductDataState.LOADING:
+            self._show_recent_state("Loading authoritative activity...")
+        elif snapshot.state in {ProductDataState.UNAVAILABLE, ProductDataState.ERROR}:
+            self._show_recent_state(
+                snapshot.error or "Recent activity is currently unavailable."
+            )
+        else:
+            self._show_recent_state(
+                "No durable operations yet. New FilePilot operations will appear here."
+            )
+
+    def _show_recent_state(self, message: str) -> None:
+        self.recent_table.hide()
+        self.recent_state_label.setText(message)
+        self.recent_state_label.show()
 
     @staticmethod
     def _set_status_value(label: QLabel, name: str, value: str) -> None:
         label.setText(value)
         label.setAccessibleName(f"{name}: {value}")
 
-    @staticmethod
-    def _monitoring_detail(state: MonitorState) -> str:
-        return {
-            MonitorState.STOPPED: "Ready for an explicit start",
-            MonitorState.STARTING: "Starting configured folders",
-            MonitorState.RUNNING: "All active folders confirmed",
-            MonitorState.STOPPING: "Draining active work",
-            MonitorState.BLOCKED: "Start is disabled",
-            MonitorState.ERROR: "Review the lifecycle message",
-        }[state]
-
     def resizeEvent(self, event) -> None:
-        columns = 1 if event.size().width() < 760 else 3
+        width = event.size().width()
+        columns = 1 if width < 560 else 2 if width < 980 else 4
         self._arrange_metrics(columns)
-        margin = SPACING.lg if event.size().width() < 760 else SPACING.xl
+        margin = SPACING.lg if width < 760 else SPACING.xl
         self.page_layout.setContentsMargins(margin, margin, margin, margin)
         self.page_layout.setSpacing(
-            SPACING.md if event.size().width() < 760 else SPACING.lg
+            SPACING.md if width < 760 else SPACING.lg
         )
         super().resizeEvent(event)
 

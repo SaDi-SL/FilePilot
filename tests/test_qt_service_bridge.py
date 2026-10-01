@@ -2,6 +2,7 @@ import os
 import threading
 import time
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -17,7 +18,12 @@ except ImportError as error:
 
 from app.application_service import (
     ActivityEvent,
+    ActivityRecord,
+    ActivityStatus,
     MonitorState,
+    ProductDataState,
+    ProductMetrics,
+    ProductSnapshot,
     StartupResult,
     StartupStatus,
 )
@@ -50,6 +56,16 @@ class FakeService:
         self._operation_lock = threading.Lock()
         self._active_operations = 0
         self.max_active_operations = 0
+        self.product_read_calls = 0
+        self.product_read_thread_ids = []
+        self.product_read_entered = threading.Event()
+        self.release_product_read = threading.Event()
+        self.release_product_read.set()
+        self.product_read_error = None
+        self.product_snapshot_to_return = ProductSnapshot(
+            ProductDataState.AVAILABLE,
+            ProductMetrics(0, 0, 0, 0),
+        )
 
     def subscribe_state(self, callback):
         self.state_subscribers.append(callback)
@@ -104,6 +120,19 @@ class FakeService:
             if self.shutdown_state is MonitorState.ERROR:
                 self.last_error = "watch folder remained active"
             return self.monitor_state
+
+    def get_product_snapshot(self, limit=20):
+        with self._operation():
+            self.product_read_calls += 1
+            self.product_read_thread_ids.append(threading.get_ident())
+            result = self.product_snapshot_to_return
+            error = self.product_read_error
+            self.product_read_entered.set()
+            if not self.release_product_read.wait(3):
+                raise RuntimeError("product read timed out")
+            if error is not None:
+                raise error
+            return result
 
     def emit_state(self, state):
         for callback in tuple(self.state_subscribers):
@@ -329,6 +358,30 @@ class QtServiceBridgeTests(unittest.TestCase):
         bridge.shutdown()
         self._wait_until(lambda: bridge.is_closed)
 
+    def test_failed_shutdown_after_active_read_does_not_stall_refresh(self):
+        service = FakeService()
+        service.release_product_read.clear()
+        bridge = self._bridge(service)
+        self._bootstrap(bridge)
+        service.shutdown_state = MonitorState.ERROR
+        failed = QSignalSpy(bridge.command_failed)
+
+        bridge.request_product_refresh()
+        self.assertTrue(service.product_read_entered.wait(1))
+        bridge.shutdown()
+        service.release_product_read.set()
+        self._wait_until(lambda: failed.count() == 1)
+        self._wait_until(
+            lambda: service.product_read_calls >= 2
+            and not bridge._product_request_active
+        )
+
+        self.assertFalse(bridge._product_request_active)
+        self.assertFalse(bridge._command_active)
+        service.shutdown_state = MonitorState.STOPPED
+        bridge.shutdown()
+        self._wait_until(lambda: bridge.is_closed)
+
     def test_shutdown_unsubscribes_and_stops_worker(self):
         service = FakeService()
         bridge = self._bridge(service)
@@ -343,6 +396,193 @@ class QtServiceBridgeTests(unittest.TestCase):
         self.assertEqual(service.state_subscribers, [])
         self.assertEqual(service.activity_subscribers, [])
         self.assertFalse(bridge._thread.isRunning())
+
+    def test_product_read_runs_off_gui_thread_and_returns_on_gui_thread(self):
+        service = FakeService()
+        bridge = self._bridge(service)
+        received_threads = []
+        bridge.product_snapshot_changed.connect(
+            lambda _snapshot: received_threads.append(threading.get_ident())
+        )
+
+        bridge.request_product_refresh(20)
+        self._wait_until(lambda: bool(received_threads))
+
+        self.assertNotEqual(service.product_read_thread_ids[-1], threading.get_ident())
+        self.assertEqual(received_threads[-1], threading.get_ident())
+
+    def test_rapid_product_refreshes_are_coalesced(self):
+        service = FakeService()
+        service.product_snapshot_to_return = ProductSnapshot(
+            ProductDataState.AVAILABLE,
+            ProductMetrics(1, 0, 0, 0),
+        )
+        service.release_product_read.clear()
+        bridge = self._bridge(service)
+        published = []
+        bridge.product_snapshot_changed.connect(published.append)
+
+        bridge.request_product_refresh(20)
+        self.assertTrue(service.product_read_entered.wait(1))
+        for _ in range(20):
+            bridge.request_product_refresh(100)
+        service.product_snapshot_to_return = ProductSnapshot(
+            ProductDataState.AVAILABLE,
+            ProductMetrics(2, 0, 0, 0),
+        )
+        service.release_product_read.set()
+
+        self._wait_until(
+            lambda: service.product_read_calls == 2
+            and bridge.product_snapshot.metrics.total_processed == 2
+        )
+        self.app.processEvents()
+        self.assertEqual(service.product_read_calls, 2)
+        self.assertNotIn(1, [item.metrics.total_processed for item in published])
+
+    def test_live_and_durable_activity_converge_by_operation_id(self):
+        service = FakeService()
+        service.release_product_read.clear()
+        bridge = self._bridge(service)
+        bridge.request_product_refresh(100)
+        self.assertTrue(service.product_read_entered.wait(1))
+
+        operation_id = "operation-7"
+        event = ActivityEvent(
+            Path("report.txt"),
+            "documents",
+            "moved",
+            occurred_at_utc=datetime.now(timezone.utc),
+        )
+        event = ActivityEvent(
+            event.source,
+            event.category,
+            event.status,
+            move_result=type(
+                "Result",
+                (),
+                {
+                    "operation_id": operation_id,
+                    "destination": Path("C:/Organized/report.txt"),
+                    "duplicate_of": None,
+                    "error": None,
+                    "metadata_error": None,
+                },
+            )(),
+            occurred_at_utc=event.occurred_at_utc,
+        )
+        durable = ActivityRecord(
+            "durable-record-7",
+            operation_id,
+            event.occurred_at_utc,
+            Path("C:/Inbox/report.txt"),
+            None,
+            ActivityStatus.COMPLETED,
+            actual_destination=Path("C:/Organized/report.txt"),
+        )
+        service.emit_activity(event)
+        self.app.processEvents()
+        service.product_snapshot_to_return = ProductSnapshot(
+            ProductDataState.AVAILABLE,
+            ProductMetrics(1, 0, 0, 0),
+            (durable,),
+        )
+        service.release_product_read.set()
+
+        self._wait_until(
+            lambda: service.product_read_calls == 2
+            and bridge.product_snapshot.metrics.total_processed == 1
+        )
+        self.assertEqual(len(bridge.product_snapshot.activity), 1)
+        self.assertEqual(
+            bridge.product_snapshot.activity[0].operation_id,
+            operation_id,
+        )
+        self.assertIsNone(bridge.product_snapshot.activity[0].category)
+
+    def test_shutdown_waits_for_active_product_read_without_late_publication(self):
+        service = FakeService()
+        service.release_product_read.clear()
+        bridge = self._bridge(service)
+        published = []
+        bridge.product_snapshot_changed.connect(published.append)
+
+        bridge.request_product_refresh()
+        self.assertTrue(service.product_read_entered.wait(1))
+        bridge.shutdown()
+        self.assertEqual(len(service.state_subscribers), 1)
+        self.assertEqual(len(service.activity_subscribers), 1)
+        service.release_product_read.set()
+        self._wait_until(lambda: bridge.is_closed)
+
+        self.assertEqual(published, [])
+        self.assertEqual(service.state_subscribers, [])
+        self.assertEqual(service.activity_subscribers, [])
+        self.assertFalse(bridge._thread.isRunning())
+
+    def test_product_read_failure_does_not_change_monitor_state(self):
+        service = FakeService(monitor_state=MonitorState.STOPPED)
+        service.product_read_error = RuntimeError("journal unavailable")
+        bridge = self._bridge(service)
+        failed = QSignalSpy(bridge.product_read_failed)
+
+        bridge.request_product_refresh()
+        self._wait_until(lambda: failed.count() == 1)
+
+        self.assertIs(bridge.snapshot.monitor_state, MonitorState.STOPPED)
+        self.assertIs(bridge.product_snapshot.state, ProductDataState.ERROR)
+
+    def test_transient_read_failure_retries_live_confirmation_once(self):
+        service = FakeService()
+        service.product_read_error = RuntimeError("journal temporarily busy")
+        bridge = self._bridge(service)
+        failed = QSignalSpy(bridge.product_read_failed)
+        operation_id = "operation-transient"
+        event = ActivityEvent(
+            Path("C:/Inbox/transient.txt"),
+            "documents",
+            "moved",
+            move_result=type(
+                "Result",
+                (),
+                {
+                    "operation_id": operation_id,
+                    "destination": Path("C:/Organized/transient.txt"),
+                    "duplicate_of": None,
+                    "error": None,
+                    "metadata_error": None,
+                },
+            )(),
+        )
+
+        service.emit_activity(event)
+        self._wait_until(lambda: failed.count() == 1)
+        self.assertEqual(len(bridge.product_snapshot.activity), 1)
+        self.assertFalse(bridge.product_snapshot.activity[0].durable)
+        service.product_read_error = None
+        service.product_snapshot_to_return = ProductSnapshot(
+            ProductDataState.AVAILABLE,
+            ProductMetrics(1, 0, 0, 0),
+            (
+                ActivityRecord(
+                    "durable-transient",
+                    operation_id,
+                    event.occurred_at_utc,
+                    event.source,
+                    "documents",
+                    ActivityStatus.COMPLETED,
+                    actual_destination=Path("C:/Organized/transient.txt"),
+                ),
+            ),
+        )
+
+        self._wait_until(
+            lambda: service.product_read_calls == 2
+            and bridge.product_snapshot.metrics.total_processed == 1
+        )
+
+        self.assertEqual(len(bridge.product_snapshot.activity), 1)
+        self.assertTrue(bridge.product_snapshot.activity[0].durable)
 
 
 if __name__ == "__main__":

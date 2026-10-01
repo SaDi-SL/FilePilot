@@ -13,6 +13,14 @@ from typing import Callable
 from app.config_loader import get_external_config_path
 from app.mover import MoveResult
 from app.operation_journal import JournalError
+from app.product_read_model import (
+    ActivityRecord,
+    ActivityStatus,
+    ProductDataState,
+    ProductMetrics,
+    ProductReadModel,
+    ProductSnapshot,
+)
 from app.recovery import (
     RecoveryBlockedError,
     RecoveryError,
@@ -86,6 +94,13 @@ class ActivityEvent:
         return self.move_result.metadata_error if self.move_result else None
 
 
+def product_record_from_activity_event(
+    event: ActivityEvent,
+    record_id: str,
+) -> ActivityRecord:
+    return ProductReadModel.from_live_event(event, record_id)
+
+
 StateSubscriber = Callable[[MonitorState], None]
 ActivitySubscriber = Callable[[ActivityEvent], None]
 
@@ -98,11 +113,14 @@ class FilePilotService:
         *,
         config_path: str | Path | None = None,
         monitor_builder: Callable[[], tuple[dict, object]] | None = None,
+        journal_path: str | Path | None = None,
+        product_reader: ProductReadModel | None = None,
     ) -> None:
         self._config_path = (
             Path(config_path) if config_path is not None else get_external_config_path()
         )
         self._monitor_builder = monitor_builder
+        self._product_reader = product_reader or ProductReadModel(journal_path)
         self._lifecycle_lock = threading.RLock()
         self._state_lock = threading.Lock()
         self._subscriber_lock = threading.Lock()
@@ -171,6 +189,16 @@ class FilePilotService:
                     self._state_subscribers.remove(callback)
 
         return unsubscribe
+
+    def get_product_snapshot(self, limit: int = 20) -> ProductSnapshot:
+        """Read durable product data without changing lifecycle or storage."""
+        return self._product_reader.read(limit)
+
+    def get_product_metrics(self) -> ProductMetrics:
+        return self.get_product_snapshot(limit=1).metrics
+
+    def get_recent_activity(self, limit: int = 20) -> tuple[ActivityRecord, ...]:
+        return self.get_product_snapshot(limit=limit).activity
 
     def bootstrap(self, *, force: bool = False) -> StartupResult:
         with self._lifecycle_lock:
