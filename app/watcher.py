@@ -51,7 +51,8 @@ class NewFileHandler(FileSystemEventHandler):
     def __init__(self, config: dict, extension_lookup: dict, plugin_manager=None,
                   file_processed_callback=None, submit_file=None,
                   stability_interval_seconds=None, stable_intervals=None,
-                  stability_timeout_seconds=None, operation_journal=None):
+                  stability_timeout_seconds=None, operation_journal=None,
+                  activity_callback=None):
         self.config = config
         self.extension_lookup = extension_lookup
         self.plugin_manager = plugin_manager
@@ -101,6 +102,9 @@ class NewFileHandler(FileSystemEventHandler):
         # callback(filename, category, status) — يُستدعى من thread منفصل
         # يجب أن يكون thread-safe (استخدم root.after من الـ GUI)
         self.file_processed_callback = file_processed_callback
+        # Rich callback(source_path, category, status, move_result, processing_error).
+        # The legacy three-string callback above remains supported unchanged.
+        self.activity_callback = activity_callback
 
     # ---- Watchdog event handlers ----
 
@@ -191,6 +195,8 @@ class NewFileHandler(FileSystemEventHandler):
         status = "unknown"
         source_path = Path(file_path)
         notify_callback = False
+        move_result = None
+        processing_error = None
 
         if self._is_organized_output(source_path):
             return _ProcessingResult.ABANDONED
@@ -296,9 +302,25 @@ class NewFileHandler(FileSystemEventHandler):
         except Exception as error:
             logging.error(f"Error processing {file_path}: {error}", exc_info=True)
             status = "error"
+            processing_error = str(error)
             notify_callback = True
 
         finally:
+            if notify_callback and self.activity_callback is not None:
+                try:
+                    self.activity_callback(
+                        source_path,
+                        final_category or "unknown",
+                        status,
+                        move_result,
+                        processing_error,
+                    )
+                except Exception:
+                    logging.error(
+                        f"File activity callback failed for {file_path}",
+                        exc_info=True,
+                    )
+
             # أبلغ الـ GUI لحظياً بانتهاء المعالجة
             if notify_callback and self.file_processed_callback is not None:
                 try:
@@ -324,7 +346,8 @@ class FileMonitor:
 
     def __init__(self, config: dict, extension_lookup: dict, plugin_manager=None,
                   file_processed_callback=None,
-                  max_processing_workers=None, operation_journal=None):
+                  max_processing_workers=None, operation_journal=None,
+                  activity_callback=None):
         self.config = config
         self.extension_lookup = extension_lookup
         self.source_folder = config["source_folder"]
@@ -388,6 +411,7 @@ class FileMonitor:
             file_processed_callback=file_processed_callback,
             submit_file=self.submit,
             operation_journal=operation_journal,
+            activity_callback=activity_callback,
         )
         self.observer = None
         self.is_running = False
@@ -395,6 +419,10 @@ class FileMonitor:
     def set_file_processed_callback(self, callback) -> None:
         """ضبط الـ callback بعد الإنشاء (مفيد عند reload)."""
         self.event_handler.file_processed_callback = callback
+
+    def set_activity_callback(self, callback) -> None:
+        """Set the rich processing callback used by the application service."""
+        self.event_handler.activity_callback = callback
 
     def owns_current_processing_thread(self) -> bool:
         return bool(getattr(self._worker_local, "active", False))

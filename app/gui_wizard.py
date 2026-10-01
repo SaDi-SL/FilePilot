@@ -6,6 +6,14 @@ from app.config_loader import get_config_path
 from app.main import build_monitor
 
 def check_first_run_wizard(self):
+    service = getattr(self, "service", None)
+    if service is not None:
+        from app.application_service import StartupStatus
+        self.first_run_completed = service.startup_status is StartupStatus.READY
+        if not self.first_run_completed:
+            self.open_welcome_wizard()
+        return
+
     try:
         config_path = get_config_path()
 
@@ -36,12 +44,33 @@ def save_first_run_setup(self, source_folder: str, organized_folder: str, start_
 
         config_data["source_folder"] = source_folder
         config_data["organized_base_folder"] = organized_folder
+        config_data["watch_folders"] = [{
+            "path": source_folder,
+            "label": source_folder.rstrip("/\\").split("/")[-1].split("\\")[-1]
+                     or "Incoming",
+            "active": True,
+        }]
         config_data["first_run_completed"] = True
 
         with open(config_path, "w", encoding="utf-8") as file:
             json.dump(config_data, file, indent=2, ensure_ascii=False)
 
         self.first_run_completed = True
+        service = getattr(self, "service", None)
+        if service is not None:
+            from app.application_service import MonitorState, StartupStatus
+            was_running = service.monitor_state is MonitorState.RUNNING
+            startup = service.reload(preserve_running=was_running)
+            if startup.status is not StartupStatus.READY:
+                messagebox.showerror(
+                    "Error",
+                    startup.error or "FilePilot could not initialize after setup.",
+                )
+                return False
+            self.config = service.config
+            self.monitor = service.monitor
+            return True
+
         self.config, self.monitor = build_monitor()
 
         self.source_folder_var.set(self.config.get("source_folder", "incoming"))
@@ -60,10 +89,13 @@ def save_first_run_setup(self, source_folder: str, organized_folder: str, start_
         self.toast_manager.show_toast("Welcome setup completed successfully.", "success")
         self.status_bar_var.set("Welcome setup completed.")
         self.add_notification("success", "Welcome Setup", "Initial setup completed successfully.")
+        return True
 
     except Exception as error:
         messagebox.showerror("Error", f"Failed to save first run setup:\n{error}")
-        self.add_notification("error", "Welcome Setup Error", str(error))
+        if hasattr(self, "add_notification") and hasattr(self, "notification_center"):
+            self.add_notification("error", "Welcome Setup Error", str(error))
+        return False
 
 
 def open_welcome_wizard(self):
@@ -253,12 +285,20 @@ def open_welcome_wizard(self):
             messagebox.showerror("Error", "Organized folder cannot be empty.", parent=wizard)
             return
 
-        wizard.destroy()
-        self.save_first_run_setup(
+        saved = self.save_first_run_setup(
             source_folder=source_folder,
             organized_folder=organized_folder,
             start_now=bool(start_now_var.get())
         )
+        if saved:
+            wizard.destroy()
+            if getattr(self, "_pre_runtime_shell", False):
+                self.root.after(
+                    0,
+                    lambda: self.activate_after_setup(bool(start_now_var.get())),
+                )
+            elif bool(start_now_var.get()):
+                self.root.after(0, self.start_monitoring)
 
     ttk.Button(
         footer,

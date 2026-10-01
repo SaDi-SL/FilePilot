@@ -8,6 +8,7 @@ import sys
 import json
 import os
 import shutil
+import threading
 import tkinter as tk
 import tkinter.simpledialog as simpledialog
 from datetime import datetime
@@ -879,6 +880,11 @@ class ActionsMixin:
 
     def reload_settings(self):
         try:
+            service = getattr(self, "service", None)
+            if service is not None:
+                self._reload_settings_with_service(service)
+                return
+
             monitor_thread = getattr(self, "monitor_thread", None)
             if monitor_thread is not None and monitor_thread.is_alive():
                 monitor_thread.join()
@@ -940,13 +946,66 @@ class ActionsMixin:
                 self.start_button.config(state="normal")
                 self.stop_button.config(state="disabled")
                 self.status_bar_var.set("Settings reloaded successfully.")
-
             self.add_notification("info", "Settings Reloaded", "Settings reloaded successfully.")
             self.toast_manager.show_toast("Settings reloaded.", "info")
 
         except Exception as error:
             messagebox.showerror("Error", f"Failed to reload settings:\n{error}")
             self.add_notification("error", "Reload Settings Error", str(error))
+
+    def _reload_settings_with_service(self, service) -> None:
+        """Reload runtime services without blocking the Tk event loop."""
+        from app.application_service import MonitorState
+
+        was_running = service.monitor_state is MonitorState.RUNNING
+        self.status_bar_var.set("Reloading settings...")
+
+        def worker():
+            result = service.reload(preserve_running=was_running)
+            self.root.after(
+                0,
+                lambda: self._finish_service_settings_reload(result),
+            )
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _finish_service_settings_reload(self, result) -> None:
+        from app.application_service import StartupStatus
+
+        if result.status is not StartupStatus.READY:
+            error = result.error or "FilePilot reload was not ready"
+            self._apply_monitor_state(self.service.monitor_state)
+            messagebox.showerror("Error", f"Failed to reload settings:\n{error}")
+            self.add_notification("error", "Reload Settings Error", error)
+            return
+
+        self.config = self.service.config
+        self.monitor = self.service.monitor
+        from app.ai_classifier import reset_ai_classifier
+        reset_ai_classifier()
+        self.source_folder_var.set(self.config.get("source_folder", "incoming"))
+        self.organized_base_var.set(self.config.get("organized_base_folder", "organized"))
+        self.processing_wait_var.set(str(self.config.get("processing_wait_seconds", 5)))
+        self.duplicate_window_var.set(str(self.config.get("duplicate_event_window_seconds", 3)))
+        self.archive_by_date_var.set(self.config.get("archive_by_date", False))
+        ai_config = self.config.get("ai", {})
+        self.ai_enabled_var.set(ai_config.get("enabled", False))
+        self.ai_provider_var.set(ai_config.get("provider", "ollama"))
+        self.claude_api_key_var.set(ai_config.get("claude_api_key", ""))
+        self.ollama_model_var.set(ai_config.get("ollama_model", "mistral"))
+        self.check_ai_status()
+        from app.startup_manager import is_startup_enabled
+        self.run_at_startup_var.set(is_startup_enabled())
+        self.refresh_stats()
+        self.refresh_history()
+        self.render_rule_entries()
+        self.render_smart_rule_entries()
+        self.update_rules_count()
+        self.refresh_plugins_view()
+        self._apply_monitor_state(self.service.monitor_state)
+        self.status_bar_var.set("Settings reloaded successfully.")
+        self.add_notification("info", "Settings Reloaded", "Settings reloaded successfully.")
+        self.toast_manager.show_toast("Settings reloaded.", "info")
 
     def validate_imported_config(self, config_data: dict):
         required_keys = [
@@ -1537,23 +1596,37 @@ class ActionsMixin:
             btn_f.pack(side="right", padx=8)
 
             def _start(p=path):
-                self.monitor.start_folder(p)
-                self.refresh_watch_folders_list()
-                self._update_status_badge_running()
+                service = getattr(self, "service", None)
+                if service is not None:
+                    from app.application_service import MonitorState
+                    if service.monitor_state is MonitorState.STOPPED:
+                        self.start_monitoring()
+                    else:
+                        self._run_folder_service_action("start", p)
+                else:
+                    self.monitor.start_folder(p)
+                    self.refresh_watch_folders_list()
+                    self._update_status_badge_running()
 
             def _stop(p=path):
-                self.monitor.stop_folder(p)
-                self.refresh_watch_folders_list()
-                if not self.monitor.is_running:
-                    self._update_status_badge_stopped()
+                if getattr(self, "service", None) is not None:
+                    self._run_folder_service_action("stop", p)
+                else:
+                    self.monitor.stop_folder(p)
+                    self.refresh_watch_folders_list()
+                    if not self.monitor.is_running:
+                        self._update_status_badge_stopped()
 
             def _remove(p=path):
                 name = Path(p).name
                 msg = f"Remove '{name}' from watch list?\nFiles will NOT be deleted."
                 if messagebox.askyesno("Remove Folder", msg):
-                    self.monitor.remove_watch_folder(p)
-                    self._save_watch_folders_to_config()
-                    self.refresh_watch_folders_list()
+                    if getattr(self, "service", None) is not None:
+                        self._run_folder_service_action("remove", p)
+                    else:
+                        self.monitor.remove_watch_folder(p)
+                        self._save_watch_folders_to_config()
+                        self.refresh_watch_folders_list()
 
             if status == "running":
                 tk.Button(btn_f, text="Stop",
@@ -1594,6 +1667,16 @@ class ActionsMixin:
             self.toast_manager.show_toast(f"Folder does not exist: {path_str}", "error")
             return
 
+        if getattr(self, "service", None) is not None:
+            self._run_folder_service_action(
+                "add",
+                path_str,
+                label=label_str,
+                path_var=path_var,
+                label_var=label_var,
+            )
+            return
+
         added = self.monitor.add_watch_folder(path_str, label=label_str, active=True)
         if not added:
             self.toast_manager.show_toast("Folder already in watch list.", "error")
@@ -1605,6 +1688,59 @@ class ActionsMixin:
         if label_var:
             label_var.set("")
         self.toast_manager.show_toast(f"Added: {Path(path_str).name}", "success")
+
+    def _run_folder_service_action(
+        self,
+        action: str,
+        path: str,
+        *,
+        label: str = "",
+        path_var=None,
+        label_var=None,
+    ) -> None:
+        """Run folder lifecycle changes off the Tk thread through the service."""
+        service = self.service
+
+        def worker():
+            try:
+                if action == "start":
+                    result = service.start_folder(path)
+                    ok = result.value in {"running", "stopped"}
+                elif action == "stop":
+                    result = service.stop_folder(path)
+                    ok = result.value in {"running", "stopped"}
+                elif action == "add":
+                    ok = service.add_watch_folder(path, label=label)
+                elif action == "remove":
+                    ok = service.remove_watch_folder(path)
+                else:
+                    raise ValueError(f"Unknown folder action: {action}")
+                error = None if ok else service.last_error or f"Could not {action} folder"
+            except Exception as exc:
+                ok = False
+                error = str(exc)
+
+            def finish():
+                self.config = service.config or self.config
+                self.monitor = service.monitor
+                if ok:
+                    self._save_watch_folders_to_config()
+                    if action == "add":
+                        path_var.set("")
+                        if label_var:
+                            label_var.set("")
+                        self.toast_manager.show_toast(
+                            f"Added: {Path(path).name}",
+                            "success",
+                        )
+                else:
+                    self.toast_manager.show_toast(error, "error")
+                self.refresh_watch_folders_list()
+                self._apply_monitor_state(service.monitor_state)
+
+            self.root.after(0, finish)
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _save_watch_folders_to_config(self) -> None:
         """Persist watch_folders list to config.json."""

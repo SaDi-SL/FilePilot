@@ -11,7 +11,7 @@ from app.path_topology import validate_configured_topology
 from app.stats import ensure_stats_file
 from app.multi_watcher import MultiFolderMonitor
 from app.operation_journal import OperationJournal
-from app.recovery import RecoveryError, reconcile_incomplete_operations
+from app.recovery import RecoveryBlockedError, reconcile_incomplete_operations
 
 
 def build_destination_folders(base_folder: str, rules: dict) -> dict:
@@ -127,9 +127,11 @@ def build_monitor():
         )
     ]
     if unsafe_sources:
-        raise RecoveryError(
+        raise RecoveryBlockedError(
             "Recovery requires review before source monitoring can start: "
-            + ", ".join(unsafe_sources)
+            + ", ".join(unsafe_sources),
+            recovery_report,
+            tuple(unsafe_sources),
         )
 
     extension_lookup = build_extension_lookup(rules)

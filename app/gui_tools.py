@@ -1,4 +1,5 @@
 import os
+import threading
 import tkinter as tk
 import tkinter.simpledialog as simpledialog
 from tkinter import messagebox, ttk
@@ -385,19 +386,48 @@ def _build_plugins_tab(self, outer):
 # ─────────────────────────────────────────────────────────────────────────────
 def reload_plugins_from_gui(self):
     try:
-        monitor_thread = getattr(self, "monitor_thread", None)
-        if monitor_thread is not None and monitor_thread.is_alive():
-            monitor_thread.join()
-        was_running = self.monitor.is_running
-        if was_running:
-            try: self._stop_dot_pulse()
-            except Exception: pass
-            try: self._stop_auto_refresh()
-            except Exception: pass
-            self.monitor.stop_all()
+        service = getattr(self, "service", None)
+        if service is not None:
+            from app.application_service import MonitorState, StartupStatus
+            was_running = service.monitor_state is MonitorState.RUNNING
+            if hasattr(self, "mkt_status_var"):
+                self.mkt_status_var.set("Reloading plugins...")
 
-        self.config, self.monitor = build_monitor()
-        self.monitor.set_file_processed_callback(self._make_live_callback())
+            def worker():
+                result = service.reload(preserve_running=was_running)
+
+                def finish():
+                    if result.status is not StartupStatus.READY:
+                        error = result.error or "Plugin reload was not ready"
+                        self._apply_monitor_state(service.monitor_state)
+                        self.add_notification("error", "Plugins Reload Failed", error)
+                        messagebox.showerror("Error", f"Failed to reload plugins:\n{error}")
+                        return
+                    self.config = service.config
+                    self.monitor = service.monitor
+                    self._apply_monitor_state(service.monitor_state)
+                    self.refresh_plugins_view()
+                    self.add_notification("info", "Plugins Reloaded", "Plugins reloaded successfully.")
+                    self.toast_manager.show_toast("Plugins reloaded.", "success")
+
+                self.root.after(0, finish)
+
+            threading.Thread(target=worker, daemon=True).start()
+            return
+        else:
+            monitor_thread = getattr(self, "monitor_thread", None)
+            if monitor_thread is not None and monitor_thread.is_alive():
+                monitor_thread.join()
+            was_running = self.monitor.is_running
+            if was_running:
+                try: self._stop_dot_pulse()
+                except Exception: pass
+                try: self._stop_auto_refresh()
+                except Exception: pass
+                self.monitor.stop_all()
+
+            self.config, self.monitor = build_monitor()
+            self.monitor.set_file_processed_callback(self._make_live_callback())
 
         if was_running:
             self.monitor.start_all()

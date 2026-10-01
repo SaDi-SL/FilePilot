@@ -49,11 +49,13 @@ class MultiFolderMonitor:
         plugin_manager=None,
         file_processed_callback=None,
         operation_journal=None,
+        activity_callback=None,
     ) -> None:
         self.config            = config
         self.extension_lookup  = extension_lookup
         self.plugin_manager    = plugin_manager
         self._callback         = file_processed_callback
+        self._activity_callback = activity_callback
         self.operation_journal = operation_journal
 
         # path_str → FileMonitor
@@ -92,6 +94,14 @@ class MultiFolderMonitor:
             monitors = list(self._monitors.values())
         for monitor in monitors:
             monitor.set_file_processed_callback(callback)
+
+    def set_activity_callback(self, callback) -> None:
+        """Update the rich activity callback for all folder monitors."""
+        with self._lifecycle_lock:
+            self._activity_callback = callback
+            monitors = list(self._monitors.values())
+        for monitor in monitors:
+            monitor.set_activity_callback(callback)
 
     def start_all(self) -> None:
         """Start all active folders."""
@@ -357,6 +367,8 @@ class MultiFolderMonitor:
         }
         if self.operation_journal is not None:
             monitor_arguments["operation_journal"] = self.operation_journal
+        if self._activity_callback is not None:
+            monitor_arguments["activity_callback"] = self._activity_callback
         monitor = FileMonitor(**monitor_arguments)
         self._monitors[path] = monitor
         return monitor

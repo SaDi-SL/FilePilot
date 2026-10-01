@@ -17,6 +17,7 @@ from app.branding import APP_NAME, APP_VERSION, APP_DEVELOPER
 from app.i18n import t, set_language, get_language, available_languages
 from app.main import build_monitor
 from app.gui_toast import ToastManager
+from app.application_service import ActivityEvent, MonitorState, StartupStatus
 
 
 class MonitoringMixin:
@@ -58,17 +59,27 @@ class MonitoringMixin:
         )
         generation = self._live_callback_generation
 
-        def _callback(filename: str, category: str, status: str):
-            self._live_callback_queue.put(
-                (generation, filename, category, status)
-            )
+        def _callback(*args):
+            if len(args) == 1 and isinstance(args[0], ActivityEvent):
+                event = args[0]
+            else:
+                filename, category, status = args
+                event = ActivityEvent(Path(filename), category, status)
+            self._live_callback_queue.put((generation, event))
         return _callback
+
+    def _queue_service_state(self, state: MonitorState) -> None:
+        if not hasattr(self, "_service_state_queue"):
+            self._service_state_queue = queue.SimpleQueue()
+        self._service_state_queue.put(state)
 
     def _start_live_callback_pump(self):
         if not hasattr(self, "_live_callback_queue"):
             self._live_callback_queue = queue.SimpleQueue()
         if not hasattr(self, "_monitor_error_queue"):
             self._monitor_error_queue = queue.SimpleQueue()
+        if not hasattr(self, "_service_state_queue"):
+            self._service_state_queue = queue.SimpleQueue()
         if not hasattr(self, "_plugin_reload_queue"):
             self._plugin_reload_queue = queue.SimpleQueue()
         if getattr(self, "_live_callback_job", None) is None:
@@ -82,13 +93,24 @@ class MonitoringMixin:
         generation = getattr(self, "_live_callback_generation", 0)
         for _ in range(50):
             try:
-                item_generation, filename, category, status = (
+                item_generation, event = (
                     self._live_callback_queue.get_nowait()
                 )
             except queue.Empty:
                 break
             if item_generation == generation:
-                self._on_file_processed(filename, category, status)
+                self.last_activity_event = event
+                self._on_file_processed(
+                    event.filename,
+                    event.category,
+                    event.status,
+                )
+        for _ in range(10):
+            try:
+                state = self._service_state_queue.get_nowait()
+            except queue.Empty:
+                break
+            self._apply_monitor_state(state)
         for _ in range(10):
             try:
                 error = self._monitor_error_queue.get_nowait()
@@ -117,7 +139,12 @@ class MonitoringMixin:
                 pass
             self._live_callback_job = None
 
-    def _on_file_processed(self, filename: str, category: str, status: str):
+    def _on_file_processed(
+        self,
+        filename: str,
+        category: str,
+        status: str,
+    ):
         """Called on the main thread after each file is processed."""
         try:
             self.last_file_var.set(filename)
@@ -141,12 +168,22 @@ class MonitoringMixin:
                 "error": "✖",
                 "unknown": "•",
             }.get(status, "•")
-            self.status_bar_var.set(f"{icon} Processed: {filename} → {category}")
+            destination = None
+            event = getattr(self, "last_activity_event", None)
+            if (
+                event is not None
+                and event.filename == filename
+                and event.category == category
+                and event.status == status
+            ):
+                destination = event.actual_destination or event.duplicate_target
+            outcome = str(destination) if destination is not None else category
+            self.status_bar_var.set(f"{icon} Processed: {filename} → {outcome}")
 
             # Send tray notification when app is hidden
             if self.is_hidden_to_tray and self.tray_icon is not None:
                 try:
-                    self.tray_icon.notify(f"{filename} → {category}", APP_NAME)
+                    self.tray_icon.notify(f"{filename} → {outcome}", APP_NAME)
                 except Exception:
                     pass
         except Exception:
@@ -249,7 +286,10 @@ class MonitoringMixin:
         self._animate_dot()
 
     def _animate_dot(self):
-        if not self.monitor.is_running:
+        if getattr(self, "service", None) is not None:
+            if self.service.monitor_state is not MonitorState.RUNNING:
+                return
+        elif not self.monitor.is_running:
             return
         try:
             # Pulse: dot expands and shrinks between 2 and 6 pixels
@@ -280,7 +320,10 @@ class MonitoringMixin:
     def _start_auto_refresh(self):
         """Auto-refresh the dashboard every 10 seconds."""
         def _tick():
-            if not self.monitor.is_running:
+            if getattr(self, "service", None) is not None:
+                if self.service.monitor_state is not MonitorState.RUNNING:
+                    return
+            elif not self.monitor.is_running:
                 return
             try:
                 self.refresh_stats()
@@ -304,7 +347,13 @@ class MonitoringMixin:
         self.status_bar_var.set("Refreshed (Ctrl+R / F5)")
 
     def _kb_toggle_monitor(self):
-        if self.monitor.is_running:
+        service = getattr(self, "service", None)
+        if service is not None:
+            if service.monitor_state in {MonitorState.STARTING, MonitorState.RUNNING}:
+                self.stop_monitoring()
+            else:
+                self.start_monitoring()
+        elif self.monitor.is_running:
             self.stop_monitoring()
         else:
             self.start_monitoring()
@@ -317,6 +366,23 @@ class MonitoringMixin:
             self.save_rules()
 
     def start_monitoring(self):
+        service = getattr(self, "service", None)
+        if service is not None:
+            if service.startup_status is not StartupStatus.READY:
+                self._apply_monitor_state(
+                    MonitorState.BLOCKED
+                    if service.startup_status is StartupStatus.BLOCKED
+                    else MonitorState.ERROR
+                )
+                return
+            command_active = getattr(self, "_service_command_active", False)
+            desired = getattr(self, "_desired_monitor_running", False)
+            if (service.monitor_state in {MonitorState.STARTING, MonitorState.RUNNING}
+                    and not (command_active and not desired)):
+                return
+            self._request_service_monitoring(True)
+            return
+
         if self.monitor.is_running:
             return
 
@@ -361,6 +427,16 @@ class MonitoringMixin:
         self._start_auto_refresh()
 
     def stop_monitoring(self):
+        service = getattr(self, "service", None)
+        if service is not None:
+            command_active = getattr(self, "_service_command_active", False)
+            if service.monitor_state is MonitorState.BLOCKED:
+                return
+            if service.monitor_state is MonitorState.STOPPED and not command_active:
+                return
+            self._request_service_monitoring(False)
+            return
+
         monitor_thread = getattr(self, "monitor_thread", None)
         start_in_progress = monitor_thread is not None and monitor_thread.is_alive()
         if not self.monitor.is_running and not start_in_progress:
@@ -395,7 +471,47 @@ class MonitoringMixin:
         self.toast_manager.show_toast("Monitoring stopped.", "warning")
         self.add_notification("warning", "Monitoring Stopped", "File monitoring stopped.")
 
+    def _request_service_monitoring(self, desired_running: bool) -> None:
+        """Serialize GUI lifecycle requests so the latest request wins."""
+        if not hasattr(self, "_service_command_lock"):
+            self._service_command_lock = threading.Lock()
+            self._service_command_active = False
+            self._desired_monitor_running = False
+        with self._service_command_lock:
+            self._desired_monitor_running = desired_running
+            if self._service_command_active:
+                return
+            self._service_command_active = True
+
+        def run_commands():
+            try:
+                while True:
+                    with self._service_command_lock:
+                        desired = self._desired_monitor_running
+                    state = self.service.start() if desired else self.service.stop()
+                    with self._service_command_lock:
+                        if desired != self._desired_monitor_running:
+                            continue
+                        self._service_command_active = False
+                    if state in {MonitorState.ERROR, MonitorState.BLOCKED}:
+                        self._monitor_error_queue.put(
+                            self.service.last_error or "Monitoring lifecycle failed"
+                        )
+                    return
+            except Exception as error:
+                with self._service_command_lock:
+                    self._service_command_active = False
+                self._monitor_error_queue.put(str(error))
+
+        self.monitor_thread = threading.Thread(target=run_commands, daemon=True)
+        self.monitor_thread.start()
+
     def _stop_monitor_lifecycle(self):
+        service = getattr(self, "service", None)
+        if service is not None:
+            service.stop()
+            self.monitor = service.monitor
+            return
         monitor = getattr(self, "monitor", None)
         if monitor is None:
             return
@@ -419,7 +535,8 @@ class MonitoringMixin:
             if (monitor_thread is not None and monitor_thread.is_alive()
                     and monitor_thread is not threading.current_thread()):
                 monitor_thread.join()
-            self._stop_monitor_lifecycle()
+            if getattr(self, "_owns_service", True):
+                self._stop_monitor_lifecycle()
         except Exception:
             pass
 
@@ -432,6 +549,11 @@ class MonitoringMixin:
         self._stop_dot_pulse()
         self._stop_auto_refresh()
         self._stop_live_callback_pump()
+
+        for name in ("_activity_unsubscribe", "_state_unsubscribe"):
+            unsubscribe = getattr(self, name, None)
+            if callable(unsubscribe):
+                unsubscribe()
 
         try:
             if self.tray_icon is not None:
@@ -511,7 +633,11 @@ class MonitoringMixin:
 
     def toggle_theme(self):
         # 1) Save running state before destroying widgets
-        was_running = self.monitor.is_running
+        was_running = (
+            self.service.monitor_state is MonitorState.RUNNING
+            if getattr(self, "service", None) is not None
+            else self.monitor.is_running
+        )
 
         # 2) Cancel recurring jobs before destroying widgets
         self._stop_dot_pulse()
@@ -543,7 +669,6 @@ class MonitoringMixin:
 
         # 3) Rebind callback and restart if was running
         if was_running:
-            self.monitor.set_file_processed_callback(self._make_live_callback())
             self.status_var.set(t("status_running"))
             try:
                 self.header_status.config(
@@ -588,7 +713,11 @@ class MonitoringMixin:
             pass
 
         # Rebuild UI with new language (same as toggle_theme)
-        was_running = self.monitor.is_running
+        was_running = (
+            self.service.monitor_state is MonitorState.RUNNING
+            if getattr(self, "service", None) is not None
+            else self.monitor.is_running
+        )
         self._stop_dot_pulse()
         self._stop_auto_refresh()
 
@@ -613,7 +742,6 @@ class MonitoringMixin:
         self.refresh_notifications_view()
 
         if was_running:
-            self.monitor.set_file_processed_callback(self._make_live_callback())
             try:
                 self.header_status.config(text=t("status_running"),
                                           bg=self.colors["success_bg"],
@@ -632,6 +760,71 @@ class MonitoringMixin:
 
         self._update_notif_badge()
         self.toast_manager.show_toast(t("msg_lang_restart"), "info")
+
+    def _apply_monitor_state(self, state: MonitorState) -> None:
+        """Render the service's confirmed monitor state on the Tk thread."""
+        previous = getattr(self, "_displayed_monitor_state", None)
+        self._displayed_monitor_state = state
+        if state is MonitorState.RUNNING:
+            self.status_var.set(t("status_running"))
+            self.header_status.config(
+                text="Running",
+                bg=self.colors["success_bg"],
+                fg=self.colors["success"],
+            )
+            self._status_badge.config(
+                bg=self.colors["success_bg"],
+                highlightbackground=self.colors["success_border"],
+            )
+            self._status_dot.config(bg=self.colors["success_bg"])
+            self.start_button.config(state="disabled")
+            self.stop_button.config(state="normal")
+            self.status_bar_var.set("Monitoring started  (Ctrl+M to stop)")
+            self._start_dot_pulse()
+            self._start_auto_refresh()
+            if previous is not MonitorState.RUNNING:
+                self.toast_manager.show_toast("Monitoring started.", "success")
+                self.add_notification("success", "Monitoring Started", "File monitoring started.")
+            return
+
+        self._stop_dot_pulse()
+        self._stop_auto_refresh()
+        if state in {MonitorState.STARTING, MonitorState.STOPPING}:
+            text = "Starting..." if state is MonitorState.STARTING else "Stopping..."
+            self.status_var.set(text)
+            self.header_status.config(text=text)
+            self.start_button.config(state="disabled")
+            self.stop_button.config(state="disabled")
+            self.status_bar_var.set(text)
+            return
+
+        if state is MonitorState.STOPPED:
+            text = "Stopped"
+            status_text = "Monitoring stopped  (Ctrl+M to start)"
+            self.start_button.config(state="normal")
+            self.stop_button.config(state="disabled")
+        elif state is MonitorState.BLOCKED:
+            text = "Blocked"
+            status_text = getattr(self.service, "last_error", None) or "Recovery review required"
+            self.start_button.config(state="disabled")
+            self.stop_button.config(state="disabled")
+        else:
+            text = "Error"
+            status_text = getattr(self.service, "last_error", None) or "Monitoring error"
+            self.start_button.config(state="normal")
+            self.stop_button.config(state="disabled")
+        self.status_var.set(text)
+        self.header_status.config(
+            text=text,
+            bg=self.colors["danger"],
+            fg=self.colors["danger_fg"],
+        )
+        self._status_badge.config(
+            bg=self.colors["danger"],
+            highlightbackground=self.colors["danger_border"],
+        )
+        self._status_dot.config(bg=self.colors["danger"])
+        self.status_bar_var.set(status_text)
 
     def open_language_wizard(self) -> None:
         """Show language selection wizard on first launch."""

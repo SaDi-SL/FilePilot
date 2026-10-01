@@ -27,6 +27,8 @@ import sys
 import threading
 from pathlib import Path
 
+from app.application_service import FilePilotService, MonitorState, StartupStatus
+
 logger = logging.getLogger(__name__)
 
 
@@ -67,49 +69,109 @@ class HeadlessApp:
     Controlled entirely via the system tray icon.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, service=None) -> None:
+        self.service        = service or FilePilotService()
         self.monitor        = None
         self.config         = None
         self.tray_icon      = None
         self._gui_open      = False
+        self._open_gui_requested = False
         self._stop_event    = threading.Event()
+        self._command_lock = threading.Lock()
+        self._command_active = False
+        self._desired_running = False
 
     def run(self) -> None:
         """Start the headless app: build monitor, start tray, auto-start monitoring."""
         logger.info("FilePilot starting in headless mode...")
 
-        # Build monitor
-        from app.main import build_monitor
-        self.config, self.monitor = build_monitor()
+        startup = self.service.bootstrap()
+        self.config = self.service.config
+        self.monitor = self.service.monitor
 
         # Auto-start monitoring if configured
-        if self.config.get("auto_start_monitoring", True):
+        if (startup.status is StartupStatus.READY
+                and self.config.get("auto_start_monitoring", True)):
             self._start_monitoring()
+        elif startup.status is StartupStatus.BLOCKED:
+            logger.error("Headless startup blocked: %s", startup.error)
+        elif startup.status is StartupStatus.SETUP_REQUIRED:
+            logger.info("Headless startup requires setup; monitoring was not started.")
+        elif startup.status is StartupStatus.ERROR:
+            logger.error("Headless startup failed: %s", startup.error)
 
-        # Build and run tray (blocking)
-        self._run_tray()
+        try:
+            # Build and run tray (blocking)
+            self._run_tray()
+            if self._open_gui_requested:
+                from app.gui import launch_gui
+                launch_gui(service=self.service, owns_service=False)
+        finally:
+            self.service.shutdown()
 
     # ── Monitoring ────────────────────────────────────────────────────────────
 
     def _start_monitoring(self) -> None:
-        if self.monitor and not self.monitor.is_running:
-            self.monitor.start_all()
+        state = self.service.start()
+        self.monitor = self.service.monitor
+        if state is MonitorState.RUNNING:
             logger.info("Headless monitoring started.")
             self._notify("Monitoring started")
-            self._update_tray_title()
+        else:
+            logger.error("Headless monitoring did not start: %s", self.service.last_error)
+            self._notify(self.service.last_error or "Monitoring did not start")
+        self._update_tray_title()
 
     def _stop_monitoring(self) -> None:
-        if self.monitor and self.monitor.is_running:
-            self.monitor.stop_all()
+        state = self.service.stop()
+        if state is MonitorState.STOPPED:
             logger.info("Headless monitoring stopped.")
             self._notify("Monitoring stopped")
-            self._update_tray_title()
+        else:
+            logger.error("Headless monitoring did not stop cleanly: %s", self.service.last_error)
+        self._update_tray_title()
 
     def _status_text(self) -> str:
-        if self.monitor and self.monitor.is_running:
-            n = len(self.monitor.running_folders)
+        state = self.service.monitor_state
+        monitor = self.service.monitor
+        if state is MonitorState.RUNNING and monitor is not None:
+            n = len(monitor.running_folders)
             return f"Running ({n} folder{'s' if n != 1 else ''})"
-        return "Stopped"
+        return {
+            MonitorState.STARTING: "Starting",
+            MonitorState.STOPPING: "Stopping",
+            MonitorState.BLOCKED: "Blocked",
+            MonitorState.ERROR: "Error",
+        }.get(state, "Stopped")
+
+    def _request_monitoring(self, desired_running: bool) -> None:
+        """Serialize tray lifecycle commands so the latest request wins."""
+        with self._command_lock:
+            self._desired_running = desired_running
+            if self._command_active:
+                return
+            self._command_active = True
+
+        def worker():
+            try:
+                while True:
+                    with self._command_lock:
+                        desired = self._desired_running
+                    if desired:
+                        self._start_monitoring()
+                    else:
+                        self._stop_monitoring()
+                    with self._command_lock:
+                        if desired != self._desired_running:
+                            continue
+                        self._command_active = False
+                    return
+            except Exception:
+                logger.error("Headless lifecycle command failed", exc_info=True)
+                with self._command_lock:
+                    self._command_active = False
+
+        threading.Thread(target=worker, daemon=True).start()
 
     # ── Tray ──────────────────────────────────────────────────────────────────
 
@@ -118,13 +180,13 @@ class HeadlessApp:
         from app.branding import APP_NAME
 
         def _on_start(icon, item):
-            threading.Thread(target=self._start_monitoring, daemon=True).start()
+            self._request_monitoring(True)
 
         def _on_stop(icon, item):
-            threading.Thread(target=self._stop_monitoring, daemon=True).start()
+            self._request_monitoring(False)
 
         def _on_open_gui(icon, item):
-            threading.Thread(target=self._open_gui, daemon=True).start()
+            self._open_gui(icon)
 
         def _on_exit(icon, item):
             self._exit(icon)
@@ -171,34 +233,30 @@ class HeadlessApp:
             except Exception:
                 pass
 
-    def _open_gui(self) -> None:
-        """Launch the full GUI window (once)."""
+    def _open_gui(self, icon=None) -> None:
+        """Request a main-thread handoff from the tray loop to the GUI."""
         if self._gui_open:
             return
         self._gui_open = True
-        try:
-            from app.gui import launch_gui
-            launch_gui()
-        except Exception as e:
-            logger.error(f"Failed to open GUI: {e}")
-        finally:
-            self._gui_open = False
+        self._open_gui_requested = True
+        tray = icon or self.tray_icon
+        if tray is not None:
+            tray.stop()
 
     def _exit(self, icon=None) -> None:
         """Clean shutdown."""
         logger.info("FilePilot headless shutting down...")
-        if self.monitor:
-            try:
-                self.monitor.stop_all()
-            except Exception:
-                pass
+        try:
+            self.service.shutdown()
+        except Exception:
+            pass
         if icon:
             icon.stop()
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
-def run_headless() -> None:
+def run_headless(service=None) -> None:
     """Called from run.py when --headless flag is passed."""
-    app = HeadlessApp()
+    app = HeadlessApp(service=service)
     app.run()

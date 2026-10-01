@@ -26,16 +26,19 @@ def get_bundle_base_dir() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
+def get_external_config_path() -> Path:
+    """Return the runtime config path without creating or copying anything."""
+    return get_runtime_base_dir() / "config" / "config.json"
+
+
 def ensure_external_config_exists() -> Path:
     """
     Ensure config/config.json exists next to the app.
     If missing, copy it from the bundled version.
     """
-    runtime_base = get_runtime_base_dir()
     bundle_base = get_bundle_base_dir()
-
-    external_config_dir = runtime_base / "config"
-    external_config_file = external_config_dir / "config.json"
+    external_config_file = get_external_config_path()
+    external_config_dir = external_config_file.parent
 
     bundled_config_file = bundle_base / "config" / "config.json"
 

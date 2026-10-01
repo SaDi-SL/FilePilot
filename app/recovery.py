@@ -69,6 +69,20 @@ class RecoveryError(RuntimeError):
     pass
 
 
+class RecoveryBlockedError(RecoveryError):
+    """Recovery completed conservatively but unsafe operations still need review."""
+
+    def __init__(
+        self,
+        message: str,
+        report: RecoveryReport,
+        blocking_operation_ids: tuple[str, ...],
+    ) -> None:
+        super().__init__(message)
+        self.report = report
+        self.blocking_operation_ids = blocking_operation_ids
+
+
 def _identity(stat_result: os.stat_result) -> str:
     return f"stat-v1:{stat_result.st_dev}:{stat_result.st_ino}"
 

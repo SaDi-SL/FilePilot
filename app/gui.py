@@ -16,6 +16,7 @@ from app.notification_center import NotificationCenter
 from app.auto_backup import AutoBackupManager
 from app.plugin_watcher import PluginWatcher
 from app.smart_classifier import load_smart_rules, save_smart_rules
+from app.application_service import FilePilotService, StartupStatus
 
 from app.gui_toast import ToastManager
 from app.gui_theme import ThemeMixin
@@ -83,14 +84,28 @@ class FileAutomationGUI(
     # ── Also import toggle_run_at_startup from gui_tools ─────────────────────
     from app.gui_tools import toggle_run_at_startup
 
-    def __init__(self, root):
+    def __init__(self, root, service=None, owns_service=True):
         self.root = root
+        self.service = service or FilePilotService()
+        self._owns_service = owns_service
         self.root.title(f"{APP_NAME} v{APP_VERSION}")
         self.root.geometry("1380x920")
         self.root.minsize(1240, 860)
         self.set_window_icon()
 
-        self.config, self.monitor = build_monitor()
+        startup = self.service.bootstrap()
+        if startup.status is not StartupStatus.READY:
+            self.config = startup.config or {
+                "source_folder": "incoming",
+                "organized_base_folder": "organized",
+            }
+            self.monitor = None
+            self._initialize_pre_runtime_shell(startup)
+            return
+
+        self.config = self.service.config
+        self.monitor = self.service.monitor
+        self._pre_runtime_shell = False
 
         # Start auto-backup scheduler
         self.backup_manager = AutoBackupManager(self.config)
@@ -141,6 +156,12 @@ class FileAutomationGUI(
         self._live_callback_job = None
         self._live_callback_generation = 0
         self._start_live_callback_pump()
+        self._activity_unsubscribe = self.service.subscribe_activity(
+            self._make_live_callback()
+        )
+        self._state_unsubscribe = self.service.subscribe_state(
+            self._queue_service_state
+        )
 
         self.status_var = tk.StringVar(value=t("status_stopped"))
         self.last_file_var = tk.StringVar(value="No file processed yet")
@@ -203,6 +224,7 @@ class FileAutomationGUI(
         self.update_rules_count()
         self.refresh_plugins_view()
         self.refresh_notifications_view()
+        self._apply_monitor_state(self.service.monitor_state)
         self.root.after(300, self.check_first_run_wizard)
 
         # Show language wizard if language not yet configured
@@ -220,9 +242,89 @@ class FileAutomationGUI(
         self.root.protocol("WM_DELETE_WINDOW", self.on_close_to_tray)
         self.handle_startup_launch()
 
+    def _initialize_pre_runtime_shell(self, startup):
+        """Show setup or blocked state without constructing runtime subsystems."""
+        self._pre_runtime_shell = True
+        self.first_run_completed = False
+        self.theme_mode = "dark"
+        self.style = ttk.Style()
+        self.configure_theme()
+        self.toast_manager = ToastManager(self.root, self.colors)
 
-def launch_gui():
+        outer = tk.Frame(self.root, bg=self.colors["bg"])
+        outer.pack(fill="both", expand=True, padx=48, pady=48)
+        title = (
+            "Setup required"
+            if startup.status is StartupStatus.SETUP_REQUIRED
+            else "FilePilot cannot start monitoring"
+        )
+        detail = startup.error or "Monitoring is unavailable until this state is resolved."
+        if startup.blocking_operation_ids:
+            detail += "\n\nOperations requiring review:\n" + "\n".join(
+                startup.blocking_operation_ids
+            )
+
+        tk.Label(
+            outer,
+            text=title,
+            bg=self.colors["bg"],
+            fg=self.colors["text"],
+            font=("Segoe UI", 22, "bold"),
+        ).pack(anchor="w")
+        tk.Label(
+            outer,
+            text=detail,
+            bg=self.colors["bg"],
+            fg=self.colors["muted"],
+            font=("Segoe UI", 11),
+            justify="left",
+            wraplength=850,
+        ).pack(anchor="w", pady=(12, 24))
+
+        if startup.status is StartupStatus.SETUP_REQUIRED:
+            ttk.Button(
+                outer,
+                text="Open Setup Wizard",
+                style="Primary.TButton",
+                command=self.open_welcome_wizard,
+            ).pack(anchor="w")
+            self.root.after(100, self.open_welcome_wizard)
+        else:
+            reasons = "\n".join(startup.blocking_reasons)
+            if reasons:
+                tk.Label(
+                    outer,
+                    text=reasons,
+                    bg=self.colors["bg"],
+                    fg=self.colors["muted"],
+                    font=("Segoe UI", 10),
+                    justify="left",
+                    wraplength=850,
+                ).pack(anchor="w", pady=(0, 24))
+
+        ttk.Button(
+            outer,
+            text="Exit",
+            style="Secondary.TButton",
+            command=self.root.destroy,
+        ).pack(anchor="w", pady=(12, 0))
+        self.root.protocol("WM_DELETE_WINDOW", self.root.destroy)
+
+    def activate_after_setup(self, start_now: bool) -> None:
+        """Replace the setup-only shell with the configured application."""
+        for widget in self.root.winfo_children():
+            widget.destroy()
+        self.__init__(
+            self.root,
+            service=self.service,
+            owns_service=self._owns_service,
+        )
+        if start_now and self.service.startup_status is StartupStatus.READY:
+            self.root.after(0, self.start_monitoring)
+
+
+def launch_gui(service=None, owns_service=True):
     root = tk.Tk()
-    app = FileAutomationGUI(root)
+    app = FileAutomationGUI(root, service=service, owns_service=owns_service)
     root.mainloop()
 
