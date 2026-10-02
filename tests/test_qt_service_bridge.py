@@ -24,8 +24,18 @@ from app.application_service import (
     ProductDataState,
     ProductMetrics,
     ProductSnapshot,
+    OperationPreview,
+    PreviewStatus,
+    RecoveryAction,
+    RecoveryActionResult,
+    RecoveryActionStatus,
+    RecoverySnapshot,
+    SafetyDataState,
     StartupResult,
     StartupStatus,
+    UndoAvailability,
+    UndoResult,
+    UndoStatus,
 )
 from app.ui.qt.service_bridge import QtServiceBridge
 
@@ -65,6 +75,21 @@ class FakeService:
         self.product_snapshot_to_return = ProductSnapshot(
             ProductDataState.AVAILABLE,
             ProductMetrics(0, 0, 0, 0),
+        )
+        self.preview_calls = []
+        self.preview_thread_ids = []
+        self.preview_entered = threading.Event()
+        self.release_preview = threading.Event()
+        self.release_preview.set()
+        self.undo_availability_calls = []
+        self.undo_calls = []
+        self.undo_entered = threading.Event()
+        self.release_undo = threading.Event()
+        self.release_undo.set()
+        self.recovery_read_calls = 0
+        self.recovery_action_calls = []
+        self.recovery_snapshot_to_return = RecoverySnapshot(
+            SafetyDataState.AVAILABLE
         )
 
     def subscribe_state(self, callback):
@@ -133,6 +158,47 @@ class FakeService:
             if error is not None:
                 raise error
             return result
+
+    def preview_file(self, source):
+        with self._operation():
+            self.preview_calls.append(source)
+            self.preview_thread_ids.append(threading.get_ident())
+            self.preview_entered.set()
+            if not self.release_preview.wait(3):
+                raise RuntimeError("preview timed out")
+            return OperationPreview(
+                SafetyDataState.AVAILABLE,
+                PreviewStatus.READY,
+                Path(source),
+                message="Safe preview",
+            )
+
+    def get_undo_availability(self, operation_id):
+        with self._operation():
+            self.undo_availability_calls.append(operation_id)
+            return UndoAvailability(operation_id, True, "Undo is available")
+
+    def undo_operation(self, operation_id):
+        with self._operation():
+            self.undo_calls.append(operation_id)
+            self.undo_entered.set()
+            if not self.release_undo.wait(3):
+                raise RuntimeError("undo timed out")
+            return UndoResult(UndoStatus.SUCCESS, operation_id)
+
+    def get_recovery_snapshot(self, limit=100, offset=0):
+        with self._operation():
+            self.recovery_read_calls += 1
+            return self.recovery_snapshot_to_return
+
+    def reconcile_recovery_item(self, operation_id, action):
+        with self._operation():
+            self.recovery_action_calls.append((operation_id, action))
+            return RecoveryActionResult(
+                operation_id,
+                RecoveryActionStatus.RECONCILED,
+                "Recovered safely",
+            )
 
     def emit_state(self, state):
         for callback in tuple(self.state_subscribers):
@@ -583,6 +649,86 @@ class QtServiceBridgeTests(unittest.TestCase):
 
         self.assertEqual(len(bridge.product_snapshot.activity), 1)
         self.assertTrue(bridge.product_snapshot.activity[0].durable)
+
+    def test_preview_runs_off_gui_thread_and_coalesces_to_latest_request(self):
+        service = FakeService()
+        service.release_preview.clear()
+        bridge = self._bridge(service)
+        previews = QSignalSpy(bridge.preview_changed)
+
+        bridge.request_preview("C:/Inbox/first.txt")
+        self.assertTrue(service.preview_entered.wait(1))
+        bridge.request_preview("C:/Inbox/second.txt")
+        bridge.request_preview("C:/Inbox/latest.txt")
+        service.release_preview.set()
+
+        self._wait_until(
+            lambda: len(service.preview_calls) == 2 and previews.count() == 1
+        )
+        self.assertEqual(
+            service.preview_calls,
+            ["C:/Inbox/first.txt", "C:/Inbox/latest.txt"],
+        )
+        self.assertNotEqual(service.preview_thread_ids[0], threading.get_ident())
+        self.assertEqual(
+            previews.at(0)[0].source,
+            Path("C:/Inbox/latest.txt"),
+        )
+
+    def test_mutating_safety_requests_are_serialized_and_not_duplicated(self):
+        service = FakeService()
+        service.release_undo.clear()
+        bridge = self._bridge(service)
+        undo_completed = QSignalSpy(bridge.undo_completed)
+        recovery_completed = QSignalSpy(bridge.recovery_action_completed)
+
+        bridge.request_undo("operation-undo")
+        bridge.request_undo("operation-undo")
+        self.assertTrue(service.undo_entered.wait(1))
+        bridge.request_recovery_action(
+            "operation-recovery",
+            RecoveryAction.APPLY_SAFE_RECOMMENDATION,
+        )
+        bridge.request_recovery_action(
+            "operation-recovery",
+            RecoveryAction.APPLY_SAFE_RECOMMENDATION,
+        )
+        service.release_undo.set()
+
+        self._wait_until(
+            lambda: undo_completed.count() == 1
+            and recovery_completed.count() == 1
+        )
+        self.assertEqual(service.undo_calls, ["operation-undo"])
+        self.assertEqual(
+            service.recovery_action_calls,
+            [
+                (
+                    "operation-recovery",
+                    RecoveryAction.APPLY_SAFE_RECOMMENDATION,
+                )
+            ],
+        )
+        self.assertEqual(service.max_active_operations, 1)
+
+    def test_undo_availability_is_evaluated_on_worker_thread(self):
+        service = FakeService()
+        bridge = self._bridge(service)
+        availability = QSignalSpy(bridge.undo_availability_changed)
+        observed = QSignalSpy(bridge.operation_thread_observed)
+
+        bridge.request_undo_availability("operation-7")
+        self._wait_until(lambda: availability.count() == 1)
+
+        self.assertEqual(service.undo_availability_calls, ["operation-7"])
+        self.assertEqual(availability.at(0)[0].operation_id, "operation-7")
+        worker_ids = [
+            observed.at(index)[1]
+            for index in range(observed.count())
+            if observed.at(index)[0] == "undo_availability"
+        ]
+        self.assertEqual(len(worker_ids), 1)
+        self.assertNotEqual(worker_ids[0], threading.get_ident())
 
 
 if __name__ == "__main__":

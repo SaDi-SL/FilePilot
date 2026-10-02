@@ -12,11 +12,13 @@ from app.ui.qt.navigation import NAVIGATION_ITEMS, NavigationSidebar
 from app.ui.qt.pages.activity import ActivityPage
 from app.ui.qt.pages.overview import OverviewPage
 from app.ui.qt.pages.placeholder import PlaceholderPage
+from app.ui.qt.pages.recovery import RecoveryPage
 from app.ui.qt.service_bridge import QtServiceBridge
 
 
 PLACEHOLDER_COPY = {
     "activity": "Review authoritative operation history, outcomes, and recovery cases.",
+    "recovery": "Review interrupted operations using verified recovery evidence.",
     "rules": "Define how FilePilot classifies and organizes incoming files.",
     "folders": "Manage the folders FilePilot watches for new files.",
     "integrations": "Connect FilePilot with supported services and extensions.",
@@ -65,7 +67,14 @@ class MainWindow(QMainWindow):
         self._page_indexes["activity"] = self.page_stack.addWidget(activity)
         self.activity_page = activity
 
-        for item in NAVIGATION_ITEMS[2:]:
+        if hasattr(self.bridge, "recovery_snapshot_changed"):
+            recovery = RecoveryPage(self.bridge)
+            self._page_indexes["recovery"] = self.page_stack.addWidget(recovery)
+            self.recovery_page = recovery
+
+        for item in NAVIGATION_ITEMS:
+            if item.key in self._page_indexes:
+                continue
             page = PlaceholderPage(
                 item.label,
                 PLACEHOLDER_COPY[item.key],
@@ -76,6 +85,9 @@ class MainWindow(QMainWindow):
         self.navigation.page_selected.connect(self.show_page)
         self.overview_page.view_all_requested.connect(
             lambda: self.show_page("activity")
+        )
+        self.overview_page.recovery_requested.connect(
+            lambda: self.show_page("recovery")
         )
         self.bridge.closed.connect(self._finish_close)
         self.bridge.command_failed.connect(self._handle_command_failure)
@@ -102,6 +114,10 @@ class MainWindow(QMainWindow):
         self.navigation.select(key)
         if key == "activity":
             self.bridge.request_product_refresh(100)
+        elif key == "recovery":
+            request = getattr(self.bridge, "request_recovery_refresh", None)
+            if request is not None:
+                request(100)
 
     def resizeEvent(self, event) -> None:
         self.navigation.set_compact(event.size().width() < self.COMPACT_THRESHOLD)

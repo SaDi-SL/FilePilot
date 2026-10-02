@@ -92,6 +92,11 @@ class ActivityTable(QTreeWidget):
                 Qt.ItemDataRole.UserRole,
                 record.operation_id,
             )
+            item.setData(
+                self.TIME_COLUMN,
+                Qt.ItemDataRole.UserRole + 1,
+                record,
+            )
             item.setToolTip(self.FILE_COLUMN, str(record.source_path))
             item.setToolTip(self.CATEGORY_COLUMN, record.category or "Category unavailable")
             item.setToolTip(self.RESULT_COLUMN, self._result_tooltip(record))
@@ -108,6 +113,15 @@ class ActivityTable(QTreeWidget):
         if item is None:
             return None
         return item.data(self.TIME_COLUMN, Qt.ItemDataRole.UserRole)
+
+    def selected_record(self) -> ActivityRecord | None:
+        item = self.currentItem()
+        if item is None:
+            return None
+        return item.data(
+            self.TIME_COLUMN,
+            Qt.ItemDataRole.UserRole + 1,
+        )
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)

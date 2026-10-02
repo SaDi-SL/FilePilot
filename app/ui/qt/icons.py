@@ -74,6 +74,18 @@ def _paint_symbol(painter: QPainter, name: str) -> None:
         painter.drawLine(QPointF(12, 7), QPointF(12, 12))
         painter.drawLine(QPointF(12, 12), QPointF(16, 14))
         painter.drawLine(QPointF(5, 4), QPointF(3, 7))
+    elif name == "recovery":
+        shield = QPainterPath()
+        shield.moveTo(12, 3)
+        shield.lineTo(19, 6)
+        shield.lineTo(18, 14)
+        shield.cubicTo(17, 18, 14, 20, 12, 21)
+        shield.cubicTo(10, 20, 7, 18, 6, 14)
+        shield.lineTo(5, 6)
+        shield.closeSubpath()
+        painter.drawPath(shield)
+        painter.drawLine(QPointF(8.5, 12), QPointF(11, 14.5))
+        painter.drawLine(QPointF(11, 14.5), QPointF(15.5, 9.5))
     elif name == "rules":
         for y, x in ((6, 8), (12, 15), (18, 10)):
             painter.drawLine(QPointF(3, y), QPointF(21, y))

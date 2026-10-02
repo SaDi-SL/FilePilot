@@ -14,6 +14,8 @@ from PySide6.QtWidgets import (
 from app.application_service import (
     ProductDataState,
     ProductSnapshot,
+    RecoverySnapshot,
+    SafetyDataState,
     StartupStatus,
 )
 from app.ui.qt.service_bridge import QtServiceBridge, ServiceSnapshot
@@ -26,6 +28,7 @@ from app.ui.qt.widgets.state_panel import StatePanel
 
 class OverviewPage(QWidget):
     view_all_requested = Signal()
+    recovery_requested = Signal()
 
     def __init__(
         self,
@@ -128,6 +131,28 @@ class OverviewPage(QWidget):
         self.state_panel.stop_requested.connect(self.bridge.request_stop)
         self.page_layout.addWidget(self.state_panel)
 
+        self.recovery_attention = SectionCard()
+        self.recovery_attention.setAccessibleName("Recovery attention")
+        attention_layout = QHBoxLayout()
+        attention_copy = QVBoxLayout()
+        self.recovery_attention_title = QLabel("Recovery needs attention")
+        self.recovery_attention_title.setProperty("role", "sectionTitle")
+        self.recovery_attention_copy = QLabel(
+            "Interrupted operations are waiting for evidence review."
+        )
+        self.recovery_attention_copy.setProperty("role", "secondary")
+        self.recovery_attention_copy.setWordWrap(True)
+        attention_copy.addWidget(self.recovery_attention_title)
+        attention_copy.addWidget(self.recovery_attention_copy)
+        attention_layout.addLayout(attention_copy, 1)
+        self.open_recovery_button = QPushButton("Open Recovery Center")
+        self.open_recovery_button.setProperty("variant", "primary")
+        self.open_recovery_button.clicked.connect(self.recovery_requested)
+        attention_layout.addWidget(self.open_recovery_button)
+        self.recovery_attention.content_layout.addLayout(attention_layout)
+        self.recovery_attention.hide()
+        self.page_layout.addWidget(self.recovery_attention)
+
         self.recent_activity = SectionCard()
         self.recent_activity.setAccessibleName("Recent activity")
         recent_header = QHBoxLayout()
@@ -187,8 +212,14 @@ class OverviewPage(QWidget):
 
         self.bridge.state_changed.connect(self.render_state)
         self.bridge.product_snapshot_changed.connect(self.render_product_snapshot)
+        recovery_signal = getattr(self.bridge, "recovery_snapshot_changed", None)
+        if recovery_signal is not None:
+            recovery_signal.connect(self.render_recovery_snapshot)
         self.render_state(self.bridge.snapshot)
         self.render_product_snapshot(self.bridge.product_snapshot)
+        recovery_snapshot = getattr(self.bridge, "recovery_snapshot", None)
+        if recovery_snapshot is not None:
+            self.render_recovery_snapshot(recovery_snapshot)
 
     def _status_row(self, name: str, value: str) -> QLabel:
         row = QHBoxLayout()
@@ -267,6 +298,36 @@ class OverviewPage(QWidget):
             self._show_recent_state(
                 "No durable operations yet. New FilePilot operations will appear here."
             )
+
+    def render_recovery_snapshot(self, snapshot: RecoverySnapshot) -> None:
+        if snapshot.state is not SafetyDataState.AVAILABLE or not snapshot.items:
+            self.recovery_attention.hide()
+            return
+        review_count = sum(
+            item.manual_review_required for item in snapshot.items
+        )
+        actionable_count = sum(bool(item.available_actions) for item in snapshot.items)
+        total = snapshot.total_items
+        self.recovery_attention_title.setText(
+            f"{total} interrupted operation"
+            + ("" if total == 1 else "s")
+            + " need attention"
+        )
+        details = []
+        if actionable_count:
+            details.append(
+                f"{actionable_count} can use a verified recovery action"
+            )
+        if review_count:
+            details.append(f"{review_count} require manual review")
+        if not details:
+            details.append(
+                "Safe recovery actions become available after monitoring stops"
+            )
+        self.recovery_attention_copy.setText(
+            ". ".join(details) + ". FilePilot will not overwrite existing files."
+        )
+        self.recovery_attention.show()
 
     def _show_recent_state(self, message: str) -> None:
         self.recent_table.hide()

@@ -35,6 +35,28 @@ class UndoResult:
     metadata_warning: str | None = None
 
 
+@dataclass(frozen=True)
+class UndoAvailability:
+    operation_id: str
+    eligible: bool
+    reason: str
+    current_path: Path | None = None
+    restore_path: Path | None = None
+    unavailable_status: UndoStatus | None = None
+    conflict: bool = False
+    manual_review_required: bool = False
+    existing_undo_operation_id: str | None = None
+
+
+@dataclass(frozen=True)
+class _UndoPlan:
+    availability: UndoAvailability
+    restore_source: Path
+    restore_target: Path
+    expected_hash: str
+    state: mover._FileState
+
+
 def _existing_result(journal: OperationJournal, operation_id: str) -> UndoResult | None:
     existing = journal.get_inverse_operation(operation_id)
     if existing is None:
@@ -75,20 +97,62 @@ def _existing_result(journal: OperationJournal, operation_id: str) -> UndoResult
     )
 
 
-def undo_operation(
+def _existing_availability(
     journal: OperationJournal,
     operation_id: str,
-    *,
-    hash_db_file: str,
-) -> UndoResult:
-    """Restore an exact completed move using strong evidence and durable intent."""
+) -> UndoAvailability | None:
+    existing = journal.get_inverse_operation(operation_id)
+    if existing is None:
+        return None
+    current_path = Path(existing.source_path)
+    restore_path = Path(existing.actual_destination or existing.intended_destination)
+    if existing.operation_status is OperationStatus.COMPLETE:
+        status = UndoStatus.ALREADY_UNDONE
+        reason = "The move has already been undone"
+        review = False
+    elif existing.operation_status in {
+        OperationStatus.NEEDS_REVIEW,
+        OperationStatus.OPEN,
+    }:
+        status = UndoStatus.NEEDS_REVIEW
+        reason = (
+            existing.error_message
+            if existing.operation_status is OperationStatus.NEEDS_REVIEW
+            else "An interrupted undo must be recovered before another request"
+        ) or "The existing undo requires review"
+        review = True
+    else:
+        status = UndoStatus.NOT_ELIGIBLE
+        reason = "A prior undo attempt is terminal and will not be repeated automatically"
+        review = False
+    return UndoAvailability(
+        operation_id,
+        False,
+        reason,
+        current_path,
+        restore_path,
+        status,
+        manual_review_required=review,
+        existing_undo_operation_id=existing.operation_id,
+    )
+
+
+def _prepare_undo(
+    journal: OperationJournal,
+    operation_id: str,
+) -> _UndoPlan | UndoAvailability:
     try:
-        existing = _existing_result(journal, operation_id)
+        existing = _existing_availability(journal, operation_id)
         if existing is not None:
             return existing
         original = journal.get_operation(operation_id)
     except JournalError as error:
-        return UndoResult(UndoStatus.NOT_ELIGIBLE, operation_id, reason=str(error))
+        return UndoAvailability(
+            operation_id,
+            False,
+            str(error),
+            unavailable_status=UndoStatus.NOT_ELIGIBLE,
+        )
 
     restore_source = (
         Path(original.actual_destination) if original.actual_destination else None
@@ -109,28 +173,33 @@ def undo_operation(
         or expected_hash is None
         or expected_size is None
     ):
-        return UndoResult(
-            UndoStatus.NOT_ELIGIBLE,
+        return UndoAvailability(
             operation_id,
-            source_path=restore_source,
-            destination_path=restore_target,
-            reason="The operation is not a completed move with sufficient evidence",
+            False,
+            "The operation is not a completed move with sufficient evidence",
+            restore_source,
+            restore_target,
+            UndoStatus.NOT_ELIGIBLE,
         )
     if os.path.lexists(restore_target):
-        return UndoResult(
-            UndoStatus.CONFLICT,
+        return UndoAvailability(
             operation_id,
-            source_path=restore_source,
-            destination_path=restore_target,
-            reason="The original source path is occupied",
+            False,
+            "The original source path is occupied",
+            restore_source,
+            restore_target,
+            UndoStatus.CONFLICT,
+            conflict=True,
         )
     if not restore_target.parent.is_dir() or restore_target.parent.is_symlink():
-        return UndoResult(
-            UndoStatus.NEEDS_REVIEW,
+        return UndoAvailability(
             operation_id,
-            source_path=restore_source,
-            destination_path=restore_target,
-            reason="The original source parent is missing or is not a safe directory",
+            False,
+            "The original source parent is missing or is not a safe directory",
+            restore_source,
+            restore_target,
+            UndoStatus.NEEDS_REVIEW,
+            manual_review_required=True,
         )
     try:
         before = restore_source.stat(follow_symlinks=False)
@@ -145,26 +214,84 @@ def undo_operation(
         ):
             raise ValueError("The current destination does not match the completed move")
     except FileNotFoundError:
-        return UndoResult(
-            UndoStatus.NOT_ELIGIBLE,
+        return UndoAvailability(
             operation_id,
-            source_path=restore_source,
-            destination_path=restore_target,
-            reason="The moved destination is missing",
+            False,
+            "The moved destination is missing",
+            restore_source,
+            restore_target,
+            UndoStatus.NOT_ELIGIBLE,
         )
     except (OSError, ValueError) as error:
+        return UndoAvailability(
+            operation_id,
+            False,
+            str(error),
+            restore_source,
+            restore_target,
+            UndoStatus.NEEDS_REVIEW,
+            manual_review_required=True,
+        )
+
+    availability = UndoAvailability(
+        operation_id,
+        True,
+        "The destination still matches the completed move and can be restored safely",
+        restore_source,
+        restore_target,
+    )
+    return _UndoPlan(
+        availability,
+        restore_source,
+        restore_target,
+        expected_hash,
+        state,
+    )
+
+
+def evaluate_undo(
+    journal: OperationJournal,
+    operation_id: str,
+) -> UndoAvailability:
+    """Evaluate current undo evidence without mutating files or journal state."""
+    prepared = _prepare_undo(journal, operation_id)
+    return prepared.availability if isinstance(prepared, _UndoPlan) else prepared
+
+
+def undo_operation(
+    journal: OperationJournal,
+    operation_id: str,
+    *,
+    hash_db_file: str,
+) -> UndoResult:
+    """Restore an exact completed move using strong evidence and durable intent."""
+    prepared = _prepare_undo(journal, operation_id)
+    if isinstance(prepared, UndoAvailability):
+        return UndoResult(
+            prepared.unavailable_status or UndoStatus.NOT_ELIGIBLE,
+            operation_id,
+            prepared.existing_undo_operation_id,
+            prepared.current_path,
+            prepared.restore_path,
+            prepared.reason,
+        )
+    restore_source = prepared.restore_source
+    restore_target = prepared.restore_target
+    expected_hash = prepared.expected_hash
+    state = prepared.state
+    try:
+        destination_root = restore_target.parent.resolve(strict=True)
+        destination_root_state = mover._file_state(
+            destination_root.stat(follow_symlinks=False)
+        )
+    except OSError as error:
         return UndoResult(
             UndoStatus.NEEDS_REVIEW,
             operation_id,
             source_path=restore_source,
             destination_path=restore_target,
-            reason=str(error),
+            reason=f"The restore directory could not be verified safely: {error}",
         )
-
-    destination_root = restore_target.parent.resolve(strict=True)
-    destination_root_state = mover._file_state(
-        destination_root.stat(follow_symlinks=False)
-    )
     try:
         undo = journal.create_inverse_operation(
             operation_id,
@@ -177,11 +304,19 @@ def undo_operation(
             source_mtime_ns=state.modified_ns,
         )
     except JournalConflictError:
-        return _existing_result(journal, operation_id) or UndoResult(
-            UndoStatus.FAILED,
-            operation_id,
-            reason="The undo reservation conflicted with another request",
-        )
+        try:
+            existing = _existing_result(journal, operation_id)
+        except JournalError as error:
+            existing = UndoResult(
+                UndoStatus.FAILED,
+                operation_id,
+                reason=f"The undo reservation could not be confirmed: {error}",
+            )
+        return existing or UndoResult(
+                UndoStatus.FAILED,
+                operation_id,
+                reason="The undo reservation conflicted with another request",
+            )
     except JournalError as error:
         return UndoResult(
             UndoStatus.FAILED,

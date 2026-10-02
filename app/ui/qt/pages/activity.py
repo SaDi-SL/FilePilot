@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.application_service import ActivityStatus, ProductDataState, ProductSnapshot
+from app.ui.qt.safety_dialogs import OperationDetailsDialog, PreviewDialog
 from app.ui.qt.service_bridge import QtServiceBridge
 from app.ui.qt.theme.tokens import SPACING
 from app.ui.qt.widgets.activity_table import ActivityTable
@@ -31,6 +32,8 @@ class ActivityPage(QWidget):
         super().__init__(parent)
         self.bridge = bridge
         self._snapshot = bridge.product_snapshot
+        self._details_dialog: OperationDetailsDialog | None = None
+        self._preview_dialog: PreviewDialog | None = None
         self.setObjectName("ActivityPage")
         self.setProperty("pageSurface", True)
         self.setAccessibleName("Activity page")
@@ -64,6 +67,10 @@ class ActivityPage(QWidget):
         self.summary_label.setProperty("role", "secondary")
         toolbar.addWidget(self.summary_label)
         toolbar.addStretch(1)
+        self.preview_button = QPushButton("Preview a file")
+        self.preview_button.setAccessibleName("Preview a file before moving it")
+        self.preview_button.clicked.connect(self._open_preview)
+        toolbar.addWidget(self.preview_button)
         self.filter_combo = QComboBox()
         self.filter_combo.setAccessibleName("Filter activity by result")
         for label, status in self.FILTERS:
@@ -87,10 +94,39 @@ class ActivityPage(QWidget):
         layout.addWidget(self.state_label, 1)
 
         self.table = ActivityTable()
+        self.table.itemSelectionChanged.connect(self._selection_changed)
+        self.table.itemDoubleClicked.connect(
+            lambda item, column: self._open_details()
+        )
         layout.addWidget(self.table, 1)
+
+        actions = QHBoxLayout()
+        actions.addStretch(1)
+        self.details_button = QPushButton("View operation details")
+        self.details_button.setProperty("variant", "primary")
+        self.details_button.setEnabled(False)
+        self.details_button.clicked.connect(self._open_details)
+        actions.addWidget(self.details_button)
+        layout.addLayout(actions)
 
         self.bridge.product_snapshot_changed.connect(self.render_snapshot)
         self.render_snapshot(self._snapshot)
+
+    def _selection_changed(self) -> None:
+        self.details_button.setEnabled(self.table.selected_record() is not None)
+
+    def _open_details(self) -> None:
+        record = self.table.selected_record()
+        if record is None:
+            return
+        self._details_dialog = OperationDetailsDialog(self.bridge, record, self)
+        self._details_dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self._details_dialog.open()
+
+    def _open_preview(self) -> None:
+        self._preview_dialog = PreviewDialog(self.bridge, self)
+        self._preview_dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self._preview_dialog.open()
 
     def render_snapshot(self, snapshot: ProductSnapshot) -> None:
         self._snapshot = snapshot
@@ -108,6 +144,7 @@ class ActivityPage(QWidget):
             self.state_label.hide()
             self.table.show()
             self.table.set_records(records)
+            self._selection_changed()
             if snapshot.state is not ProductDataState.AVAILABLE:
                 qualifier = (
                     "durable history loading"
@@ -156,5 +193,6 @@ class ActivityPage(QWidget):
 
     def _show_state(self, message: str) -> None:
         self.table.hide()
+        self.details_button.setEnabled(False)
         self.state_label.setText(message)
         self.state_label.show()

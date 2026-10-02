@@ -598,9 +598,32 @@ def _reconcile_once(
         )
         return
     if decision is RecoveryDecision.SAFE_CLEANUP_TEMP:
+        source = _inspect(operation.source_path, operation.source_hash)
+        if not _matches(
+            source,
+            identity=operation.source_identity,
+            content_hash=operation.source_hash,
+            size=operation.source_size,
+            modified_ns=operation.source_mtime_ns,
+        ):
+            raise RecoveryError(
+                "Original source changed before temporary recovery cleanup"
+            )
         current = _inspect(operation.temp_path, operation.source_hash)
         if not _identity_matches(current, operation.temp_identity):
             raise RecoveryError("Temporary object changed before recovery cleanup")
+        final_source = _inspect(operation.source_path, operation.source_hash)
+        final_temporary = _inspect(operation.temp_path, operation.source_hash)
+        if not _matches(
+            final_source,
+            identity=operation.source_identity,
+            content_hash=operation.source_hash,
+            size=operation.source_size,
+            modified_ns=operation.source_mtime_ns,
+        ) or not _identity_matches(final_temporary, operation.temp_identity):
+            raise RecoveryError(
+                "Recovery evidence changed during temporary cleanup validation"
+            )
         os.unlink(current.path)
         journal.transition_phase(
             operation.operation_id,
@@ -668,7 +691,16 @@ def _reconcile_once(
             or os.path.lexists(staging_path)
         ):
             raise RecoveryError("Recorded staging directory is not safe to resume")
-        os.rename(source_path, staging_path)
+        current_source = _inspect(str(source_path), operation.source_hash)
+        if not _matches(
+            current_source,
+            identity=operation.source_identity,
+            content_hash=operation.source_hash,
+            size=operation.source_size,
+            modified_ns=operation.source_mtime_ns,
+        ):
+            raise RecoveryError("Source changed before recovery staging")
+        mover._move_no_clobber(source_path, staging_path)
         staged = _inspect(str(staging_path), operation.source_hash)
         if not _matches(
             staged,
@@ -677,7 +709,16 @@ def _reconcile_once(
             size=operation.source_size,
             modified_ns=operation.source_mtime_ns,
         ):
-            raise RecoveryError("Source changed while recovery staged it")
+            try:
+                mover._move_no_clobber(staging_path, source_path)
+            except OSError as restore_error:
+                raise RecoveryError(
+                    "Source changed while recovery staged it; the changed object "
+                    f"was preserved at {staging_path}: {restore_error}"
+                ) from restore_error
+            raise RecoveryError(
+                "Source changed while recovery staged it and was restored"
+            )
         journal.transition_phase(
             operation.operation_id,
             PhysicalPhase.SOURCE_STAGE_INTENT,
@@ -799,3 +840,40 @@ def reconcile_incomplete_operations(
         reconciled_operation_ids=tuple(reconciled),
         needs_review_operation_ids=needs_review,
     )
+
+
+def reconcile_operation(
+    journal: OperationJournal,
+    operation_id: str,
+    *,
+    hash_db_file: str,
+) -> RecoveryAssessment | None:
+    """Apply only the core's current safe decision for one operation."""
+    for _ in range(16):
+        operation = journal.get_operation(operation_id)
+        if operation.operation_status not in {
+            OperationStatus.OPEN,
+            OperationStatus.NEEDS_REVIEW,
+        }:
+            return None
+        assessment = assess_operation(journal, operation)
+        if assessment.decision is RecoveryDecision.NEEDS_REVIEW:
+            _mark_review(journal, assessment)
+            return assess_operation(journal, journal.get_operation(operation_id))
+        try:
+            _reconcile_once(journal, assessment, hash_db_file)
+        except JournalError:
+            raise
+        except (OSError, RecoveryError) as error:
+            refreshed = assess_operation(journal, journal.get_operation(operation_id))
+            if refreshed.decision is RecoveryDecision.NEEDS_REVIEW:
+                _mark_review(journal, refreshed)
+            else:
+                journal.mark_needs_review(
+                    operation_id,
+                    expected_phase=refreshed.operation.physical_phase,
+                    error_code="RECOVERY_ACTION_FAILED",
+                    error_message=str(error),
+                )
+            return assess_operation(journal, journal.get_operation(operation_id))
+    raise RecoveryError(f"Recovery did not converge for operation {operation_id}")

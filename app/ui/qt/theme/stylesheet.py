@@ -14,6 +14,7 @@ def build_stylesheet() -> str:
         QWidget#OverviewViewport,
         QWidget#OverviewContent,
         QWidget#ActivityPage,
+        QWidget#RecoveryPage,
         QWidget[pageSurface="true"] {{
             background-color: {c.background};
         }}
@@ -285,6 +286,21 @@ def build_stylesheet() -> str:
             background-color: {c.surface_elevated};
             border: 1px solid {c.border_strong};
             selection-background-color: {c.surface_hover};
+        }}
+        QDialog {{
+            background-color: {c.background};
+        }}
+        QLineEdit {{
+            min-height: 36px;
+            padding: 0 10px;
+            color: {c.text_primary};
+            background-color: {c.surface_elevated};
+            border: 1px solid {c.border_strong};
+            border-radius: {r.control}px;
+            selection-background-color: {c.primary};
+        }}
+        QLineEdit:hover, QLineEdit:focus {{
+            border-color: {c.focus};
         }}
         QScrollBar:vertical {{
             background: transparent;

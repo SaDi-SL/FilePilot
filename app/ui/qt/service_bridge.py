@@ -14,6 +14,9 @@ from app.application_service import (
     ProductDataState,
     ProductMetrics,
     ProductSnapshot,
+    RecoveryAction,
+    RecoverySnapshot,
+    SafetyDataState,
     StartupResult,
     StartupStatus,
     product_record_from_activity_event,
@@ -37,6 +40,12 @@ class _ServiceWorker(QObject):
     shutdown_finished = Signal(int)
     product_read_finished = Signal(int, object, int, int)
     product_read_failed = Signal(int, str, int, int)
+    preview_finished = Signal(int, object, int)
+    undo_availability_finished = Signal(int, object, int)
+    undo_finished = Signal(int, object, int)
+    recovery_finished = Signal(int, object, int)
+    recovery_action_finished = Signal(int, object, int)
+    safety_failed = Signal(str, int, str, int)
 
     def __init__(self, service: FilePilotService) -> None:
         super().__init__()
@@ -99,6 +108,75 @@ class _ServiceWorker(QObject):
             threading.get_ident(),
         )
 
+    @Slot(int, str)
+    def preview_file(self, request_id: int, source: str) -> None:
+        self._run_safety_request(
+            "preview",
+            request_id,
+            lambda: self._service.preview_file(source),
+            self.preview_finished,
+        )
+
+    @Slot(int, str)
+    def evaluate_undo(self, request_id: int, operation_id: str) -> None:
+        self._run_safety_request(
+            "undo_availability",
+            request_id,
+            lambda: self._service.get_undo_availability(operation_id),
+            self.undo_availability_finished,
+        )
+
+    @Slot(int, str)
+    def undo(self, request_id: int, operation_id: str) -> None:
+        self._run_safety_request(
+            "undo",
+            request_id,
+            lambda: self._service.undo_operation(operation_id),
+            self.undo_finished,
+        )
+
+    @Slot(int, int, int)
+    def read_recovery(self, request_id: int, limit: int, offset: int) -> None:
+        self._run_safety_request(
+            "recovery",
+            request_id,
+            lambda: self._service.get_recovery_snapshot(limit, offset),
+            self.recovery_finished,
+        )
+
+    @Slot(int, str, object)
+    def apply_recovery_action(
+        self,
+        request_id: int,
+        operation_id: str,
+        action: RecoveryAction,
+    ) -> None:
+        self._run_safety_request(
+            "recovery_action",
+            request_id,
+            lambda: self._service.reconcile_recovery_item(operation_id, action),
+            self.recovery_action_finished,
+        )
+
+    def _run_safety_request(
+        self,
+        name: str,
+        request_id: int,
+        operation,
+        completed_signal,
+    ) -> None:
+        try:
+            result = operation()
+        except Exception:
+            self.safety_failed.emit(
+                name,
+                request_id,
+                "FilePilot could not complete the safety request.",
+                threading.get_ident(),
+            )
+            return
+        completed_signal.emit(request_id, result, threading.get_ident())
+
     def _run_command(self, name: str, command) -> None:
         try:
             result = command()
@@ -115,6 +193,14 @@ class QtServiceBridge(QObject):
     activity_received = Signal(object)
     product_snapshot_changed = Signal(object)
     product_read_failed = Signal(str)
+    preview_changed = Signal(object)
+    undo_availability_changed = Signal(object)
+    undo_started = Signal(str)
+    undo_completed = Signal(object)
+    recovery_snapshot_changed = Signal(object)
+    recovery_action_started = Signal(str)
+    recovery_action_completed = Signal(object)
+    safety_request_failed = Signal(str, str)
     command_completed = Signal(str, object)
     command_failed = Signal(str, str)
     operation_thread_observed = Signal(str, int)
@@ -125,6 +211,11 @@ class QtServiceBridge(QObject):
     _stop_worker = Signal()
     _shutdown_worker = Signal()
     _product_read_worker = Signal(int, int, int)
+    _preview_worker = Signal(int, str)
+    _undo_availability_worker = Signal(int, str)
+    _undo_worker = Signal(int, str)
+    _recovery_worker = Signal(int, int, int)
+    _recovery_action_worker = Signal(int, str, object)
     _state_relay = Signal(object)
     _activity_relay = Signal(object)
 
@@ -154,6 +245,33 @@ class QtServiceBridge(QObject):
         self._product_refresh_pending = False
         self._pending_product_limit = 100
         self._product_retry_revision: int | None = None
+        self._preview_sequence = 0
+        self._preview_active = False
+        self._active_preview_id: int | None = None
+        self._pending_preview_source: str | None = None
+        self._undo_availability_sequence = 0
+        self._undo_availability_active = False
+        self._active_undo_availability_id: int | None = None
+        self._pending_undo_operation_id: str | None = None
+        self._undo_sequence = 0
+        self._undo_active = False
+        self._active_undo_id: int | None = None
+        self._active_undo_operation_id: str | None = None
+        self._recovery_snapshot = RecoverySnapshot(
+            SafetyDataState.LOADING,
+            (),
+            error="Loading recovery evidence...",
+        )
+        self._recovery_sequence = 0
+        self._recovery_active = False
+        self._active_recovery_id: int | None = None
+        self._recovery_pending = False
+        self._pending_recovery_limit = 100
+        self._pending_recovery_offset = 0
+        self._recovery_action_sequence = 0
+        self._recovery_action_active = False
+        self._active_recovery_action_id: int | None = None
+        self._active_recovery_operation_id: str | None = None
 
         self._unsubscribe_state = None
         self._unsubscribe_activity = None
@@ -184,6 +302,26 @@ class QtServiceBridge(QObject):
             self._worker.read_product_data,
             Qt.ConnectionType.QueuedConnection,
         )
+        self._preview_worker.connect(
+            self._worker.preview_file,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self._undo_availability_worker.connect(
+            self._worker.evaluate_undo,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self._undo_worker.connect(
+            self._worker.undo,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self._recovery_worker.connect(
+            self._worker.read_recovery,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self._recovery_action_worker.connect(
+            self._worker.apply_recovery_action,
+            Qt.ConnectionType.QueuedConnection,
+        )
         self._state_relay.connect(
             self._accept_service_state,
             Qt.ConnectionType.QueuedConnection,
@@ -199,6 +337,16 @@ class QtServiceBridge(QObject):
         self._worker.shutdown_finished.connect(self._on_worker_shutdown)
         self._worker.product_read_finished.connect(self._on_product_read_finished)
         self._worker.product_read_failed.connect(self._on_product_read_failed)
+        self._worker.preview_finished.connect(self._on_preview_finished)
+        self._worker.undo_availability_finished.connect(
+            self._on_undo_availability_finished
+        )
+        self._worker.undo_finished.connect(self._on_undo_finished)
+        self._worker.recovery_finished.connect(self._on_recovery_finished)
+        self._worker.recovery_action_finished.connect(
+            self._on_recovery_action_finished
+        )
+        self._worker.safety_failed.connect(self._on_safety_failed)
         self._worker.shutdown_finished.connect(
             self._worker.deleteLater,
             Qt.ConnectionType.DirectConnection,
@@ -221,6 +369,10 @@ class QtServiceBridge(QObject):
     @property
     def product_snapshot(self) -> ProductSnapshot:
         return self._merged_product_snapshot()
+
+    @property
+    def recovery_snapshot(self) -> RecoverySnapshot:
+        return self._recovery_snapshot
 
     @Slot()
     def bootstrap(self) -> None:
@@ -256,6 +408,69 @@ class QtServiceBridge(QObject):
             self._product_refresh_pending = True
             return
         self._dispatch_product_read(self._pending_product_limit)
+
+    @Slot(str)
+    def request_preview(self, source: str) -> None:
+        if self._closing:
+            return
+        self._pending_preview_source = source
+        if self._preview_active:
+            return
+        self._dispatch_preview()
+
+    @Slot(str)
+    def request_undo_availability(self, operation_id: str) -> None:
+        if self._closing:
+            return
+        self._pending_undo_operation_id = operation_id
+        if self._undo_availability_active:
+            return
+        self._dispatch_undo_availability()
+
+    @Slot(str)
+    def request_undo(self, operation_id: str) -> None:
+        if self._closing or self._undo_active or not operation_id:
+            return
+        self._undo_sequence += 1
+        self._active_undo_id = self._undo_sequence
+        self._active_undo_operation_id = operation_id
+        self._undo_active = True
+        self.undo_started.emit(operation_id)
+        self._undo_worker.emit(self._undo_sequence, operation_id)
+
+    @Slot(int, int)
+    def request_recovery_refresh(self, limit: int = 100, offset: int = 0) -> None:
+        if self._closing:
+            return
+        self._pending_recovery_limit = max(1, min(int(limit), 100))
+        self._pending_recovery_offset = max(0, int(offset))
+        if self._recovery_active:
+            self._recovery_pending = True
+            return
+        self._dispatch_recovery_read()
+
+    @Slot(str, object)
+    def request_recovery_action(
+        self,
+        operation_id: str,
+        action: RecoveryAction,
+    ) -> None:
+        if (
+            self._closing
+            or self._recovery_action_active
+            or not operation_id
+        ):
+            return
+        self._recovery_action_sequence += 1
+        self._active_recovery_action_id = self._recovery_action_sequence
+        self._active_recovery_operation_id = operation_id
+        self._recovery_action_active = True
+        self.recovery_action_started.emit(operation_id)
+        self._recovery_action_worker.emit(
+            self._recovery_action_sequence,
+            operation_id,
+            action,
+        )
 
     @Slot()
     def shutdown(self) -> None:
@@ -297,6 +512,40 @@ class QtServiceBridge(QObject):
             self._active_product_request_id,
             limit,
             self._activity_revision,
+        )
+
+    def _dispatch_preview(self) -> None:
+        source = self._pending_preview_source
+        if source is None:
+            return
+        self._pending_preview_source = None
+        self._preview_sequence += 1
+        self._active_preview_id = self._preview_sequence
+        self._preview_active = True
+        self._preview_worker.emit(self._preview_sequence, source)
+
+    def _dispatch_undo_availability(self) -> None:
+        operation_id = self._pending_undo_operation_id
+        if operation_id is None:
+            return
+        self._pending_undo_operation_id = None
+        self._undo_availability_sequence += 1
+        self._active_undo_availability_id = self._undo_availability_sequence
+        self._undo_availability_active = True
+        self._undo_availability_worker.emit(
+            self._undo_availability_sequence,
+            operation_id,
+        )
+
+    def _dispatch_recovery_read(self) -> None:
+        self._recovery_pending = False
+        self._recovery_sequence += 1
+        self._active_recovery_id = self._recovery_sequence
+        self._recovery_active = True
+        self._recovery_worker.emit(
+            self._recovery_sequence,
+            self._pending_recovery_limit,
+            self._pending_recovery_offset,
         )
 
     def _on_service_state(self, state: MonitorState) -> None:
@@ -345,6 +594,7 @@ class QtServiceBridge(QObject):
         self.startup_completed.emit(result)
         self._publish_snapshot(self._snapshot_from_service())
         self.request_product_refresh(self._product_limit)
+        self.request_recovery_refresh(self._pending_recovery_limit, 0)
 
     @Slot(int, object, int, int)
     def _on_product_read_finished(
@@ -405,6 +655,163 @@ class QtServiceBridge(QObject):
         else:
             self._product_refresh_pending = True
         self._dispatch_pending_product_read()
+
+    @Slot(int, object, int)
+    def _on_preview_finished(
+        self,
+        request_id: int,
+        preview: object,
+        worker_thread_id: int,
+    ) -> None:
+        if request_id != self._active_preview_id:
+            return
+        self._preview_active = False
+        self._active_preview_id = None
+        if self._closing:
+            return
+        self.operation_thread_observed.emit("preview", worker_thread_id)
+        if self._pending_preview_source is None:
+            self.preview_changed.emit(preview)
+        else:
+            self._dispatch_preview()
+
+    @Slot(int, object, int)
+    def _on_undo_availability_finished(
+        self,
+        request_id: int,
+        availability: object,
+        worker_thread_id: int,
+    ) -> None:
+        if request_id != self._active_undo_availability_id:
+            return
+        self._undo_availability_active = False
+        self._active_undo_availability_id = None
+        if self._closing:
+            return
+        self.operation_thread_observed.emit(
+            "undo_availability",
+            worker_thread_id,
+        )
+        if self._pending_undo_operation_id is None:
+            self.undo_availability_changed.emit(availability)
+        else:
+            self._dispatch_undo_availability()
+
+    @Slot(int, object, int)
+    def _on_undo_finished(
+        self,
+        request_id: int,
+        result: object,
+        worker_thread_id: int,
+    ) -> None:
+        if request_id != self._active_undo_id:
+            return
+        self._undo_active = False
+        self._active_undo_id = None
+        operation_id = self._active_undo_operation_id
+        self._active_undo_operation_id = None
+        if self._closing:
+            return
+        self.operation_thread_observed.emit("undo", worker_thread_id)
+        self.undo_completed.emit(result)
+        if operation_id:
+            self.request_undo_availability(operation_id)
+        self.request_product_refresh(self._product_limit)
+        self.request_recovery_refresh(self._pending_recovery_limit, 0)
+
+    @Slot(int, object, int)
+    def _on_recovery_finished(
+        self,
+        request_id: int,
+        snapshot: RecoverySnapshot,
+        worker_thread_id: int,
+    ) -> None:
+        if request_id != self._active_recovery_id:
+            return
+        self._recovery_active = False
+        self._active_recovery_id = None
+        if self._closing:
+            return
+        self.operation_thread_observed.emit("recovery", worker_thread_id)
+        if self._recovery_pending:
+            self._dispatch_recovery_read()
+            return
+        self._recovery_snapshot = snapshot
+        self.recovery_snapshot_changed.emit(snapshot)
+
+    @Slot(int, object, int)
+    def _on_recovery_action_finished(
+        self,
+        request_id: int,
+        result: object,
+        worker_thread_id: int,
+    ) -> None:
+        if request_id != self._active_recovery_action_id:
+            return
+        self._recovery_action_active = False
+        self._active_recovery_action_id = None
+        self._active_recovery_operation_id = None
+        if self._closing:
+            return
+        self.operation_thread_observed.emit("recovery_action", worker_thread_id)
+        self.recovery_action_completed.emit(result)
+        self.request_recovery_refresh(self._pending_recovery_limit, 0)
+        self.request_product_refresh(self._product_limit)
+
+    @Slot(str, int, str, int)
+    def _on_safety_failed(
+        self,
+        name: str,
+        request_id: int,
+        message: str,
+        worker_thread_id: int,
+    ) -> None:
+        if not self._accept_safety_failure(name, request_id):
+            return
+        self.operation_thread_observed.emit(name, worker_thread_id)
+        if self._closing:
+            return
+        self.safety_request_failed.emit(name, message)
+        if name == "preview" and self._pending_preview_source is not None:
+            self._dispatch_preview()
+        elif (
+            name == "undo_availability"
+            and self._pending_undo_operation_id is not None
+        ):
+            self._dispatch_undo_availability()
+        elif name == "recovery" and self._recovery_pending:
+            self._dispatch_recovery_read()
+
+    def _accept_safety_failure(self, name: str, request_id: int) -> bool:
+        if name == "preview" and request_id == self._active_preview_id:
+            self._preview_active = False
+            self._active_preview_id = None
+            return True
+        if (
+            name == "undo_availability"
+            and request_id == self._active_undo_availability_id
+        ):
+            self._undo_availability_active = False
+            self._active_undo_availability_id = None
+            return True
+        if name == "undo" and request_id == self._active_undo_id:
+            self._undo_active = False
+            self._active_undo_id = None
+            self._active_undo_operation_id = None
+            return True
+        if name == "recovery" and request_id == self._active_recovery_id:
+            self._recovery_active = False
+            self._active_recovery_id = None
+            return True
+        if (
+            name == "recovery_action"
+            and request_id == self._active_recovery_action_id
+        ):
+            self._recovery_action_active = False
+            self._active_recovery_action_id = None
+            self._active_recovery_operation_id = None
+            return True
+        return False
 
     def _schedule_live_confirmation_retry(self, activity_revision: int) -> None:
         if (
@@ -484,6 +891,8 @@ class QtServiceBridge(QObject):
         self._publish_snapshot(self._snapshot_from_service())
         if desired_changed:
             self._dispatch_lifecycle_command()
+        else:
+            self.request_recovery_refresh(self._pending_recovery_limit, 0)
 
     @Slot(str, str, int)
     def _on_command_failed(

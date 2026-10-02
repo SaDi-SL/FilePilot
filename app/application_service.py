@@ -11,8 +11,14 @@ from pathlib import Path
 from typing import Callable
 
 from app.config_loader import get_external_config_path
-from app.mover import MoveResult
-from app.operation_journal import JournalError
+from app.classifier import build_extension_lookup
+from app.mover import MoveResult, PreviewStatus, preview_move
+from app.operation_journal import (
+    MAX_RECENT_OPERATIONS,
+    JournalError,
+    JournalNotFoundError,
+    OperationJournal,
+)
 from app.product_read_model import (
     ActivityRecord,
     ActivityStatus,
@@ -21,10 +27,31 @@ from app.product_read_model import (
     ProductReadModel,
     ProductSnapshot,
 )
+from app.product_safety import (
+    OperationPreview,
+    RecoveryAction,
+    RecoveryActionResult,
+    RecoveryActionStatus,
+    RecoveryItem,
+    RecoverySnapshot,
+    SafetyDataState,
+    operation_preview_from_domain,
+    recovery_item_from_assessment,
+)
 from app.recovery import (
     RecoveryBlockedError,
+    RecoveryDecision,
     RecoveryError,
     RecoveryReport,
+    assess_operation,
+    reconcile_operation,
+)
+from app.undo import (
+    UndoAvailability,
+    UndoResult,
+    UndoStatus,
+    evaluate_undo,
+    undo_operation as execute_undo,
 )
 
 logger = logging.getLogger(__name__)
@@ -120,6 +147,7 @@ class FilePilotService:
             Path(config_path) if config_path is not None else get_external_config_path()
         )
         self._monitor_builder = monitor_builder
+        self._journal_path = Path(journal_path) if journal_path is not None else None
         self._product_reader = product_reader or ProductReadModel(journal_path)
         self._lifecycle_lock = threading.RLock()
         self._state_lock = threading.Lock()
@@ -200,6 +228,238 @@ class FilePilotService:
     def get_recent_activity(self, limit: int = 20) -> tuple[ActivityRecord, ...]:
         return self.get_product_snapshot(limit=limit).activity
 
+    def preview_file(self, source_file: str | Path) -> OperationPreview:
+        """Preview one source through the configured non-mutating planner."""
+        source = Path(source_file)
+        with self._lifecycle_lock:
+            if self.startup_status is not StartupStatus.READY:
+                return OperationPreview.unavailable(
+                    source,
+                    "Preview requires a ready FilePilot configuration and does not start monitoring.",
+                )
+            config = dict(self.config or {})
+        try:
+            organized_root = Path(config["organized_base_folder"])
+            resolved_source = source.resolve(strict=False)
+            if resolved_source.is_relative_to(organized_root.resolve(strict=False)):
+                return OperationPreview(
+                    SafetyDataState.AVAILABLE,
+                    PreviewStatus.UNSAFE,
+                    source,
+                    message=(
+                        "Files already inside FilePilot's organized output cannot be previewed. "
+                        "Nothing changed."
+                    ),
+                )
+            rules = config.get("rules", {})
+            extension_lookup = build_extension_lookup(rules)
+            suffix = source.suffix.lower().strip()
+            classification_method = (
+                "extension" if suffix in extension_lookup else "fallback"
+            )
+            result = preview_move(
+                source,
+                dict(config["destination_folders"]),
+                extension_lookup,
+                str(config["hash_db_file"]),
+                bool(config.get("archive_by_date", False)),
+                organized_root,
+                classification_source=classification_method,
+            )
+        except (KeyError, OSError, TypeError, ValueError) as error:
+            logger.warning("File preview is unavailable: %s", error)
+            return OperationPreview.unavailable(
+                source,
+                "Preview configuration is unavailable. Nothing changed.",
+            )
+        return operation_preview_from_domain(
+            result,
+            classification_method=classification_method,
+        )
+
+    def get_undo_availability(self, operation_id: str) -> UndoAvailability:
+        """Evaluate undo from current journal and filesystem evidence."""
+        with self._lifecycle_lock:
+            unavailable = self._undo_lifecycle_unavailable(operation_id)
+            if unavailable is not None:
+                return unavailable
+            try:
+                journal = OperationJournal.open_existing_read_only(self._journal_path)
+                return evaluate_undo(journal, operation_id)
+            except JournalError as error:
+                return UndoAvailability(
+                    operation_id,
+                    False,
+                    f"Undo evidence is unavailable: {error}",
+                    unavailable_status=UndoStatus.NOT_ELIGIBLE,
+                )
+
+    def undo_operation(self, operation_id: str) -> UndoResult:
+        """Execute one authoritative stopped-state undo with full revalidation."""
+        with self._lifecycle_lock:
+            unavailable = self._undo_lifecycle_unavailable(operation_id)
+            if unavailable is not None:
+                return UndoResult(
+                    unavailable.unavailable_status or UndoStatus.NOT_ELIGIBLE,
+                    operation_id,
+                    source_path=unavailable.current_path,
+                    destination_path=unavailable.restore_path,
+                    reason=unavailable.reason,
+                )
+            config = self.config or {}
+            hash_db_file = config.get("hash_db_file")
+            if not isinstance(hash_db_file, str) or not hash_db_file:
+                return UndoResult(
+                    UndoStatus.FAILED,
+                    operation_id,
+                    reason="Undo metadata storage is unavailable; nothing was changed",
+                )
+            try:
+                journal = OperationJournal(self._journal_path)
+            except JournalError as error:
+                return UndoResult(
+                    UndoStatus.FAILED,
+                    operation_id,
+                    reason=f"Undo journal is unavailable; nothing was changed: {error}",
+                )
+            return execute_undo(
+                journal,
+                operation_id,
+                hash_db_file=hash_db_file,
+            )
+
+    def get_recovery_snapshot(
+        self,
+        limit: int = MAX_RECENT_OPERATIONS,
+        offset: int = 0,
+    ) -> RecoverySnapshot:
+        """Inspect a bounded recovery inventory without reconciling it."""
+        if not isinstance(limit, int) or isinstance(limit, bool):
+            return RecoverySnapshot(
+                SafetyDataState.ERROR,
+                error="Recovery limit must be an integer",
+            )
+        if not isinstance(offset, int) or isinstance(offset, bool) or offset < 0:
+            return RecoverySnapshot(
+                SafetyDataState.ERROR,
+                error="Recovery offset must be a non-negative integer",
+            )
+        bounded_limit = max(1, min(limit, MAX_RECENT_OPERATIONS))
+        with self._lifecycle_lock:
+            startup = self.startup_result
+            blocking = set(startup.blocking_operation_ids if startup else ())
+            hash_db_file = self._recovery_hash_db_file()
+            action_allowed = (
+                self._recovery_actions_available()
+                and hash_db_file is not None
+            )
+            try:
+                journal = OperationJournal.open_existing_read_only(self._journal_path)
+                operations, total = journal.read_incomplete_snapshot(
+                    bounded_limit,
+                    offset,
+                )
+                items = tuple(
+                    recovery_item_from_assessment(
+                        assess_operation(journal, operation),
+                        action_allowed=action_allowed,
+                        blocks_monitoring=operation.operation_id in blocking,
+                    )
+                    for operation in operations
+                )
+            except JournalError as error:
+                return RecoverySnapshot.unavailable(
+                    f"Recovery evidence is unavailable: {error}"
+                )
+            except (OSError, RecoveryError) as error:
+                logger.warning("Recovery assessment failed: %s", error)
+                return RecoverySnapshot(
+                    SafetyDataState.ERROR,
+                    error="Recovery evidence could not be inspected safely.",
+                )
+        return RecoverySnapshot(
+            SafetyDataState.AVAILABLE,
+            items,
+            total,
+            offset + len(items) < total,
+            offset=offset,
+        )
+
+    def reconcile_recovery_item(
+        self,
+        operation_id: str,
+        action: RecoveryAction,
+    ) -> RecoveryActionResult:
+        """Revalidate and apply one backend-approved recovery recommendation."""
+        if action is not RecoveryAction.APPLY_SAFE_RECOMMENDATION:
+            return RecoveryActionResult(
+                operation_id,
+                RecoveryActionStatus.NOT_ALLOWED,
+                "That recovery action is not supported.",
+            )
+        with self._lifecycle_lock:
+            if not self._recovery_actions_available():
+                return RecoveryActionResult(
+                    operation_id,
+                    RecoveryActionStatus.NOT_ALLOWED,
+                    "Stop monitoring before applying a safe recovery action.",
+                )
+            hash_db_file = self._recovery_hash_db_file()
+            if hash_db_file is None:
+                return RecoveryActionResult(
+                    operation_id,
+                    RecoveryActionStatus.NOT_ALLOWED,
+                    "Resolved recovery metadata storage is unavailable.",
+                )
+            try:
+                journal = OperationJournal(self._journal_path)
+                operation = journal.get_operation(operation_id)
+                assessment = assess_operation(journal, operation)
+                if assessment.decision is RecoveryDecision.NEEDS_REVIEW:
+                    return RecoveryActionResult(
+                        operation_id,
+                        RecoveryActionStatus.NOT_ALLOWED,
+                        assessment.reason,
+                        manual_review_required=True,
+                    )
+                final = reconcile_operation(
+                    journal,
+                    operation_id,
+                    hash_db_file=hash_db_file,
+                )
+            except JournalError:
+                return RecoveryActionResult(
+                    operation_id,
+                    RecoveryActionStatus.FAILED,
+                    "The recovery operation is unavailable; nothing unsafe was attempted.",
+                )
+            except (OSError, RecoveryError) as error:
+                logger.warning("Safe recovery action failed: %s", error)
+                return RecoveryActionResult(
+                    operation_id,
+                    RecoveryActionStatus.FAILED,
+                    "FilePilot could not complete the safe recovery action.",
+                    manual_review_required=True,
+                )
+            if final is None:
+                result = RecoveryActionResult(
+                    operation_id,
+                    RecoveryActionStatus.RECONCILED,
+                    "The operation was reconciled using verified evidence.",
+                )
+                if (
+                    self._startup_result is not None
+                    and self._startup_result.status is StartupStatus.BLOCKED
+                ):
+                    self.bootstrap(force=True)
+                return result
+            return RecoveryActionResult(
+                operation_id,
+                RecoveryActionStatus.STILL_NEEDS_REVIEW,
+                final.reason,
+                manual_review_required=True,
+            )
+
     def bootstrap(self, *, force: bool = False) -> StartupResult:
         with self._lifecycle_lock:
             current = self.startup_result
@@ -276,12 +536,39 @@ class FilePilotService:
                 self._startup_result = result
                 self._failed_folders = ()
                 self._last_error = None
+                runtime_journal = getattr(monitor, "operation_journal", None)
+                if (
+                    self._journal_path is None
+                    and isinstance(runtime_journal, OperationJournal)
+                ):
+                    self._journal_path = runtime_journal.database_path
             self._set_monitor_state(MonitorState.STOPPED)
             return result
 
     def start(self) -> MonitorState:
         with self._lifecycle_lock:
             startup = self.startup_result or self.bootstrap()
+            monitor = self.monitor
+            if (
+                startup.status is StartupStatus.READY
+                and monitor is not None
+                and getattr(monitor, "is_running", False)
+            ):
+                if self.monitor_state is not MonitorState.RUNNING:
+                    self._set_monitor_state(MonitorState.RUNNING)
+                return MonitorState.RUNNING
+            if startup.status is StartupStatus.READY:
+                recovery_refresh = self._recovery_refresh_required()
+                if recovery_refresh is None:
+                    self._set_monitor_state(
+                        MonitorState.ERROR,
+                        error=(
+                            "Recovery evidence is unavailable; monitoring was not started"
+                        ),
+                    )
+                    return MonitorState.ERROR
+                if recovery_refresh:
+                    startup = self.bootstrap(force=True)
             if startup.status is StartupStatus.BLOCKED:
                 self._set_monitor_state(MonitorState.BLOCKED, error=startup.error)
                 return MonitorState.BLOCKED
@@ -399,6 +686,20 @@ class FilePilotService:
         with self._lifecycle_lock:
             if self.startup_status is not StartupStatus.READY or self.monitor is None:
                 return self._unavailable_start_state()
+            if not getattr(self.monitor, "is_running", False):
+                recovery_refresh = self._recovery_refresh_required()
+                if recovery_refresh is None:
+                    self._set_monitor_state(
+                        MonitorState.ERROR,
+                        error=(
+                            "Recovery evidence is unavailable; monitoring was not started"
+                        ),
+                    )
+                    return MonitorState.ERROR
+                if recovery_refresh:
+                    startup = self.bootstrap(force=True)
+                    if startup.status is not StartupStatus.READY or self.monitor is None:
+                        return self._unavailable_start_state()
             self._set_monitor_state(MonitorState.STARTING)
             try:
                 self.monitor.set_folder_active(path, True)
@@ -463,6 +764,59 @@ class FilePilotService:
 
     def shutdown(self) -> MonitorState:
         return self.stop()
+
+    def _undo_lifecycle_unavailable(
+        self,
+        operation_id: str,
+    ) -> UndoAvailability | None:
+        if self.startup_status is not StartupStatus.READY:
+            return UndoAvailability(
+                operation_id,
+                False,
+                "Undo requires FilePilot startup and recovery checks to be ready.",
+                unavailable_status=UndoStatus.NOT_ELIGIBLE,
+                manual_review_required=self.startup_status is StartupStatus.BLOCKED,
+            )
+        monitor = self.monitor
+        if (
+            self.monitor_state is not MonitorState.STOPPED
+            or (monitor is not None and getattr(monitor, "is_running", False))
+        ):
+            return UndoAvailability(
+                operation_id,
+                False,
+                "Stop monitoring before evaluating or executing Undo.",
+                unavailable_status=UndoStatus.NOT_ELIGIBLE,
+            )
+        return None
+
+    def _recovery_actions_available(self) -> bool:
+        monitor = self.monitor
+        return (
+            self.monitor_state in {MonitorState.STOPPED, MonitorState.BLOCKED}
+            and not (monitor is not None and getattr(monitor, "is_running", False))
+        )
+
+    def _recovery_hash_db_file(self) -> str | None:
+        value = (self.config or {}).get("hash_db_file")
+        if not isinstance(value, str) or not value:
+            return None
+        path = Path(value)
+        if path.is_absolute():
+            return str(path)
+        from app.config_loader import resolve_runtime_path
+
+        return str(resolve_runtime_path(value))
+
+    def _recovery_refresh_required(self) -> bool | None:
+        try:
+            journal = OperationJournal.open_existing_read_only(self._journal_path)
+            return bool(journal.read_incomplete_operations(limit=1))
+        except JournalNotFoundError:
+            return False if self._journal_path is None else None
+        except JournalError as error:
+            logger.warning("Recovery preflight failed before monitoring start: %s", error)
+            return None
 
     def _inspect_configuration(self) -> StartupResult:
         if not self._config_path.is_file():

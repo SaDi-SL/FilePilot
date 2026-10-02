@@ -1490,6 +1490,70 @@ class OperationJournal:
                 ).fetchall()
                 return [_operation_from_row(row) for row in rows]
 
+    def read_incomplete_operations(
+        self,
+        limit: int = MAX_RECENT_OPERATIONS,
+        offset: int = 0,
+    ) -> tuple[OperationRecord, ...]:
+        """Read a bounded recovery inventory without changing journal state."""
+        return self.read_incomplete_snapshot(limit, offset)[0]
+
+    def read_incomplete_snapshot(
+        self,
+        limit: int = MAX_RECENT_OPERATIONS,
+        offset: int = 0,
+    ) -> tuple[tuple[OperationRecord, ...], int]:
+        """Read one consistent bounded recovery page and total count."""
+        if not isinstance(limit, int) or isinstance(limit, bool):
+            raise JournalValidationError("limit must be an integer")
+        if limit < 1 or limit > MAX_RECENT_OPERATIONS:
+            raise JournalValidationError(
+                f"limit must be between 1 and {MAX_RECENT_OPERATIONS}"
+            )
+        if not isinstance(offset, int) or isinstance(offset, bool) or offset < 0:
+            raise JournalValidationError("offset must be a non-negative integer")
+        with self._connection() as connection:
+            with self._read_transaction(connection):
+                rows = connection.execute(
+                    """
+                    SELECT * FROM operations
+                    WHERE operation_status IN (?, ?)
+                    ORDER BY started_at_utc, operation_id
+                    LIMIT ? OFFSET ?
+                    """,
+                    (
+                        OperationStatus.OPEN.value,
+                        OperationStatus.NEEDS_REVIEW.value,
+                        limit,
+                        offset,
+                    ),
+                ).fetchall()
+                total = connection.execute(
+                    """
+                    SELECT COUNT(*) FROM operations
+                    WHERE operation_status IN (?, ?)
+                    """,
+                    (
+                        OperationStatus.OPEN.value,
+                        OperationStatus.NEEDS_REVIEW.value,
+                    ),
+                ).fetchone()[0]
+                return tuple(_operation_from_row(row) for row in rows), total
+
+    def count_incomplete_operations(self) -> int:
+        with self._connection() as connection:
+            with self._read_transaction(connection):
+                return connection.execute(
+                    """
+                    SELECT COUNT(*) FROM operations
+                    WHERE operation_status IN (?, ?)
+                    """,
+                    (
+                        OperationStatus.OPEN.value,
+                        OperationStatus.NEEDS_REVIEW.value,
+                    ),
+                ).fetchone()[0]
+
     def read_recent_operations(
         self,
         limit: int = 20,

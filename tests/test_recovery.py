@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from app import hash_manager
+from app import hash_manager, recovery
 from app.operation_journal import (
     EffectState,
     EffectType,
@@ -344,6 +344,56 @@ class RecoveryAssessmentTests(RecoveryTestCase):
 
 
 class RecoveryReconciliationTests(RecoveryTestCase):
+    def test_cleanup_preserves_temp_if_source_disappears_during_revalidation(self):
+        operation, temporary = self._temp_created(self._operation())
+        real_inspect = recovery._inspect
+        source_inspections = 0
+
+        def inspect(path, expected_hash=None):
+            nonlocal source_inspections
+            if path is not None and Path(path) == self.source:
+                source_inspections += 1
+                if source_inspections == 2 and self.source.exists():
+                    self.source.unlink()
+            return real_inspect(path, expected_hash)
+
+        with patch.object(recovery, "_inspect", side_effect=inspect):
+            self._recover()
+
+        self.assertTrue(temporary.exists())
+        recovered = self.journal.get_operation(operation.operation_id)
+        self.assertIs(recovered.operation_status, OperationStatus.NEEDS_REVIEW)
+
+    def test_staging_restores_replacement_that_arrives_at_rename_boundary(self):
+        operation = self._destination_verified(self._operation())
+        staging_dir = self.incoming / ".filepilot-remove-race"
+        staging_dir.mkdir()
+        staged = staging_dir / self.source.name
+        operation = self.journal.transition_phase(
+            operation.operation_id,
+            PhysicalPhase.DESTINATION_VERIFIED,
+            PhysicalPhase.SOURCE_STAGE_INTENT,
+            evidence=TransitionEvidence(
+                actual_destination=self.destination,
+                staging_path=staged,
+            ),
+        )
+        real_rename = recovery.os.rename
+
+        def replace_then_rename(source, destination):
+            if Path(source) == self.source:
+                self.source.unlink()
+                self.source.write_bytes(b"late replacement")
+            return real_rename(source, destination)
+
+        with patch.object(recovery.os, "rename", side_effect=replace_then_rename):
+            self._recover()
+
+        self.assertEqual(self.source.read_bytes(), b"late replacement")
+        self.assertFalse(staged.exists())
+        recovered = self.journal.get_operation(operation.operation_id)
+        self.assertIs(recovered.operation_status, OperationStatus.NEEDS_REVIEW)
+
     def test_same_volume_no_action_aborts_and_preserves_source(self):
         operation = self._rename_intent(self._operation())
 
