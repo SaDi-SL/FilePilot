@@ -1,4 +1,5 @@
 import logging
+from copy import deepcopy
 from pathlib import Path
 
 from app.classifier import build_extension_lookup
@@ -27,11 +28,13 @@ def build_destination_folders(base_folder: str, rules: dict) -> dict:
 def ensure_directories(config: dict) -> None:
     """Create all required directories if they don't exist."""
     # Watch folders
-    for folder in config.get("watch_folders", []):
-        Path(folder["path"]).mkdir(parents=True, exist_ok=True)
+    watch_folders = config.get("watch_folders", [])
+    for folder in watch_folders:
+        if folder.get("active", True):
+            Path(folder["path"]).mkdir(parents=True, exist_ok=True)
 
     # Legacy single source folder (backwards compat)
-    if "source_folder" in config:
+    if "watch_folders" not in config and "source_folder" in config:
         Path(config["source_folder"]).mkdir(parents=True, exist_ok=True)
 
     organized_root = Path(config["organized_base_folder"]).resolve(strict=False)
@@ -64,7 +67,12 @@ def build_monitor():
     Backwards compatible: if config has legacy source_folder,
     MultiFolderMonitor.migrate_legacy_config() handles the conversion.
     """
-    config = load_config()
+    return build_monitor_from_config(load_config())
+
+
+def build_monitor_from_config(config: dict):
+    """Build runtime infrastructure from one already-read configuration."""
+    config = deepcopy(config)
 
     base_folder = config.get("organized_base_folder", "organized")
     rules = config.get("rules", {})

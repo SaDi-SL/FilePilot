@@ -38,6 +38,16 @@ from app.application_service import (
     UndoStatus,
 )
 from app.ui.qt.service_bridge import QtServiceBridge
+from app.product_configuration import (
+    ConfigurationDataState,
+    ConfigurationSaveResult,
+    ConfigurationSaveStatus,
+    ConfigurationValidationResult,
+    ProductConfigurationCandidate,
+    ProductConfigurationSnapshot,
+    ProductRule,
+    ProductWatchFolder,
+)
 
 
 class FakeService:
@@ -91,6 +101,18 @@ class FakeService:
         self.recovery_snapshot_to_return = RecoverySnapshot(
             SafetyDataState.AVAILABLE
         )
+        self.configuration_snapshot_to_return = ProductConfigurationSnapshot(
+            ConfigurationDataState.UNAVAILABLE,
+            error="Configuration unavailable in test double",
+        )
+        self.configuration_read_calls = 0
+        self.configuration_read_thread_ids = []
+        self.configuration_validation_calls = []
+        self.configuration_validation_entered = threading.Event()
+        self.release_configuration_validation = threading.Event()
+        self.release_configuration_validation.set()
+        self.candidate_classification_calls = []
+        self.configuration_save_calls = []
 
     def subscribe_state(self, callback):
         self.state_subscribers.append(callback)
@@ -200,6 +222,34 @@ class FakeService:
                 "Recovered safely",
             )
 
+    def get_product_configuration(self):
+        with self._operation():
+            self.configuration_read_calls += 1
+            self.configuration_read_thread_ids.append(threading.get_ident())
+            return self.configuration_snapshot_to_return
+
+    def validate_product_configuration(self, candidate):
+        with self._operation():
+            self.configuration_validation_calls.append(candidate)
+            self.configuration_validation_entered.set()
+            if not self.release_configuration_validation.wait(3):
+                raise RuntimeError("configuration validation timed out")
+            return ConfigurationValidationResult(True, candidate)
+
+    def preview_candidate_classification(self, rules, filename):
+        with self._operation():
+            self.candidate_classification_calls.append((rules, filename))
+            return (rules, filename)
+
+    def save_product_configuration(self, candidate, expected_revision):
+        with self._operation():
+            self.configuration_save_calls.append((candidate, expected_revision))
+            return ConfigurationSaveResult(
+                ConfigurationSaveStatus.SAVED,
+                "Saved",
+                self.configuration_snapshot_to_return,
+            )
+
     def emit_state(self, state):
         for callback in tuple(self.state_subscribers):
             callback(state)
@@ -261,6 +311,17 @@ class QtServiceBridgeTests(unittest.TestCase):
         spy = QSignalSpy(bridge.startup_completed)
         bridge.bootstrap()
         self._wait_until(lambda: spy.count() == 1)
+
+    @staticmethod
+    def _configuration_candidate(extension=".txt"):
+        return ProductConfigurationCandidate(
+            watch_folders=(
+                ProductWatchFolder(Path("C:/Inbox"), "Incoming", True),
+            ),
+            organized_folder=Path("C:/Organized"),
+            archive_by_date=False,
+            rules=(ProductRule("documents", (extension,)),),
+        )
 
     def test_bootstrap_runs_outside_gui_thread(self):
         service = FakeService()
@@ -729,6 +790,80 @@ class QtServiceBridgeTests(unittest.TestCase):
         ]
         self.assertEqual(len(worker_ids), 1)
         self.assertNotEqual(worker_ids[0], threading.get_ident())
+
+    def test_configuration_read_runs_off_gui_thread_after_bootstrap(self):
+        service = FakeService()
+        service.configuration_snapshot_to_return = ProductConfigurationSnapshot(
+            ConfigurationDataState.AVAILABLE,
+            "revision",
+        )
+        bridge = self._bridge(service)
+        changed = QSignalSpy(bridge.configuration_snapshot_changed)
+
+        self._bootstrap(bridge)
+        self._wait_until(lambda: changed.count() == 1)
+
+        self.assertEqual(service.configuration_read_calls, 1)
+        self.assertNotEqual(
+            service.configuration_read_thread_ids[0],
+            threading.get_ident(),
+        )
+        self.assertEqual(bridge.configuration_snapshot.revision, "revision")
+
+    def test_configuration_validation_ignores_stale_response_per_page(self):
+        service = FakeService()
+        service.release_configuration_validation.clear()
+        bridge = self._bridge(service)
+        changed = QSignalSpy(bridge.configuration_validation_changed)
+        first = self._configuration_candidate(".txt")
+        latest = self._configuration_candidate(".pdf")
+
+        bridge.request_configuration_validation("rules", first)
+        self.assertTrue(service.configuration_validation_entered.wait(1))
+        bridge.request_configuration_validation("rules", latest)
+        service.release_configuration_validation.set()
+
+        self._wait_until(
+            lambda: len(service.configuration_validation_calls) == 2
+            and changed.count() == 1
+        )
+        self.assertIs(service.configuration_validation_calls[0], first)
+        self.assertIs(service.configuration_validation_calls[1], latest)
+        self.assertEqual(changed.at(0)[0], "rules")
+        self.assertIs(changed.at(0)[1].candidate, latest)
+
+    def test_configuration_validation_keeps_page_contexts_independent(self):
+        service = FakeService()
+        bridge = self._bridge(service)
+        changed = QSignalSpy(bridge.configuration_validation_changed)
+        rules_candidate = self._configuration_candidate(".txt")
+        folders_candidate = self._configuration_candidate(".pdf")
+
+        bridge.request_configuration_validation("rules", rules_candidate)
+        bridge.request_configuration_validation("folders", folders_candidate)
+
+        self._wait_until(lambda: changed.count() == 2)
+        contexts = {changed.at(index)[0] for index in range(changed.count())}
+        self.assertEqual(contexts, {"rules", "folders"})
+
+    def test_configuration_save_is_serialized_and_not_duplicated(self):
+        service = FakeService()
+        bridge = self._bridge(service)
+        started = QSignalSpy(bridge.configuration_save_started)
+        completed = QSignalSpy(bridge.configuration_save_completed)
+        candidate = self._configuration_candidate()
+
+        bridge.request_configuration_save("rules", candidate, "revision")
+        bridge.request_configuration_save("rules", candidate, "revision")
+
+        self._wait_until(lambda: completed.count() == 1)
+        self.assertEqual(started.count(), 1)
+        self.assertEqual(len(service.configuration_save_calls), 1)
+        self.assertEqual(completed.at(0)[0], "rules")
+        self.assertEqual(
+            completed.at(0)[1].status,
+            ConfigurationSaveStatus.SAVED,
+        )
 
 
 if __name__ == "__main__":

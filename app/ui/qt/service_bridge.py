@@ -11,7 +11,10 @@ from app.application_service import (
     ActivityRecord,
     FilePilotService,
     MonitorState,
+    ProductConfigurationCandidate,
+    ProductConfigurationSnapshot,
     ProductDataState,
+    ProductRule,
     ProductMetrics,
     ProductSnapshot,
     RecoveryAction,
@@ -46,6 +49,11 @@ class _ServiceWorker(QObject):
     recovery_finished = Signal(int, object, int)
     recovery_action_finished = Signal(int, object, int)
     safety_failed = Signal(str, int, str, int)
+    configuration_read_finished = Signal(int, object, int)
+    configuration_validation_finished = Signal(int, str, object, int)
+    candidate_classification_finished = Signal(int, str, object, int)
+    configuration_save_finished = Signal(int, str, object, int)
+    configuration_failed = Signal(str, int, str, str, int)
 
     def __init__(self, service: FilePilotService) -> None:
         super().__init__()
@@ -158,6 +166,95 @@ class _ServiceWorker(QObject):
             self.recovery_action_finished,
         )
 
+    @Slot(int)
+    def read_configuration(self, request_id: int) -> None:
+        self._run_configuration_request(
+            "configuration_read",
+            request_id,
+            "",
+            lambda: self._service.get_product_configuration(),
+            self.configuration_read_finished,
+        )
+
+    @Slot(int, str, object)
+    def validate_configuration(
+        self,
+        request_id: int,
+        context: str,
+        candidate: ProductConfigurationCandidate,
+    ) -> None:
+        self._run_configuration_request(
+            "configuration_validation",
+            request_id,
+            context,
+            lambda: self._service.validate_product_configuration(candidate),
+            self.configuration_validation_finished,
+        )
+
+    @Slot(int, str, object, str)
+    def preview_candidate_classification(
+        self,
+        request_id: int,
+        context: str,
+        rules: tuple[ProductRule, ...],
+        filename: str,
+    ) -> None:
+        self._run_configuration_request(
+            "candidate_classification",
+            request_id,
+            context,
+            lambda: self._service.preview_candidate_classification(rules, filename),
+            self.candidate_classification_finished,
+        )
+
+    @Slot(int, str, object, str)
+    def save_configuration(
+        self,
+        request_id: int,
+        context: str,
+        candidate: ProductConfigurationCandidate,
+        expected_revision: str,
+    ) -> None:
+        self._run_configuration_request(
+            "configuration_save",
+            request_id,
+            context,
+            lambda: self._service.save_product_configuration(
+                candidate,
+                expected_revision,
+            ),
+            self.configuration_save_finished,
+        )
+
+    def _run_configuration_request(
+        self,
+        name: str,
+        request_id: int,
+        context: str,
+        operation,
+        completed_signal,
+    ) -> None:
+        try:
+            result = operation()
+        except Exception:
+            self.configuration_failed.emit(
+                name,
+                request_id,
+                context,
+                "FilePilot could not complete the configuration request.",
+                threading.get_ident(),
+            )
+            return
+        if context:
+            completed_signal.emit(
+                request_id,
+                context,
+                result,
+                threading.get_ident(),
+            )
+        else:
+            completed_signal.emit(request_id, result, threading.get_ident())
+
     def _run_safety_request(
         self,
         name: str,
@@ -201,6 +298,12 @@ class QtServiceBridge(QObject):
     recovery_action_started = Signal(str)
     recovery_action_completed = Signal(object)
     safety_request_failed = Signal(str, str)
+    configuration_snapshot_changed = Signal(object)
+    configuration_validation_changed = Signal(str, object)
+    candidate_classification_changed = Signal(str, object)
+    configuration_save_started = Signal(str)
+    configuration_save_completed = Signal(str, object)
+    configuration_request_failed = Signal(str, str, str)
     command_completed = Signal(str, object)
     command_failed = Signal(str, str)
     operation_thread_observed = Signal(str, int)
@@ -216,6 +319,10 @@ class QtServiceBridge(QObject):
     _undo_worker = Signal(int, str)
     _recovery_worker = Signal(int, int, int)
     _recovery_action_worker = Signal(int, str, object)
+    _configuration_read_worker = Signal(int)
+    _configuration_validation_worker = Signal(int, str, object)
+    _candidate_classification_worker = Signal(int, str, object, str)
+    _configuration_save_worker = Signal(int, str, object, str)
     _state_relay = Signal(object)
     _activity_relay = Signal(object)
 
@@ -272,6 +379,15 @@ class QtServiceBridge(QObject):
         self._recovery_action_active = False
         self._active_recovery_action_id: int | None = None
         self._active_recovery_operation_id: str | None = None
+        self._configuration_snapshot = ProductConfigurationSnapshot.loading()
+        self._configuration_read_sequence = 0
+        self._configuration_validation_sequence = 0
+        self._configuration_validation_requests: dict[str, int] = {}
+        self._candidate_classification_sequence = 0
+        self._candidate_classification_requests: dict[str, int] = {}
+        self._configuration_save_sequence = 0
+        self._configuration_save_active = False
+        self._active_configuration_save_id: int | None = None
 
         self._unsubscribe_state = None
         self._unsubscribe_activity = None
@@ -322,6 +438,22 @@ class QtServiceBridge(QObject):
             self._worker.apply_recovery_action,
             Qt.ConnectionType.QueuedConnection,
         )
+        self._configuration_read_worker.connect(
+            self._worker.read_configuration,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self._configuration_validation_worker.connect(
+            self._worker.validate_configuration,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self._candidate_classification_worker.connect(
+            self._worker.preview_candidate_classification,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self._configuration_save_worker.connect(
+            self._worker.save_configuration,
+            Qt.ConnectionType.QueuedConnection,
+        )
         self._state_relay.connect(
             self._accept_service_state,
             Qt.ConnectionType.QueuedConnection,
@@ -347,6 +479,19 @@ class QtServiceBridge(QObject):
             self._on_recovery_action_finished
         )
         self._worker.safety_failed.connect(self._on_safety_failed)
+        self._worker.configuration_read_finished.connect(
+            self._on_configuration_read_finished
+        )
+        self._worker.configuration_validation_finished.connect(
+            self._on_configuration_validation_finished
+        )
+        self._worker.candidate_classification_finished.connect(
+            self._on_candidate_classification_finished
+        )
+        self._worker.configuration_save_finished.connect(
+            self._on_configuration_save_finished
+        )
+        self._worker.configuration_failed.connect(self._on_configuration_failed)
         self._worker.shutdown_finished.connect(
             self._worker.deleteLater,
             Qt.ConnectionType.DirectConnection,
@@ -373,6 +518,10 @@ class QtServiceBridge(QObject):
     @property
     def recovery_snapshot(self) -> RecoverySnapshot:
         return self._recovery_snapshot
+
+    @property
+    def configuration_snapshot(self) -> ProductConfigurationSnapshot:
+        return self._configuration_snapshot
 
     @Slot()
     def bootstrap(self) -> None:
@@ -470,6 +619,84 @@ class QtServiceBridge(QObject):
             self._recovery_action_sequence,
             operation_id,
             action,
+        )
+
+    @Slot()
+    def request_configuration_refresh(self) -> None:
+        if self._closing:
+            return
+        self._configuration_read_sequence += 1
+        self._configuration_read_worker.emit(self._configuration_read_sequence)
+
+    @Slot(str, object)
+    def request_configuration_validation(
+        self,
+        context: str,
+        candidate: ProductConfigurationCandidate,
+    ) -> None:
+        if self._closing:
+            return
+        self._configuration_validation_sequence += 1
+        page_context = context.split(":", 1)[0]
+        self._configuration_validation_requests = {
+            key: request_id
+            for key, request_id in self._configuration_validation_requests.items()
+            if key.split(":", 1)[0] != page_context
+        }
+        self._configuration_validation_requests[context] = (
+            self._configuration_validation_sequence
+        )
+        self._configuration_validation_worker.emit(
+            self._configuration_validation_sequence,
+            context,
+            candidate,
+        )
+
+    @Slot(str, object, str)
+    def request_candidate_classification(
+        self,
+        context: str,
+        rules: tuple[ProductRule, ...],
+        filename: str,
+    ) -> None:
+        if self._closing:
+            return
+        self._candidate_classification_sequence += 1
+        self._candidate_classification_requests[context] = (
+            self._candidate_classification_sequence
+        )
+        self._candidate_classification_worker.emit(
+            self._candidate_classification_sequence,
+            context,
+            rules,
+            filename,
+        )
+
+    @Slot(str, object, str)
+    def request_configuration_save(
+        self,
+        context: str,
+        candidate: ProductConfigurationCandidate,
+        expected_revision: str,
+    ) -> None:
+        if self._closing:
+            return
+        if self._configuration_save_active:
+            self.configuration_request_failed.emit(
+                "configuration_save",
+                context,
+                "Another configuration save is already in progress.",
+            )
+            return
+        self._configuration_save_sequence += 1
+        self._active_configuration_save_id = self._configuration_save_sequence
+        self._configuration_save_active = True
+        self.configuration_save_started.emit(context)
+        self._configuration_save_worker.emit(
+            self._configuration_save_sequence,
+            context,
+            candidate,
+            expected_revision,
         )
 
     @Slot()
@@ -595,6 +822,7 @@ class QtServiceBridge(QObject):
         self._publish_snapshot(self._snapshot_from_service())
         self.request_product_refresh(self._product_limit)
         self.request_recovery_refresh(self._pending_recovery_limit, 0)
+        self.request_configuration_refresh()
 
     @Slot(int, object, int, int)
     def _on_product_read_finished(
@@ -758,6 +986,108 @@ class QtServiceBridge(QObject):
         self.request_recovery_refresh(self._pending_recovery_limit, 0)
         self.request_product_refresh(self._product_limit)
 
+    @Slot(int, object, int)
+    def _on_configuration_read_finished(
+        self,
+        request_id: int,
+        snapshot: ProductConfigurationSnapshot,
+        worker_thread_id: int,
+    ) -> None:
+        if request_id != self._configuration_read_sequence or self._closing:
+            return
+        self.operation_thread_observed.emit("configuration_read", worker_thread_id)
+        self._configuration_snapshot = snapshot
+        self.configuration_snapshot_changed.emit(snapshot)
+
+    @Slot(int, str, object, int)
+    def _on_configuration_validation_finished(
+        self,
+        request_id: int,
+        context: str,
+        result: object,
+        worker_thread_id: int,
+    ) -> None:
+        if (
+            request_id != self._configuration_validation_requests.get(context)
+            or self._closing
+        ):
+            return
+        self._configuration_validation_requests.pop(context, None)
+        self.operation_thread_observed.emit(
+            "configuration_validation",
+            worker_thread_id,
+        )
+        self.configuration_validation_changed.emit(context, result)
+
+    @Slot(int, str, object, int)
+    def _on_candidate_classification_finished(
+        self,
+        request_id: int,
+        context: str,
+        result: object,
+        worker_thread_id: int,
+    ) -> None:
+        if (
+            request_id != self._candidate_classification_requests.get(context)
+            or self._closing
+        ):
+            return
+        self.operation_thread_observed.emit(
+            "candidate_classification",
+            worker_thread_id,
+        )
+        self.candidate_classification_changed.emit(context, result)
+
+    @Slot(int, str, object, int)
+    def _on_configuration_save_finished(
+        self,
+        request_id: int,
+        context: str,
+        result: object,
+        worker_thread_id: int,
+    ) -> None:
+        if request_id != self._active_configuration_save_id:
+            return
+        self._configuration_save_active = False
+        self._active_configuration_save_id = None
+        if self._closing:
+            return
+        self.operation_thread_observed.emit("configuration_save", worker_thread_id)
+        snapshot = getattr(result, "snapshot", None)
+        if snapshot is not None:
+            self._configuration_snapshot = snapshot
+            self.configuration_snapshot_changed.emit(snapshot)
+        self.configuration_save_completed.emit(context, result)
+
+    @Slot(str, int, str, str, int)
+    def _on_configuration_failed(
+        self,
+        name: str,
+        request_id: int,
+        context: str,
+        message: str,
+        worker_thread_id: int,
+    ) -> None:
+        if name == "configuration_read":
+            accepted = request_id == self._configuration_read_sequence
+        elif name == "configuration_validation":
+            accepted = request_id == self._configuration_validation_requests.get(context)
+            if accepted:
+                self._configuration_validation_requests.pop(context, None)
+        elif name == "candidate_classification":
+            accepted = request_id == self._candidate_classification_requests.get(context)
+        elif name == "configuration_save":
+            accepted = request_id == self._active_configuration_save_id
+            if accepted:
+                self._configuration_save_active = False
+                self._active_configuration_save_id = None
+        else:
+            accepted = False
+        if not accepted or self._closing:
+            return
+        self.operation_thread_observed.emit(name, worker_thread_id)
+        self.configuration_request_failed.emit(name, context, message)
+
     @Slot(str, int, str, int)
     def _on_safety_failed(
         self,
@@ -889,6 +1219,7 @@ class QtServiceBridge(QObject):
         self.operation_thread_observed.emit(command, worker_thread_id)
         self.command_completed.emit(command, result)
         self._publish_snapshot(self._snapshot_from_service())
+        self.request_configuration_refresh()
         if desired_changed:
             self._dispatch_lifecycle_command()
         else:

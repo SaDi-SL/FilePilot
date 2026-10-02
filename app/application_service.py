@@ -19,6 +19,22 @@ from app.operation_journal import (
     JournalNotFoundError,
     OperationJournal,
 )
+from app.product_configuration import (
+    CandidateClassificationPreview,
+    ConfigurationDataState,
+    ConfigurationSaveResult,
+    ConfigurationSaveStatus,
+    ConfigurationValidationResult,
+    ProductConfigurationCandidate,
+    ProductConfigurationError,
+    ProductConfigurationSnapshot,
+    ProductConfigurationStore,
+    ProductFolderSettings,
+    ProductRule,
+    ProductWatchFolder,
+    StaleConfigurationError,
+    configuration_revision,
+)
 from app.product_read_model import (
     ActivityRecord,
     ActivityStatus,
@@ -149,6 +165,7 @@ class FilePilotService:
         self._monitor_builder = monitor_builder
         self._journal_path = Path(journal_path) if journal_path is not None else None
         self._product_reader = product_reader or ProductReadModel(journal_path)
+        self._configuration_store = ProductConfigurationStore(self._config_path)
         self._lifecycle_lock = threading.RLock()
         self._state_lock = threading.Lock()
         self._subscriber_lock = threading.Lock()
@@ -227,6 +244,181 @@ class FilePilotService:
 
     def get_recent_activity(self, limit: int = 20) -> tuple[ActivityRecord, ...]:
         return self.get_product_snapshot(limit=limit).activity
+
+    def get_product_configuration(self) -> ProductConfigurationSnapshot:
+        """Read one immutable product configuration snapshot."""
+        with self._lifecycle_lock:
+            return self._configuration_store.read_snapshot(
+                changes_allowed=self._configuration_changes_allowed()
+            )
+
+    def validate_product_configuration(
+        self,
+        candidate: ProductConfigurationCandidate,
+    ) -> ConfigurationValidationResult:
+        """Validate and normalize a complete candidate without mutation."""
+        return self._configuration_store.validate(candidate)
+
+    def preview_candidate_classification(
+        self,
+        rules: tuple[ProductRule, ...],
+        filename: str,
+    ) -> CandidateClassificationPreview:
+        """Classify a filename using only the unsaved extension-rule candidate."""
+        return self._configuration_store.preview_classification(rules, filename)
+
+    def save_product_configuration(
+        self,
+        candidate: ProductConfigurationCandidate,
+        expected_revision: str,
+    ) -> ConfigurationSaveResult:
+        """Atomically persist, rebuild, or roll back one complete candidate."""
+        with self._lifecycle_lock:
+            if not self._configuration_changes_allowed():
+                return ConfigurationSaveResult(
+                    ConfigurationSaveStatus.NOT_ALLOWED,
+                    "Stop monitoring before applying folder or rule changes.",
+                    self._configuration_store.read_snapshot(changes_allowed=False),
+                )
+            try:
+                current, revision, previous_bytes = (
+                    self._configuration_store.read_document()
+                )
+            except (OSError, json.JSONDecodeError, ProductConfigurationError) as error:
+                return ConfigurationSaveResult(
+                    ConfigurationSaveStatus.WRITE_FAILED,
+                    f"Configuration could not be read safely: {error}",
+                )
+            if revision != expected_revision:
+                return ConfigurationSaveResult(
+                    ConfigurationSaveStatus.STALE,
+                    "Configuration changed elsewhere. Refresh before saving.",
+                    self._configuration_store.read_snapshot(changes_allowed=True),
+                )
+
+            try:
+                validation = self._configuration_store.validate(candidate)
+            except (AttributeError, TypeError, ValueError) as error:
+                return ConfigurationSaveResult(
+                    ConfigurationSaveStatus.INVALID,
+                    f"Configuration candidate is malformed: {error}",
+                    self._configuration_store.read_snapshot(changes_allowed=True),
+                )
+            if not validation.valid:
+                return ConfigurationSaveResult(
+                    ConfigurationSaveStatus.INVALID,
+                    "Fix configuration validation issues before saving.",
+                    self._configuration_store.read_snapshot(changes_allowed=True),
+                    validation.issues,
+                )
+            try:
+                document = self._configuration_store.document_for_candidate(
+                    current,
+                    validation.candidate,
+                )
+            except ProductConfigurationError as error:
+                return ConfigurationSaveResult(
+                    ConfigurationSaveStatus.INVALID,
+                    str(error),
+                    issues=validation.issues,
+                )
+
+            with self._state_lock:
+                previous_runtime = (
+                    self._monitor,
+                    self._config,
+                    self._startup_result,
+                    self._monitor_state,
+                    self._failed_folders,
+                    self._last_error,
+                )
+            try:
+                self._configuration_store.write_document_atomic(
+                    document,
+                    expected_revision=revision,
+                )
+            except StaleConfigurationError:
+                return ConfigurationSaveResult(
+                    ConfigurationSaveStatus.STALE,
+                    "Configuration changed elsewhere. Refresh before saving.",
+                    self._configuration_store.read_snapshot(changes_allowed=True),
+                )
+            except (OSError, ProductConfigurationError) as error:
+                return ConfigurationSaveResult(
+                    ConfigurationSaveStatus.WRITE_FAILED,
+                    f"Configuration was not saved: {error}",
+                    self._configuration_store.read_snapshot(changes_allowed=True),
+                )
+
+            try:
+                rebuilt = self.bootstrap(force=True)
+            except Exception as error:
+                logger.error(
+                    "Configuration runtime reload failed unexpectedly",
+                    exc_info=True,
+                )
+                rebuilt = StartupResult(
+                    StartupStatus.ERROR,
+                    config=document,
+                    error=str(error),
+                )
+            if rebuilt.status is StartupStatus.READY:
+                snapshot = self._configuration_store.read_snapshot(
+                    changes_allowed=True
+                )
+                return ConfigurationSaveResult(
+                    ConfigurationSaveStatus.SAVED,
+                    "Configuration saved. Monitoring remains stopped.",
+                    snapshot,
+                )
+
+            try:
+                self._configuration_store.write_bytes_atomic(
+                    previous_bytes,
+                    expected_revision=configuration_revision(document),
+                )
+            except (OSError, ProductConfigurationError) as rollback_error:
+                message = rebuilt.error or "Runtime reload failed"
+                self._set_monitor_state(
+                    MonitorState.ERROR,
+                    error=(
+                        f"{message}; configuration rollback failed: {rollback_error}"
+                    ),
+                )
+                return ConfigurationSaveResult(
+                    ConfigurationSaveStatus.ROLLBACK_FAILED,
+                    "Runtime reload and configuration rollback failed. Monitoring remains stopped.",
+                    self._configuration_store.read_snapshot(changes_allowed=False),
+                )
+
+            (
+                previous_monitor,
+                previous_config,
+                previous_startup,
+                previous_state,
+                previous_failed,
+                previous_error,
+            ) = previous_runtime
+            with self._state_lock:
+                self._monitor = previous_monitor
+                self._config = previous_config
+                self._startup_result = previous_startup
+                self._monitor_state = previous_state
+                self._failed_folders = previous_failed
+                self._last_error = previous_error
+            self._set_monitor_state(
+                previous_state,
+                error=previous_error,
+                failed_folders=previous_failed,
+            )
+            return ConfigurationSaveResult(
+                ConfigurationSaveStatus.RELOAD_FAILED,
+                (
+                    "The candidate could not be loaded, so FilePilot restored the "
+                    "previous configuration and runtime."
+                ),
+                self._configuration_store.read_snapshot(changes_allowed=True),
+            )
 
     def preview_file(self, source_file: str | Path) -> OperationPreview:
         """Preview one source through the configured non-mutating planner."""
@@ -486,9 +678,11 @@ class FilePilotService:
             try:
                 builder = self._monitor_builder
                 if builder is None:
-                    from app.main import build_monitor
-                    builder = build_monitor
-                config, monitor = builder()
+                    from app.main import build_monitor_from_config
+
+                    config, monitor = build_monitor_from_config(inspected.config or {})
+                else:
+                    config, monitor = builder()
             except RecoveryBlockedError as error:
                 result = StartupResult(
                     StartupStatus.BLOCKED,
@@ -524,7 +718,22 @@ class FilePilotService:
                 self._set_monitor_state(MonitorState.ERROR, error=str(error))
                 return result
 
-            self._bind_activity_callback(monitor)
+            try:
+                self._bind_activity_callback(monitor)
+            except Exception as error:
+                logger.error("FilePilot monitor binding failed", exc_info=True)
+                try:
+                    monitor.stop_all()
+                except Exception:
+                    logger.error("FilePilot monitor cleanup failed", exc_info=True)
+                result = StartupResult(
+                    StartupStatus.ERROR,
+                    config=inspected.config,
+                    error=str(error),
+                )
+                self._set_startup_result(result)
+                self._set_monitor_state(MonitorState.ERROR, error=str(error))
+                return result
             result = StartupResult(
                 StartupStatus.READY,
                 config=config,
@@ -790,6 +999,15 @@ class FilePilotService:
             )
         return None
 
+    def _configuration_changes_allowed(self) -> bool:
+        monitor = self.monitor
+        return (
+            self.startup_status is StartupStatus.READY
+            and self.monitor_state is MonitorState.STOPPED
+            and monitor is not None
+            and not getattr(monitor, "is_running", False)
+        )
+
     def _recovery_actions_available(self) -> bool:
         monitor = self.monitor
         return (
@@ -854,7 +1072,7 @@ class FilePilotService:
             and bool(item["path"].strip())
             for item in folders
         )
-        return has_source or has_watch
+        return has_watch if isinstance(folders, list) else has_source
 
     def _unavailable_start_state(self) -> MonitorState:
         startup = self.startup_status

@@ -10,9 +10,11 @@ from app.branding import APP_NAME, APP_VERSION
 from app.ui.qt.icons import navigation_icon
 from app.ui.qt.navigation import NAVIGATION_ITEMS, NavigationSidebar
 from app.ui.qt.pages.activity import ActivityPage
+from app.ui.qt.pages.folders import FoldersPage
 from app.ui.qt.pages.overview import OverviewPage
 from app.ui.qt.pages.placeholder import PlaceholderPage
 from app.ui.qt.pages.recovery import RecoveryPage
+from app.ui.qt.pages.rules import RulesPage
 from app.ui.qt.service_bridge import QtServiceBridge
 
 
@@ -67,6 +69,14 @@ class MainWindow(QMainWindow):
         self._page_indexes["activity"] = self.page_stack.addWidget(activity)
         self.activity_page = activity
 
+        rules = RulesPage(self.bridge)
+        self._page_indexes["rules"] = self.page_stack.addWidget(rules)
+        self.rules_page = rules
+
+        folders = FoldersPage(self.bridge)
+        self._page_indexes["folders"] = self.page_stack.addWidget(folders)
+        self.folders_page = folders
+
         if hasattr(self.bridge, "recovery_snapshot_changed"):
             recovery = RecoveryPage(self.bridge)
             self._page_indexes["recovery"] = self.page_stack.addWidget(recovery)
@@ -118,6 +128,10 @@ class MainWindow(QMainWindow):
             request = getattr(self.bridge, "request_recovery_refresh", None)
             if request is not None:
                 request(100)
+        elif key in {"rules", "folders"}:
+            request = getattr(self.bridge, "request_configuration_refresh", None)
+            if request is not None:
+                request()
 
     def resizeEvent(self, event) -> None:
         self.navigation.set_compact(event.size().width() < self.COMPACT_THRESHOLD)
