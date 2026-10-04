@@ -353,6 +353,7 @@ class ProductConfigurationStore:
         document["source_folder"] = str(legacy_source)
         document["organized_base_folder"] = str(normalized.organized_folder)
         document["archive_by_date"] = normalized.archive_by_date
+        document["first_run_completed"] = True
         document["rules"] = {
             rule.category: list(rule.extensions) for rule in normalized.rules
         }

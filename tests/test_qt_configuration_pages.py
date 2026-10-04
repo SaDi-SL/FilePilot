@@ -262,6 +262,25 @@ class QtConfigurationPageTests(unittest.TestCase):
         self.assertEqual(page.watch_tree.topLevelItem(1).text(0), "Inactive | Ready")
         self.assertEqual(page.destination_input.text(), str(self.organized))
 
+    def test_setup_required_lifecycle_allows_valid_folder_save(self):
+        bridge = ConfigurationBridgeStub(self.snapshot)
+        bridge.snapshot = ServiceSnapshot(
+            StartupStatus.SETUP_REQUIRED,
+            MonitorState.STOPPED,
+        )
+        page = FoldersPage(bridge)
+        page.destination_input.setText(str(self.second))
+        valid = ConfigurationValidationResult(True, page._candidate())
+
+        bridge.configuration_validation_changed.emit(
+            page._validation_context(),
+            valid,
+        )
+
+        self.assertTrue(page.save_button.isEnabled())
+        page._save()
+        self.assertEqual(len(bridge.save_requests), 1)
+
     def test_folder_toggle_builds_complete_candidate_without_io(self):
         bridge = ConfigurationBridgeStub(self.snapshot)
         page = FoldersPage(bridge)

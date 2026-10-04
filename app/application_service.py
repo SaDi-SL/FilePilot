@@ -1125,10 +1125,13 @@ class FilePilotService:
 
     def _configuration_changes_allowed(self) -> bool:
         monitor = self.monitor
+        setup_in_progress = (
+            self.startup_status is StartupStatus.SETUP_REQUIRED and monitor is None
+        )
         return (
-            self.startup_status is StartupStatus.READY
+            (self.startup_status is StartupStatus.READY or setup_in_progress)
             and self.monitor_state is MonitorState.STOPPED
-            and monitor is not None
+            and (monitor is not None or setup_in_progress)
             and not getattr(monitor, "is_running", False)
         )
 

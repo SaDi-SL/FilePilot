@@ -170,6 +170,7 @@ class QtOverviewTests(unittest.TestCase):
                 "Setup required",
             )
             self.assertFalse(page.state_panel.start_button.isEnabled())
+            self.assertIn("Open Folders", page.state_panel.message_label.text())
             self.assertEqual(list(root.iterdir()), [])
             self.assertEqual(bridge.start_calls, 0)
 

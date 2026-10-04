@@ -77,8 +77,8 @@ class WindowsCalendarProvider:
     """
 
     def __init__(self, ics_output_dir: Path | None = None) -> None:
-        from app.config_loader import get_runtime_base_dir
-        self.output_dir = ics_output_dir or (get_runtime_base_dir() / "reminders")
+        from app.application_paths import get_application_paths
+        self.output_dir = ics_output_dir or get_application_paths().reminders_dir
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
     def add_reminder(

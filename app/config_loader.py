@@ -1,18 +1,18 @@
 import json
-import shutil
-import sys
+import os
+import tempfile
 from pathlib import Path
+
+from app.application_paths import get_application_paths
 
 def get_runtime_base_dir() -> Path:
     """
-    Return the base directory at runtime:
-    - In development mode: project root
-    - In exe mode: directory of the exe
-    """
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent
+    Return the writable runtime root.
 
-    return Path(__file__).resolve().parent.parent
+    Source mode retains the repository-root behavior. Installed mode uses the
+    current user's LocalAppData directory and never writes beside the EXE.
+    """
+    return get_application_paths().user_data_root
 
 
 def get_bundle_base_dir() -> Path:
@@ -20,33 +20,55 @@ def get_bundle_base_dir() -> Path:
     Return PyInstaller internal files directory when built,
     or project root during development.
     """
-    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
-        return Path(sys._MEIPASS)
+    return get_application_paths().resource_root
 
-    return Path(__file__).resolve().parent.parent
+
+def get_resource_path(*parts: str) -> Path:
+    """Return a read-only application resource path."""
+    return get_application_paths().resource(*parts)
 
 
 def get_external_config_path() -> Path:
     """Return the runtime config path without creating or copying anything."""
-    return get_runtime_base_dir() / "config" / "config.json"
+    return get_application_paths().config_file
 
 
 def ensure_external_config_exists() -> Path:
     """
-    Ensure config/config.json exists next to the app.
-    If missing, copy it from the bundled version.
+    Seed a missing user config from the sanitized bundled defaults.
+
+    The exclusive create guarantees that an existing user configuration is
+    never overwritten during first run or an upgrade.
     """
     bundle_base = get_bundle_base_dir()
     external_config_file = get_external_config_path()
     external_config_dir = external_config_file.parent
 
-    bundled_config_file = bundle_base / "config" / "config.json"
+    bundled_config_file = bundle_base / "config" / "default_config.json"
 
     external_config_dir.mkdir(parents=True, exist_ok=True)
 
     if not external_config_file.exists():
         if bundled_config_file.exists():
-            shutil.copy2(bundled_config_file, external_config_file)
+            temporary_name = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    mode="wb",
+                    prefix=".config-",
+                    suffix=".tmp",
+                    dir=external_config_dir,
+                    delete=False,
+                ) as destination:
+                    temporary_name = destination.name
+                    destination.write(bundled_config_file.read_bytes())
+                    destination.flush()
+                    os.fsync(destination.fileno())
+                os.link(temporary_name, external_config_file)
+            except FileExistsError:
+                pass
+            finally:
+                if temporary_name is not None:
+                    Path(temporary_name).unlink(missing_ok=True)
         else:
             raise FileNotFoundError(
                 f"Bundled config file not found: {bundled_config_file}"

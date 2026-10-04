@@ -480,7 +480,8 @@ class FoldersPage(QWidget):
 
     def _lifecycle_allows_save(self) -> bool:
         return (
-            self._service_snapshot.startup_status is StartupStatus.READY
+            self._service_snapshot.startup_status
+            in {StartupStatus.READY, StartupStatus.SETUP_REQUIRED}
             and self._service_snapshot.monitor_state is MonitorState.STOPPED
         )
 

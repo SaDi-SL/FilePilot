@@ -424,6 +424,7 @@ class ProductConfigurationTests(unittest.TestCase):
         self.assertEqual(document["unrelated_setting"], {"preserve": True})
         self.assertEqual(document["ai"], current["ai"])
         self.assertEqual(document["source_folder"], str(self.second))
+        self.assertTrue(document["first_run_completed"])
         self.assertEqual(document["rules"], {"media": [".mp4"]})
         self.assertEqual(
             document["destination_folders"]["others"],

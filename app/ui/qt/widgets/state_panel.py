@@ -133,8 +133,8 @@ class StatePanel(SectionCard):
                 "Setup required",
                 "warning",
                 "Initial configuration is needed",
-                "Use the legacy FilePilot interface to complete setup. "
-                "This Qt preview will not create folders or change configuration.",
+                "Open Folders, choose the locations FilePilot should watch and organize, "
+                "then save the validated configuration. Monitoring stays stopped.",
                 False,
                 False,
             )

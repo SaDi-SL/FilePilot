@@ -158,6 +158,29 @@ class ConfigurationServiceTests(unittest.TestCase):
         self.assertTrue(saved["archive_by_date"])
         self.assertEqual(saved["custom"], {"preserved": True})
 
+    def test_first_run_folder_save_completes_setup_and_builds_runtime(self):
+        setup_document = dict(self.document)
+        setup_document["first_run_completed"] = False
+        setup_document.pop("watch_folders")
+        self.config_path.write_text(json.dumps(setup_document), encoding="utf-8")
+        service = FilePilotService(
+            config_path=self.config_path,
+            monitor_builder=self.service._monitor_builder,
+        )
+
+        startup = service.bootstrap()
+        snapshot = service.get_product_configuration()
+        result = service.save_product_configuration(
+            snapshot.candidate,
+            snapshot.revision,
+        )
+
+        self.assertEqual(startup.status, StartupStatus.SETUP_REQUIRED)
+        self.assertEqual(result.status, ConfigurationSaveStatus.SAVED)
+        self.assertEqual(service.startup_status, StartupStatus.READY)
+        saved = json.loads(self.config_path.read_text(encoding="utf-8"))
+        self.assertTrue(saved["first_run_completed"])
+
     def test_running_monitor_refuses_save_without_writing(self):
         snapshot, candidate = self._edited_candidate()
         before = self.config_path.read_bytes()

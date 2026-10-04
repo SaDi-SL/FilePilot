@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import sys
-from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont, QIcon
 from PySide6.QtWidgets import QApplication
 
+from app.application_paths import get_application_paths
 from app.application_service import FilePilotService
 from app.product_identity import PRODUCT_IDENTITY
 from app.ui.qt.main_window import MainWindow
@@ -32,7 +32,7 @@ def create_application(
     application.setPalette(build_palette())
     application.setStyleSheet(build_stylesheet())
 
-    icon_path = Path(__file__).resolve().parents[3] / "icon.ico"
+    icon_path = get_application_paths().resource("icon.ico")
     if icon_path.is_file():
         application.setWindowIcon(QIcon(str(icon_path)))
     return application

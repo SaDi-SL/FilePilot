@@ -71,8 +71,8 @@ class AutoBackupManager:
 
     def get_backup_folder(self) -> Path:
         """Return the path to the backups directory (creates it if needed)."""
-        from app.config_loader import get_runtime_base_dir
-        folder = get_runtime_base_dir() / "backups"
+        from app.application_paths import get_application_paths
+        folder = get_application_paths().backups_dir
         folder.mkdir(parents=True, exist_ok=True)
         return folder
 

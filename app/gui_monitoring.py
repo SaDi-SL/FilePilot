@@ -4,7 +4,6 @@ Mixin class: MonitoringMixin
 """
 import json
 import queue
-import sys
 import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox
@@ -14,6 +13,7 @@ import pystray
 from PIL import Image, ImageDraw
 
 from app.branding import APP_NAME, APP_VERSION, APP_DEVELOPER
+from app.config_loader import get_resource_path
 from app.i18n import t, set_language, get_language, available_languages
 from app.main import build_monitor
 from app.gui_toast import ToastManager
@@ -24,12 +24,7 @@ class MonitoringMixin:
     """Handles start/stop monitoring, tray, live callbacks, dot animation, theme & language."""
 
     def get_icon_path(self) -> Path | None:
-        if getattr(sys, "frozen", False):
-            base_path = Path(sys.executable).parent
-        else:
-            base_path = Path(__file__).resolve().parent.parent
-
-        icon_path = base_path / "icon.ico"
+        icon_path = get_resource_path("icon.ico")
         if icon_path.exists():
             return icon_path
         return None

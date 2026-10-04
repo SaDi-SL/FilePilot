@@ -1,0 +1,2 @@
+-r requirements-qt.txt
+PyInstaller==6.19.0

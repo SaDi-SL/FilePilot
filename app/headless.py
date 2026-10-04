@@ -23,7 +23,6 @@ Tray menu:
 from __future__ import annotations
 
 import logging
-import sys
 import threading
 from pathlib import Path
 
@@ -49,11 +48,10 @@ def _build_tray_image(icon_path: Path | None = None):
 
 
 def _get_icon_path() -> Path | None:
-    from app.config_loader import get_runtime_base_dir
+    from app.config_loader import get_resource_path
     candidates = [
-        get_runtime_base_dir() / "icon.ico",
-        get_runtime_base_dir() / "icon.png",
-        Path(getattr(sys, "_MEIPASS", "")) / "icon.ico",
+        get_resource_path("icon.ico"),
+        get_resource_path("icon.png"),
     ]
     for p in candidates:
         if p.exists():
