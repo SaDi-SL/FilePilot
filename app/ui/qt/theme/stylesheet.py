@@ -270,7 +270,7 @@ def build_stylesheet() -> str:
             font-size: 12px;
             font-weight: 650;
         }}
-        QComboBox {{
+        QComboBox, QDoubleSpinBox {{
             min-height: 36px;
             padding: 0 30px 0 10px;
             color: {c.text_primary};
@@ -278,7 +278,8 @@ def build_stylesheet() -> str:
             border: 1px solid {c.border_strong};
             border-radius: {r.control}px;
         }}
-        QComboBox:hover, QComboBox:focus {{
+        QComboBox:hover, QComboBox:focus,
+        QDoubleSpinBox:hover, QDoubleSpinBox:focus {{
             border-color: {c.focus};
         }}
         QComboBox QAbstractItemView {{
@@ -301,6 +302,13 @@ def build_stylesheet() -> str:
         }}
         QLineEdit:hover, QLineEdit:focus {{
             border-color: {c.focus};
+        }}
+        QCheckBox {{
+            spacing: 8px;
+            color: {c.text_primary};
+        }}
+        QCheckBox:focus {{
+            color: {c.primary_hover};
         }}
         QScrollBar:vertical {{
             background: transparent;

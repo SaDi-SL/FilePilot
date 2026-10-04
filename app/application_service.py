@@ -43,6 +43,15 @@ from app.product_read_model import (
     ProductReadModel,
     ProductSnapshot,
 )
+from app.product_identity import PRODUCT_IDENTITY, ProductIdentity
+from app.product_settings import (
+    ProductSettingsCandidate,
+    ProductSettingsSnapshot,
+    ProductSettingsStore,
+    SettingsSaveResult,
+    SettingsValidationIssue,
+    SettingsValidationResult,
+)
 from app.product_safety import (
     OperationPreview,
     RecoveryAction,
@@ -166,6 +175,7 @@ class FilePilotService:
         self._journal_path = Path(journal_path) if journal_path is not None else None
         self._product_reader = product_reader or ProductReadModel(journal_path)
         self._configuration_store = ProductConfigurationStore(self._config_path)
+        self._settings_store = ProductSettingsStore(self._configuration_store)
         self._lifecycle_lock = threading.RLock()
         self._state_lock = threading.Lock()
         self._subscriber_lock = threading.Lock()
@@ -252,6 +262,113 @@ class FilePilotService:
                 changes_allowed=self._configuration_changes_allowed()
             )
 
+    def get_product_identity(self) -> ProductIdentity:
+        """Return the static identity used by source and packaged builds."""
+        return PRODUCT_IDENTITY
+
+    def get_product_settings(self) -> ProductSettingsSnapshot:
+        """Read an immutable, secret-redacted Settings snapshot."""
+        with self._lifecycle_lock:
+            return self._settings_store.read_snapshot(
+                changes_allowed=self._configuration_changes_allowed()
+            )
+
+    def validate_product_settings(
+        self,
+        candidate: ProductSettingsCandidate,
+    ) -> SettingsValidationResult:
+        """Validate Settings without changing configuration or runtime state."""
+        try:
+            document, _, _ = self._configuration_store.read_document()
+        except (OSError, json.JSONDecodeError, ProductConfigurationError):
+            return SettingsValidationResult(
+                False,
+                candidate,
+                (
+                    SettingsValidationIssue(
+                        "settings",
+                        "SETTINGS_UNAVAILABLE",
+                        "Settings could not be validated against the current configuration.",
+                    ),
+                ),
+            )
+        return self._settings_store.validate_against_document(candidate, document)
+
+    def save_product_settings(
+        self,
+        candidate: ProductSettingsCandidate,
+        expected_revision: str,
+    ) -> SettingsSaveResult:
+        """Save supported Settings through the shared configuration transaction."""
+        with self._lifecycle_lock:
+            if not self._configuration_changes_allowed():
+                return SettingsSaveResult(
+                    ConfigurationSaveStatus.NOT_ALLOWED,
+                    "Stop monitoring before applying Settings changes.",
+                    self._settings_store.read_snapshot(changes_allowed=False),
+                )
+            try:
+                current, revision, previous_bytes = (
+                    self._configuration_store.read_document()
+                )
+            except (OSError, json.JSONDecodeError, ProductConfigurationError) as error:
+                return SettingsSaveResult(
+                    ConfigurationSaveStatus.WRITE_FAILED,
+                    f"Settings could not be read safely: {error}",
+                )
+            if revision != expected_revision:
+                return SettingsSaveResult(
+                    ConfigurationSaveStatus.STALE,
+                    "Configuration changed elsewhere. Refresh before saving Settings.",
+                    self._settings_store.read_snapshot(changes_allowed=True),
+                )
+            try:
+                validation = self._settings_store.validate_against_document(
+                    candidate,
+                    current,
+                )
+            except (AttributeError, TypeError, ValueError) as error:
+                return SettingsSaveResult(
+                    ConfigurationSaveStatus.INVALID,
+                    f"Settings candidate is malformed: {error}",
+                )
+            if not validation.valid:
+                return SettingsSaveResult(
+                    ConfigurationSaveStatus.INVALID,
+                    "Fix Settings validation issues before saving.",
+                    self._settings_store.read_snapshot(changes_allowed=True),
+                    validation.issues,
+                )
+            try:
+                document = self._settings_store.document_for_candidate(
+                    current,
+                    validation.candidate,
+                )
+            except ProductConfigurationError as error:
+                return SettingsSaveResult(
+                    ConfigurationSaveStatus.INVALID,
+                    str(error),
+                    issues=validation.issues,
+                )
+
+            status, message = self._commit_configuration_document(
+                document,
+                revision,
+                previous_bytes,
+            )
+            if status is ConfigurationSaveStatus.SAVED:
+                from app.ai_classifier import reset_ai_classifier
+
+                reset_ai_classifier()
+                message = "Settings saved. Monitoring remains stopped."
+            return SettingsSaveResult(
+                status,
+                message,
+                self._settings_store.read_snapshot(
+                    changes_allowed=self._configuration_changes_allowed()
+                ),
+            )
+
     def validate_product_configuration(
         self,
         candidate: ProductConfigurationCandidate,
@@ -323,102 +440,109 @@ class FilePilotService:
                     issues=validation.issues,
                 )
 
-            with self._state_lock:
-                previous_runtime = (
-                    self._monitor,
-                    self._config,
-                    self._startup_result,
-                    self._monitor_state,
-                    self._failed_folders,
-                    self._last_error,
-                )
-            try:
-                self._configuration_store.write_document_atomic(
-                    document,
-                    expected_revision=revision,
-                )
-            except StaleConfigurationError:
-                return ConfigurationSaveResult(
-                    ConfigurationSaveStatus.STALE,
-                    "Configuration changed elsewhere. Refresh before saving.",
-                    self._configuration_store.read_snapshot(changes_allowed=True),
-                )
-            except (OSError, ProductConfigurationError) as error:
-                return ConfigurationSaveResult(
-                    ConfigurationSaveStatus.WRITE_FAILED,
-                    f"Configuration was not saved: {error}",
-                    self._configuration_store.read_snapshot(changes_allowed=True),
-                )
-
-            try:
-                rebuilt = self.bootstrap(force=True)
-            except Exception as error:
-                logger.error(
-                    "Configuration runtime reload failed unexpectedly",
-                    exc_info=True,
-                )
-                rebuilt = StartupResult(
-                    StartupStatus.ERROR,
-                    config=document,
-                    error=str(error),
-                )
-            if rebuilt.status is StartupStatus.READY:
-                snapshot = self._configuration_store.read_snapshot(
-                    changes_allowed=True
-                )
-                return ConfigurationSaveResult(
-                    ConfigurationSaveStatus.SAVED,
-                    "Configuration saved. Monitoring remains stopped.",
-                    snapshot,
-                )
-
-            try:
-                self._configuration_store.write_bytes_atomic(
-                    previous_bytes,
-                    expected_revision=configuration_revision(document),
-                )
-            except (OSError, ProductConfigurationError) as rollback_error:
-                message = rebuilt.error or "Runtime reload failed"
-                self._set_monitor_state(
-                    MonitorState.ERROR,
-                    error=(
-                        f"{message}; configuration rollback failed: {rollback_error}"
-                    ),
-                )
-                return ConfigurationSaveResult(
-                    ConfigurationSaveStatus.ROLLBACK_FAILED,
-                    "Runtime reload and configuration rollback failed. Monitoring remains stopped.",
-                    self._configuration_store.read_snapshot(changes_allowed=False),
-                )
-
-            (
-                previous_monitor,
-                previous_config,
-                previous_startup,
-                previous_state,
-                previous_failed,
-                previous_error,
-            ) = previous_runtime
-            with self._state_lock:
-                self._monitor = previous_monitor
-                self._config = previous_config
-                self._startup_result = previous_startup
-                self._monitor_state = previous_state
-                self._failed_folders = previous_failed
-                self._last_error = previous_error
-            self._set_monitor_state(
-                previous_state,
-                error=previous_error,
-                failed_folders=previous_failed,
+            status, message = self._commit_configuration_document(
+                document,
+                revision,
+                previous_bytes,
             )
             return ConfigurationSaveResult(
-                ConfigurationSaveStatus.RELOAD_FAILED,
-                (
-                    "The candidate could not be loaded, so FilePilot restored the "
-                    "previous configuration and runtime."
+                status,
+                message,
+                self._configuration_store.read_snapshot(
+                    changes_allowed=self._configuration_changes_allowed()
                 ),
-                self._configuration_store.read_snapshot(changes_allowed=True),
             )
+
+    def _commit_configuration_document(
+        self,
+        document: dict,
+        revision: str,
+        previous_bytes: bytes,
+    ) -> tuple[ConfigurationSaveStatus, str]:
+        """Shared atomic write, runtime rebuild, and rollback transaction."""
+        with self._state_lock:
+            previous_runtime = (
+                self._monitor,
+                self._config,
+                self._startup_result,
+                self._monitor_state,
+                self._failed_folders,
+                self._last_error,
+            )
+        try:
+            self._configuration_store.write_document_atomic(
+                document,
+                expected_revision=revision,
+            )
+        except StaleConfigurationError:
+            return (
+                ConfigurationSaveStatus.STALE,
+                "Configuration changed elsewhere. Refresh before saving.",
+            )
+        except (OSError, ProductConfigurationError) as error:
+            return (
+                ConfigurationSaveStatus.WRITE_FAILED,
+                f"Configuration was not saved: {error}",
+            )
+
+        try:
+            rebuilt = self.bootstrap(force=True)
+        except Exception as error:
+            logger.error(
+                "Configuration runtime reload failed unexpectedly",
+                exc_info=True,
+            )
+            rebuilt = StartupResult(
+                StartupStatus.ERROR,
+                config=document,
+                error=str(error),
+            )
+        if rebuilt.status is StartupStatus.READY:
+            return (
+                ConfigurationSaveStatus.SAVED,
+                "Configuration saved. Monitoring remains stopped.",
+            )
+
+        try:
+            self._configuration_store.write_bytes_atomic(
+                previous_bytes,
+                expected_revision=configuration_revision(document),
+            )
+        except (OSError, ProductConfigurationError) as rollback_error:
+            message = rebuilt.error or "Runtime reload failed"
+            self._set_monitor_state(
+                MonitorState.ERROR,
+                error=f"{message}; configuration rollback failed: {rollback_error}",
+            )
+            return (
+                ConfigurationSaveStatus.ROLLBACK_FAILED,
+                "Runtime reload and configuration rollback failed. Monitoring remains stopped.",
+            )
+
+        (
+            previous_monitor,
+            previous_config,
+            previous_startup,
+            previous_state,
+            previous_failed,
+            previous_error,
+        ) = previous_runtime
+        with self._state_lock:
+            self._monitor = previous_monitor
+            self._config = previous_config
+            self._startup_result = previous_startup
+            self._monitor_state = previous_state
+            self._failed_folders = previous_failed
+            self._last_error = previous_error
+        self._set_monitor_state(
+            previous_state,
+            error=previous_error,
+            failed_folders=previous_failed,
+        )
+        return (
+            ConfigurationSaveStatus.RELOAD_FAILED,
+            "The candidate could not be loaded, so FilePilot restored the previous configuration and runtime.",
+        )
 
     def preview_file(self, source_file: str | Path) -> OperationPreview:
         """Preview one source through the configured non-mutating planner."""

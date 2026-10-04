@@ -48,6 +48,12 @@ from app.product_configuration import (
     ProductRule,
     ProductWatchFolder,
 )
+from app.product_settings import (
+    ProductSettingsCandidate,
+    ProductSettingsSnapshot,
+    SettingsSaveResult,
+    SettingsValidationResult,
+)
 
 
 class FakeService:
@@ -113,6 +119,16 @@ class FakeService:
         self.release_configuration_validation.set()
         self.candidate_classification_calls = []
         self.configuration_save_calls = []
+        self.settings_snapshot_to_return = ProductSettingsSnapshot(
+            ConfigurationDataState.UNAVAILABLE,
+            error="Settings unavailable in test double",
+        )
+        self.settings_read_calls = 0
+        self.settings_validation_calls = []
+        self.settings_validation_entered = threading.Event()
+        self.release_settings_validation = threading.Event()
+        self.release_settings_validation.set()
+        self.settings_save_calls = []
 
     def subscribe_state(self, callback):
         self.state_subscribers.append(callback)
@@ -250,6 +266,28 @@ class FakeService:
                 self.configuration_snapshot_to_return,
             )
 
+    def get_product_settings(self):
+        with self._operation():
+            self.settings_read_calls += 1
+            return self.settings_snapshot_to_return
+
+    def validate_product_settings(self, candidate):
+        with self._operation():
+            self.settings_validation_calls.append(candidate)
+            self.settings_validation_entered.set()
+            if not self.release_settings_validation.wait(3):
+                raise RuntimeError("settings validation timed out")
+            return SettingsValidationResult(True, candidate)
+
+    def save_product_settings(self, candidate, expected_revision):
+        with self._operation():
+            self.settings_save_calls.append((candidate, expected_revision))
+            return SettingsSaveResult(
+                ConfigurationSaveStatus.SAVED,
+                "Saved",
+                self.settings_snapshot_to_return,
+            )
+
     def emit_state(self, state):
         for callback in tuple(self.state_subscribers):
             callback(state)
@@ -322,6 +360,10 @@ class QtServiceBridgeTests(unittest.TestCase):
             archive_by_date=False,
             rules=(ProductRule("documents", (extension,)),),
         )
+
+    @staticmethod
+    def _settings_candidate(wait=5):
+        return ProductSettingsCandidate(wait, 3, False, "ollama", "mistral")
 
     def test_bootstrap_runs_outside_gui_thread(self):
         service = FakeService()
@@ -864,6 +906,99 @@ class QtServiceBridgeTests(unittest.TestCase):
             completed.at(0)[1].status,
             ConfigurationSaveStatus.SAVED,
         )
+
+    def test_settings_read_runs_on_worker_and_publishes_snapshot(self):
+        service = FakeService()
+        service.settings_snapshot_to_return = ProductSettingsSnapshot(
+            ConfigurationDataState.AVAILABLE,
+            "settings-revision",
+        )
+        bridge = self._bridge(service)
+        changed = QSignalSpy(bridge.settings_snapshot_changed)
+        observed = QSignalSpy(bridge.operation_thread_observed)
+
+        bridge.request_settings_refresh()
+        self._wait_until(lambda: changed.count() == 1)
+
+        self.assertEqual(service.settings_read_calls, 1)
+        worker_ids = [
+            observed.at(index)[1]
+            for index in range(observed.count())
+            if observed.at(index)[0] == "settings_read"
+        ]
+        self.assertEqual(len(worker_ids), 1)
+        self.assertNotEqual(worker_ids[0], threading.get_ident())
+        self.assertEqual(bridge.settings_snapshot.revision, "settings-revision")
+
+    def test_settings_validation_ignores_stale_response(self):
+        service = FakeService()
+        service.release_settings_validation.clear()
+        bridge = self._bridge(service)
+        changed = QSignalSpy(bridge.settings_validation_changed)
+        first = self._settings_candidate(5)
+        latest = self._settings_candidate(8)
+
+        bridge.request_settings_validation("settings:1", first)
+        self.assertTrue(service.settings_validation_entered.wait(1))
+        bridge.request_settings_validation("settings:2", latest)
+        service.release_settings_validation.set()
+
+        self._wait_until(
+            lambda: len(service.settings_validation_calls) == 2
+            and changed.count() == 1
+        )
+        self.assertIs(service.settings_validation_calls[0], first)
+        self.assertIs(service.settings_validation_calls[1], latest)
+        self.assertEqual(changed.at(0)[0], "settings:2")
+
+    def test_settings_save_is_serialized_and_refreshes_configuration(self):
+        service = FakeService()
+        bridge = self._bridge(service)
+        started = QSignalSpy(bridge.settings_save_started)
+        completed = QSignalSpy(bridge.settings_save_completed)
+        rejected = QSignalSpy(bridge.settings_request_failed)
+        candidate = self._settings_candidate(7)
+
+        bridge.request_settings_save("settings", candidate, "revision")
+        bridge.request_settings_save("settings", candidate, "revision")
+
+        self._wait_until(
+            lambda: completed.count() == 1
+            and rejected.count() == 1
+            and service.configuration_read_calls == 1
+        )
+        self.assertEqual(started.count(), 1)
+        self.assertEqual(len(service.settings_save_calls), 1)
+        self.assertEqual(completed.at(0)[0], "settings")
+        self.assertEqual(
+            completed.at(0)[1].status,
+            ConfigurationSaveStatus.SAVED,
+        )
+
+    def test_settings_and_rules_saves_share_one_serialization_gate(self):
+        service = FakeService()
+        bridge = self._bridge(service)
+        settings_completed = QSignalSpy(bridge.settings_save_completed)
+        configuration_rejected = QSignalSpy(bridge.configuration_request_failed)
+
+        bridge.request_settings_save(
+            "settings",
+            self._settings_candidate(7),
+            "revision",
+        )
+        bridge.request_configuration_save(
+            "rules",
+            self._configuration_candidate(),
+            "revision",
+        )
+
+        self._wait_until(
+            lambda: settings_completed.count() == 1
+            and configuration_rejected.count() == 1
+        )
+        self.assertEqual(len(service.settings_save_calls), 1)
+        self.assertEqual(service.configuration_save_calls, [])
+        self.assertIn("already in progress", configuration_rejected.at(0)[2])
 
 
 if __name__ == "__main__":

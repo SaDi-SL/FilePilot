@@ -22,14 +22,17 @@ import sys
 import time
 from pathlib import Path
 
+from app.product_identity import PRODUCT_IDENTITY
+
 ROOT = Path(__file__).resolve().parent
 
 # ── Config ────────────────────────────────────────────────────────────────────
-APP_NAME    = "FilePilot"
-APP_VERSION = "1.0.0"
+APP_NAME    = PRODUCT_IDENTITY.product_name
+APP_VERSION = PRODUCT_IDENTITY.version
 SPEC_FILE   = ROOT / "FilePilot.spec"
 DIST_DIR    = ROOT / "dist"
 BUILD_DIR   = ROOT / "build"
+BUILD_IDENTITY_FILE = DIST_DIR / f"{APP_NAME}.version"
 
 INNO_PATHS = [
     Path(r"C:\Program Files (x86)\Inno Setup 6\ISCC.exe"),
@@ -96,6 +99,7 @@ def build_exe() -> bool:
     exe_path = DIST_DIR / f"{APP_NAME}.exe"
 
     if ok and exe_path.exists():
+        BUILD_IDENTITY_FILE.write_text(APP_VERSION + "\n", encoding="utf-8")
         size_mb = exe_path.stat().st_size / (1024 * 1024)
         log(f"\n  [+] Built: {exe_path}", "green")
         log(f"      Size:  {size_mb:.1f} MB", "green")
@@ -126,6 +130,16 @@ def build_installer() -> bool:
     if not exe_path.exists():
         log(f"  [-] {APP_NAME}.exe not found. Build it first.", "red")
         return False
+    if (
+        not BUILD_IDENTITY_FILE.is_file()
+        or BUILD_IDENTITY_FILE.read_text(encoding="utf-8").strip() != APP_VERSION
+    ):
+        log(
+            "  [-] Existing executable was not built for the current product identity. "
+            "Build the EXE first.",
+            "red",
+        )
+        return False
 
     iss_file = ROOT / "installer.iss"
     if not iss_file.exists():
@@ -133,7 +147,12 @@ def build_installer() -> bool:
         return False
 
     log(f"  Using: {iscc}", "blue")
-    ok = run([str(iscc), str(iss_file)])
+    ok = run([
+        str(iscc),
+        f"/DAppName={APP_NAME}",
+        f"/DAppVersion={APP_VERSION}",
+        str(iss_file),
+    ])
 
     installer_dir = DIST_DIR / "installer"
     if ok and installer_dir.exists():

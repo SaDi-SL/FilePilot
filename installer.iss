@@ -1,9 +1,13 @@
 ; installer.iss — Inno Setup script for FilePilot
 ; Requirements: Inno Setup 6+ (https://jrsoftware.org/isinfo.php)
-; Usage: Open in Inno Setup Compiler and click Build
+; Usage: python build.py --installer (requires a current FilePilot.exe build)
 
-#define AppName      "FilePilot"
-#define AppVersion   "1.0.0"
+#ifndef AppName
+  #error AppName must be supplied by build.py
+#endif
+#ifndef AppVersion
+  #error AppVersion must be supplied by build.py
+#endif
 #define AppPublisher "Sadi Al-lulu"
 #define AppURL       "https://github.com/SaDi-SL/FilePilot"
 #define AppExeName   "FilePilot.exe"

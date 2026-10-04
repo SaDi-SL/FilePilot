@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.branding import APP_NAME, APP_VERSION
+from app.product_identity import PRODUCT_IDENTITY
 from app.ui.qt.icons import brand_icon, navigation_icon
 from app.ui.qt.theme.tokens import SPACING
 
@@ -29,7 +29,6 @@ NAVIGATION_ITEMS = (
     NavigationItem("recovery", "Recovery", "recovery"),
     NavigationItem("rules", "Rules", "rules"),
     NavigationItem("folders", "Folders", "folders"),
-    NavigationItem("integrations", "Integrations", "integrations"),
     NavigationItem("settings", "Settings", "settings"),
 )
 
@@ -66,7 +65,7 @@ class NavigationSidebar(QFrame):
         self.brand_mark.setAccessibleName("FilePilot application mark")
         brand_copy = QVBoxLayout()
         brand_copy.setSpacing(1)
-        self.brand_name = QLabel(APP_NAME)
+        self.brand_name = QLabel(PRODUCT_IDENTITY.product_name)
         self.brand_name.setProperty("role", "brand")
         self.brand_tagline = QLabel("Desktop file automation")
         self.brand_tagline.setProperty("role", "caption")
@@ -110,7 +109,9 @@ class NavigationSidebar(QFrame):
                 )
 
         layout.addStretch(1)
-        self.version_label = QLabel(f"FilePilot {APP_VERSION}")
+        self.version_label = QLabel(
+            f"{PRODUCT_IDENTITY.product_name} {PRODUCT_IDENTITY.display_version}"
+        )
         self.version_label.setProperty("role", "caption")
         layout.addWidget(self.version_label)
 

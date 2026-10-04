@@ -8,7 +8,7 @@ from PySide6.QtGui import QFont, QIcon
 from PySide6.QtWidgets import QApplication
 
 from app.application_service import FilePilotService
-from app.branding import APP_NAME, APP_VERSION
+from app.product_identity import PRODUCT_IDENTITY
 from app.ui.qt.main_window import MainWindow
 from app.ui.qt.service_bridge import QtServiceBridge
 from app.ui.qt.theme import build_palette, build_stylesheet
@@ -24,9 +24,9 @@ def create_application(
             Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
         )
         application = QApplication(argv or sys.argv)
-    application.setApplicationName(APP_NAME)
-    application.setApplicationVersion(APP_VERSION)
-    application.setOrganizationName(APP_NAME)
+    application.setApplicationName(PRODUCT_IDENTITY.product_name)
+    application.setApplicationVersion(PRODUCT_IDENTITY.version)
+    application.setOrganizationName(PRODUCT_IDENTITY.product_name)
     application.setStyle("Fusion")
     application.setFont(QFont(FONT_FAMILY, FONT_POINT_SIZE))
     application.setPalette(build_palette())

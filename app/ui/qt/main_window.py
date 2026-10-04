@@ -6,7 +6,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.branding import APP_NAME, APP_VERSION
+from app.product_identity import PRODUCT_IDENTITY
 from app.ui.qt.icons import navigation_icon
 from app.ui.qt.navigation import NAVIGATION_ITEMS, NavigationSidebar
 from app.ui.qt.pages.activity import ActivityPage
@@ -15,6 +15,7 @@ from app.ui.qt.pages.overview import OverviewPage
 from app.ui.qt.pages.placeholder import PlaceholderPage
 from app.ui.qt.pages.recovery import RecoveryPage
 from app.ui.qt.pages.rules import RulesPage
+from app.ui.qt.pages.settings import SettingsPage
 from app.ui.qt.service_bridge import QtServiceBridge
 
 
@@ -23,8 +24,6 @@ PLACEHOLDER_COPY = {
     "recovery": "Review interrupted operations using verified recovery evidence.",
     "rules": "Define how FilePilot classifies and organizes incoming files.",
     "folders": "Manage the folders FilePilot watches for new files.",
-    "integrations": "Connect FilePilot with supported services and extensions.",
-    "settings": "Configure application behavior, appearance, and automation.",
 }
 
 
@@ -40,7 +39,9 @@ class MainWindow(QMainWindow):
         self.bridge = bridge
         self._allow_close = False
         self._shutdown_requested = False
-        self.setWindowTitle(f"{APP_NAME} {APP_VERSION}")
+        self.setWindowTitle(
+            f"{PRODUCT_IDENTITY.product_name} {PRODUCT_IDENTITY.display_version}"
+        )
         self.setAccessibleName("FilePilot main window")
         self.resize(1180, 680)
         self.setMinimumSize(760, 520)
@@ -76,6 +77,10 @@ class MainWindow(QMainWindow):
         folders = FoldersPage(self.bridge)
         self._page_indexes["folders"] = self.page_stack.addWidget(folders)
         self.folders_page = folders
+
+        settings = SettingsPage(self.bridge)
+        self._page_indexes["settings"] = self.page_stack.addWidget(settings)
+        self.settings_page = settings
 
         if hasattr(self.bridge, "recovery_snapshot_changed"):
             recovery = RecoveryPage(self.bridge)
@@ -130,6 +135,10 @@ class MainWindow(QMainWindow):
                 request(100)
         elif key in {"rules", "folders"}:
             request = getattr(self.bridge, "request_configuration_refresh", None)
+            if request is not None:
+                request()
+        elif key == "settings":
+            request = getattr(self.bridge, "request_settings_refresh", None)
             if request is not None:
                 request()
 

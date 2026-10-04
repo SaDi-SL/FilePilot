@@ -24,6 +24,11 @@ from app.application_service import (
     StartupStatus,
     product_record_from_activity_event,
 )
+from app.product_settings import (
+    ProductSettingsCandidate,
+    ProductSettingsSnapshot,
+)
+from app.product_identity import PRODUCT_IDENTITY
 
 
 @dataclass(frozen=True)
@@ -54,6 +59,10 @@ class _ServiceWorker(QObject):
     candidate_classification_finished = Signal(int, str, object, int)
     configuration_save_finished = Signal(int, str, object, int)
     configuration_failed = Signal(str, int, str, str, int)
+    settings_read_finished = Signal(int, object, int)
+    settings_validation_finished = Signal(int, str, object, int)
+    settings_save_finished = Signal(int, str, object, int)
+    settings_failed = Signal(str, int, str, str, int)
 
     def __init__(self, service: FilePilotService) -> None:
         super().__init__()
@@ -226,6 +235,76 @@ class _ServiceWorker(QObject):
             self.configuration_save_finished,
         )
 
+    @Slot(int)
+    def read_settings(self, request_id: int) -> None:
+        self._run_settings_request(
+            "settings_read",
+            request_id,
+            "",
+            lambda: self._service.get_product_settings(),
+            self.settings_read_finished,
+        )
+
+    @Slot(int, str, object)
+    def validate_settings(
+        self,
+        request_id: int,
+        context: str,
+        candidate: ProductSettingsCandidate,
+    ) -> None:
+        self._run_settings_request(
+            "settings_validation",
+            request_id,
+            context,
+            lambda: self._service.validate_product_settings(candidate),
+            self.settings_validation_finished,
+        )
+
+    @Slot(int, str, object, str)
+    def save_settings(
+        self,
+        request_id: int,
+        context: str,
+        candidate: ProductSettingsCandidate,
+        expected_revision: str,
+    ) -> None:
+        self._run_settings_request(
+            "settings_save",
+            request_id,
+            context,
+            lambda: self._service.save_product_settings(candidate, expected_revision),
+            self.settings_save_finished,
+        )
+
+    def _run_settings_request(
+        self,
+        name: str,
+        request_id: int,
+        context: str,
+        operation,
+        completed_signal,
+    ) -> None:
+        try:
+            result = operation()
+        except Exception:
+            self.settings_failed.emit(
+                name,
+                request_id,
+                context,
+                "FilePilot could not complete the Settings request.",
+                threading.get_ident(),
+            )
+            return
+        if context:
+            completed_signal.emit(
+                request_id,
+                context,
+                result,
+                threading.get_ident(),
+            )
+        else:
+            completed_signal.emit(request_id, result, threading.get_ident())
+
     def _run_configuration_request(
         self,
         name: str,
@@ -304,6 +383,11 @@ class QtServiceBridge(QObject):
     configuration_save_started = Signal(str)
     configuration_save_completed = Signal(str, object)
     configuration_request_failed = Signal(str, str, str)
+    settings_snapshot_changed = Signal(object)
+    settings_validation_changed = Signal(str, object)
+    settings_save_started = Signal(str)
+    settings_save_completed = Signal(str, object)
+    settings_request_failed = Signal(str, str, str)
     command_completed = Signal(str, object)
     command_failed = Signal(str, str)
     operation_thread_observed = Signal(str, int)
@@ -323,6 +407,9 @@ class QtServiceBridge(QObject):
     _configuration_validation_worker = Signal(int, str, object)
     _candidate_classification_worker = Signal(int, str, object, str)
     _configuration_save_worker = Signal(int, str, object, str)
+    _settings_read_worker = Signal(int)
+    _settings_validation_worker = Signal(int, str, object)
+    _settings_save_worker = Signal(int, str, object, str)
     _state_relay = Signal(object)
     _activity_relay = Signal(object)
 
@@ -388,6 +475,16 @@ class QtServiceBridge(QObject):
         self._configuration_save_sequence = 0
         self._configuration_save_active = False
         self._active_configuration_save_id: int | None = None
+        self._settings_snapshot = ProductSettingsSnapshot.loading()
+        self._settings_read_sequence = 0
+        self._settings_validation_sequence = 0
+        self._settings_validation_requests: dict[str, int] = {}
+        self._settings_save_sequence = 0
+        self._active_settings_save_id: int | None = None
+        identity_reader = getattr(self._service, "get_product_identity", None)
+        self.product_identity = (
+            identity_reader() if identity_reader is not None else PRODUCT_IDENTITY
+        )
 
         self._unsubscribe_state = None
         self._unsubscribe_activity = None
@@ -454,6 +551,18 @@ class QtServiceBridge(QObject):
             self._worker.save_configuration,
             Qt.ConnectionType.QueuedConnection,
         )
+        self._settings_read_worker.connect(
+            self._worker.read_settings,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self._settings_validation_worker.connect(
+            self._worker.validate_settings,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self._settings_save_worker.connect(
+            self._worker.save_settings,
+            Qt.ConnectionType.QueuedConnection,
+        )
         self._state_relay.connect(
             self._accept_service_state,
             Qt.ConnectionType.QueuedConnection,
@@ -492,6 +601,12 @@ class QtServiceBridge(QObject):
             self._on_configuration_save_finished
         )
         self._worker.configuration_failed.connect(self._on_configuration_failed)
+        self._worker.settings_read_finished.connect(self._on_settings_read_finished)
+        self._worker.settings_validation_finished.connect(
+            self._on_settings_validation_finished
+        )
+        self._worker.settings_save_finished.connect(self._on_settings_save_finished)
+        self._worker.settings_failed.connect(self._on_settings_failed)
         self._worker.shutdown_finished.connect(
             self._worker.deleteLater,
             Qt.ConnectionType.DirectConnection,
@@ -522,6 +637,10 @@ class QtServiceBridge(QObject):
     @property
     def configuration_snapshot(self) -> ProductConfigurationSnapshot:
         return self._configuration_snapshot
+
+    @property
+    def settings_snapshot(self) -> ProductSettingsSnapshot:
+        return self._settings_snapshot
 
     @Slot()
     def bootstrap(self) -> None:
@@ -700,6 +819,61 @@ class QtServiceBridge(QObject):
         )
 
     @Slot()
+    def request_settings_refresh(self) -> None:
+        if self._closing:
+            return
+        self._settings_read_sequence += 1
+        self._settings_read_worker.emit(self._settings_read_sequence)
+
+    @Slot(str, object)
+    def request_settings_validation(
+        self,
+        context: str,
+        candidate: ProductSettingsCandidate,
+    ) -> None:
+        if self._closing:
+            return
+        self._settings_validation_sequence += 1
+        self._settings_validation_requests = {
+            key: request_id
+            for key, request_id in self._settings_validation_requests.items()
+            if key.split(":", 1)[0] != context.split(":", 1)[0]
+        }
+        self._settings_validation_requests[context] = self._settings_validation_sequence
+        self._settings_validation_worker.emit(
+            self._settings_validation_sequence,
+            context,
+            candidate,
+        )
+
+    @Slot(str, object, str)
+    def request_settings_save(
+        self,
+        context: str,
+        candidate: ProductSettingsCandidate,
+        expected_revision: str,
+    ) -> None:
+        if self._closing:
+            return
+        if self._configuration_save_active:
+            self.settings_request_failed.emit(
+                "settings_save",
+                context,
+                "Another configuration save is already in progress.",
+            )
+            return
+        self._settings_save_sequence += 1
+        self._active_settings_save_id = self._settings_save_sequence
+        self._configuration_save_active = True
+        self.settings_save_started.emit(context)
+        self._settings_save_worker.emit(
+            self._settings_save_sequence,
+            context,
+            candidate,
+            expected_revision,
+        )
+
+    @Slot()
     def shutdown(self) -> None:
         if self._closing:
             return
@@ -823,6 +997,7 @@ class QtServiceBridge(QObject):
         self.request_product_refresh(self._product_limit)
         self.request_recovery_refresh(self._pending_recovery_limit, 0)
         self.request_configuration_refresh()
+        self.request_settings_refresh()
 
     @Slot(int, object, int, int)
     def _on_product_read_finished(
@@ -1058,6 +1233,86 @@ class QtServiceBridge(QObject):
             self._configuration_snapshot = snapshot
             self.configuration_snapshot_changed.emit(snapshot)
         self.configuration_save_completed.emit(context, result)
+        self.request_settings_refresh()
+
+    @Slot(int, object, int)
+    def _on_settings_read_finished(
+        self,
+        request_id: int,
+        snapshot: ProductSettingsSnapshot,
+        worker_thread_id: int,
+    ) -> None:
+        if request_id != self._settings_read_sequence or self._closing:
+            return
+        self.operation_thread_observed.emit("settings_read", worker_thread_id)
+        self._settings_snapshot = snapshot
+        self.settings_snapshot_changed.emit(snapshot)
+
+    @Slot(int, str, object, int)
+    def _on_settings_validation_finished(
+        self,
+        request_id: int,
+        context: str,
+        result: object,
+        worker_thread_id: int,
+    ) -> None:
+        if (
+            request_id != self._settings_validation_requests.get(context)
+            or self._closing
+        ):
+            return
+        self._settings_validation_requests.pop(context, None)
+        self.operation_thread_observed.emit("settings_validation", worker_thread_id)
+        self.settings_validation_changed.emit(context, result)
+
+    @Slot(int, str, object, int)
+    def _on_settings_save_finished(
+        self,
+        request_id: int,
+        context: str,
+        result: object,
+        worker_thread_id: int,
+    ) -> None:
+        if request_id != self._active_settings_save_id:
+            return
+        self._configuration_save_active = False
+        self._active_settings_save_id = None
+        if self._closing:
+            return
+        self.operation_thread_observed.emit("settings_save", worker_thread_id)
+        snapshot = getattr(result, "snapshot", None)
+        if snapshot is not None:
+            self._settings_snapshot = snapshot
+            self.settings_snapshot_changed.emit(snapshot)
+        self.settings_save_completed.emit(context, result)
+        self.request_configuration_refresh()
+
+    @Slot(str, int, str, str, int)
+    def _on_settings_failed(
+        self,
+        name: str,
+        request_id: int,
+        context: str,
+        message: str,
+        worker_thread_id: int,
+    ) -> None:
+        if name == "settings_read":
+            accepted = request_id == self._settings_read_sequence
+        elif name == "settings_validation":
+            accepted = request_id == self._settings_validation_requests.get(context)
+            if accepted:
+                self._settings_validation_requests.pop(context, None)
+        elif name == "settings_save":
+            accepted = request_id == self._active_settings_save_id
+            if accepted:
+                self._configuration_save_active = False
+                self._active_settings_save_id = None
+        else:
+            accepted = False
+        if not accepted or self._closing:
+            return
+        self.operation_thread_observed.emit(name, worker_thread_id)
+        self.settings_request_failed.emit(name, context, message)
 
     @Slot(str, int, str, str, int)
     def _on_configuration_failed(
