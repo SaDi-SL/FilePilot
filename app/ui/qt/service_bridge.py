@@ -49,6 +49,7 @@ class _ServiceWorker(QObject):
     product_read_finished = Signal(int, object, int, int)
     product_read_failed = Signal(int, str, int, int)
     search_finished = Signal(int, str, object, int)
+    semantic_search_finished = Signal(int, str, object, int)
     search_refresh_finished = Signal(int, object, int)
     search_failed = Signal(str, int, str, int)
     preview_finished = Signal(int, object, int)
@@ -142,6 +143,25 @@ class _ServiceWorker(QObject):
             )
             return
         self.search_finished.emit(request_id, query, result, threading.get_ident())
+
+    @Slot(int, str, int)
+    def semantic_search_files(self, request_id: int, query: str, limit: int) -> None:
+        try:
+            result = self._service.semantic_search_files(query, limit=limit)
+        except Exception as error:
+            self.search_failed.emit(
+                "semantic_search",
+                request_id,
+                str(error),
+                threading.get_ident(),
+            )
+            return
+        self.semantic_search_finished.emit(
+            request_id,
+            query,
+            result,
+            threading.get_ident(),
+        )
 
     @Slot(int)
     def refresh_search_index(self, request_id: int) -> None:
@@ -415,6 +435,7 @@ class QtServiceBridge(QObject):
     product_snapshot_changed = Signal(object)
     product_read_failed = Signal(str)
     search_results_changed = Signal(str, object)
+    semantic_search_results_changed = Signal(str, object)
     search_refresh_completed = Signal(object)
     search_request_failed = Signal(str, str)
     preview_changed = Signal(object)
@@ -449,6 +470,7 @@ class QtServiceBridge(QObject):
     _shutdown_worker = Signal()
     _product_read_worker = Signal(int, int, int)
     _search_worker = Signal(int, str, int)
+    _semantic_search_worker = Signal(int, str, int)
     _search_refresh_worker = Signal(int)
     _preview_worker = Signal(int, str)
     _organize_worker = Signal(int, str)
@@ -494,6 +516,8 @@ class QtServiceBridge(QObject):
         self._product_retry_revision: int | None = None
         self._search_sequence = 0
         self._active_search_id: int | None = None
+        self._semantic_search_sequence = 0
+        self._active_semantic_search_id: int | None = None
         self._search_refresh_sequence = 0
         self._search_refresh_active = False
         self._active_search_refresh_id: int | None = None
@@ -581,6 +605,10 @@ class QtServiceBridge(QObject):
             self._worker.search_files,
             Qt.ConnectionType.QueuedConnection,
         )
+        self._semantic_search_worker.connect(
+            self._worker.semantic_search_files,
+            Qt.ConnectionType.QueuedConnection,
+        )
         self._search_refresh_worker.connect(
             self._worker.refresh_search_index,
             Qt.ConnectionType.QueuedConnection,
@@ -653,6 +681,9 @@ class QtServiceBridge(QObject):
         self._worker.product_read_finished.connect(self._on_product_read_finished)
         self._worker.product_read_failed.connect(self._on_product_read_failed)
         self._worker.search_finished.connect(self._on_search_finished)
+        self._worker.semantic_search_finished.connect(
+            self._on_semantic_search_finished
+        )
         self._worker.search_refresh_finished.connect(
             self._on_search_refresh_finished
         )
@@ -765,6 +796,19 @@ class QtServiceBridge(QObject):
         self._active_search_id = self._search_sequence
         bounded_limit = max(1, min(int(limit), 100))
         self._search_worker.emit(self._search_sequence, query, bounded_limit)
+
+    @Slot(str, int)
+    def request_semantic_search(self, query: str, limit: int = 25) -> None:
+        if self._closing:
+            return
+        self._semantic_search_sequence += 1
+        self._active_semantic_search_id = self._semantic_search_sequence
+        bounded_limit = max(1, min(int(limit), 100))
+        self._semantic_search_worker.emit(
+            self._semantic_search_sequence,
+            query,
+            bounded_limit,
+        )
 
     @Slot()
     def request_search_refresh(self) -> None:
@@ -1182,6 +1226,20 @@ class QtServiceBridge(QObject):
         self.operation_thread_observed.emit("search", worker_thread_id)
         self.search_results_changed.emit(query, results)
 
+    @Slot(int, str, object, int)
+    def _on_semantic_search_finished(
+        self,
+        request_id: int,
+        query: str,
+        results: object,
+        worker_thread_id: int,
+    ) -> None:
+        if request_id != self._active_semantic_search_id or self._closing:
+            return
+        self._active_semantic_search_id = None
+        self.operation_thread_observed.emit("semantic_search", worker_thread_id)
+        self.semantic_search_results_changed.emit(query, results)
+
     @Slot(int, object, int)
     def _on_search_refresh_finished(
         self,
@@ -1209,6 +1267,9 @@ class QtServiceBridge(QObject):
         accepted = (
             name == "search" and request_id == self._active_search_id
         ) or (
+            name == "semantic_search"
+            and request_id == self._active_semantic_search_id
+        ) or (
             name == "search_refresh"
             and request_id == self._active_search_refresh_id
         )
@@ -1216,6 +1277,8 @@ class QtServiceBridge(QObject):
             return
         if name == "search":
             self._active_search_id = None
+        elif name == "semantic_search":
+            self._active_semantic_search_id = None
         else:
             self._search_refresh_active = False
             self._active_search_refresh_id = None
