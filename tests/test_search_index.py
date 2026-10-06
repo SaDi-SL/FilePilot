@@ -35,6 +35,68 @@ class SearchIndexTests(unittest.TestCase):
                 SEARCH_SCHEMA_VERSION,
             )
 
+    def test_indexed_file_persists_current_extraction_fingerprint(self):
+        source = self.root / "fingerprint.txt"
+        source.write_text("fingerprinted content", encoding="utf-8")
+
+        with patch("app.search_index.current_extraction_fingerprint", return_value="capability-a"):
+            indexed = self.index.index_file(source)
+
+        self.assertEqual(indexed.extraction_fingerprint, "capability-a")
+        self.assertEqual(self.index.get_file(source).extraction_fingerprint, "capability-a")
+
+    def test_version_one_database_migrates_with_empty_fingerprint(self):
+        legacy = self.root / "data" / "legacy-search.sqlite3"
+        with closing(sqlite3.connect(legacy)) as connection:
+            connection.execute(f"PRAGMA application_id = {SEARCH_APPLICATION_ID}")
+            connection.execute("PRAGMA user_version = 1")
+            connection.execute(
+                """
+                CREATE TABLE files (
+                    path TEXT PRIMARY KEY NOT NULL,
+                    filename TEXT NOT NULL,
+                    extension TEXT NOT NULL,
+                    size_bytes INTEGER NOT NULL,
+                    modified_ns INTEGER NOT NULL,
+                    category TEXT,
+                    content TEXT NOT NULL DEFAULT '',
+                    extraction_status TEXT NOT NULL,
+                    indexed_at_utc TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO files (
+                    path, filename, extension, size_bytes, modified_ns,
+                    category, content, extraction_status, indexed_at_utc
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(self.root / "legacy.txt"),
+                    "legacy.txt",
+                    ".txt",
+                    1,
+                    1,
+                    None,
+                    "",
+                    "metadata_only",
+                    "2026-01-01T00:00:00+00:00",
+                ),
+            )
+            connection.commit()
+
+        migrated = SearchIndex(legacy)
+        record = migrated.get_file(self.root / "legacy.txt")
+
+        self.assertIsNotNone(record)
+        self.assertEqual(record.extraction_fingerprint, "")
+        with closing(sqlite3.connect(legacy)) as connection:
+            self.assertEqual(
+                connection.execute("PRAGMA user_version").fetchone()[0],
+                SEARCH_SCHEMA_VERSION,
+            )
+
     def test_indexes_and_finds_filename_category_and_content(self):
         source = self.root / "IR50-report.txt"
         source.write_text(
