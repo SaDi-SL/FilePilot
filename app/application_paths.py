@@ -63,6 +63,19 @@ class ApplicationPaths:
         return self.user_data_root / "reminders"
 
     @property
+    def ocr_runtime_dir(self) -> Path:
+        """Read-only OCR sidecar owned by the installed application."""
+        return self.install_root / "ocr"
+
+    @property
+    def tesseract_executable(self) -> Path:
+        return self.ocr_runtime_dir / "tesseract.exe"
+
+    @property
+    def tesseract_data_dir(self) -> Path:
+        return self.ocr_runtime_dir / "tessdata"
+
+    @property
     def default_config_file(self) -> Path:
         return self.resource_root / "config" / "default_config.json"
 
