@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "bundle_state": "not_staged",
+  "runtime": {
+    "name": "Tesseract OCR",
+    "version": "5.5.0",
+    "platform": "windows-x86_64",
+    "license": "Apache-2.0",
+    "distribution_source": "https://github.com/UB-Mannheim/tesseract/wiki",
+    "upstream": "https://github.com/tesseract-ocr/tesseract"
+  },
+  "language_data": {
+    "repository": "https://github.com/tesseract-ocr/tessdata_fast",
+    "languages": [
+      "eng",
+      "ara"
+    ]
+  },
+  "staging": {
+    "root": "third_party/ocr/runtime",
+    "required_paths": [
+      "tesseract.exe",
+      "tessdata/eng.traineddata",
+      "tessdata/ara.traineddata"
+    ],
+    "sha256": {}
+  }
+}
