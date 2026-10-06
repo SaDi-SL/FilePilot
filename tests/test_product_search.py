@@ -226,6 +226,44 @@ class ProductSearchTests(unittest.TestCase):
 
         self.assertIsNone(self.index.embedding_fingerprint_for_file(source))
 
+    def test_hybrid_search_combines_semantic_and_lexical_rankings(self):
+        relevant = self.organized / "reports" / "railway.txt"
+        generic = self.organized / "notes" / "generic.txt"
+        relevant.parent.mkdir(parents=True)
+        generic.parent.mkdir(parents=True)
+        relevant.write_text(
+            "railway system integration testing and verification",
+            encoding="utf-8",
+        )
+        generic.write_text(
+            "generic software test",
+            encoding="utf-8",
+        )
+        self.search.refresh(self.organized)
+
+        relevant_chunk = self.index.semantic_document_chunks(relevant)[0]
+        generic_chunk = self.index.semantic_document_chunks(generic)[0]
+        provider = FakeEmbeddingProvider({
+            relevant_chunk: (0.8, 0.2),
+            generic_chunk: (1.0, 0.0),
+            "railway testing": (1.0, 0.0),
+        })
+        semantic = ProductSearch(self.index, provider)
+        semantic.refresh_semantic_embeddings()
+
+        results = semantic.hybrid_search("railway testing")
+
+        self.assertEqual(results[0].path, relevant)
+        self.assertIsNotNone(results[0].semantic_score)
+        self.assertIsNotNone(results[0].lexical_rank)
+
+    def test_hybrid_search_empty_query_is_safe(self):
+        provider = FakeEmbeddingProvider({})
+        semantic = ProductSearch(self.index, provider)
+
+        self.assertEqual(semantic.hybrid_search("   "), ())
+        self.assertEqual(provider.embed_calls, [])
+
     def test_semantic_search_empty_query_does_not_call_provider(self):
         provider = FakeEmbeddingProvider({})
         semantic = ProductSearch(self.index, provider)
