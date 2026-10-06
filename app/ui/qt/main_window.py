@@ -11,6 +11,7 @@ from app.ui.qt.icons import navigation_icon
 from app.ui.qt.navigation import NAVIGATION_ITEMS, NavigationSidebar
 from app.ui.qt.pages.activity import ActivityPage
 from app.ui.qt.pages.folders import FoldersPage
+from app.ui.qt.pages.my_files import MyFilesPage
 from app.ui.qt.pages.overview import OverviewPage
 from app.ui.qt.pages.placeholder import PlaceholderPage
 from app.ui.qt.pages.recovery import RecoveryPage
