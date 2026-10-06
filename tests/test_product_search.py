@@ -3,8 +3,27 @@ import unittest
 from unittest import mock
 from pathlib import Path
 
+from app.embedding_service import EmbeddingResponse
 from app.product_search import ProductSearch
 from app.search_index import SearchIndex, SearchIndexError
+
+
+class FakeEmbeddingProvider:
+    def __init__(self, vectors, *, ready=True, model="embed-test"):
+        self.vectors = dict(vectors)
+        self.ready = ready
+        self.model = model
+        self.embed_calls = []
+        self.ready_calls = []
+
+    def is_ready(self, *, timeout=3.0):
+        self.ready_calls.append(timeout)
+        return self.ready
+
+    def embed(self, text, *, timeout=30.0):
+        self.embed_calls.append((text, timeout))
+        vector = self.vectors[text]
+        return EmbeddingResponse(tuple(vector), "ollama", self.model)
 
 
 class ProductSearchTests(unittest.TestCase):
@@ -124,6 +143,95 @@ class ProductSearchTests(unittest.TestCase):
 
         self.assertEqual(result.removed, 1)
         self.assertEqual(self.search.search("outside"), ())
+
+    def test_semantic_refresh_embeds_indexed_documents_and_searches_by_meaning_vector(self):
+        first = self.organized / "reports" / "train.txt"
+        second = self.organized / "notes" / "cooking.txt"
+        first.parent.mkdir(parents=True)
+        second.parent.mkdir(parents=True)
+        first.write_text("traction converter verification", encoding="utf-8")
+        second.write_text("pasta recipe", encoding="utf-8")
+        self.search.refresh(self.organized)
+
+        first_document = self.index.semantic_document(first)
+        second_document = self.index.semantic_document(second)
+        provider = FakeEmbeddingProvider({
+            first_document: (1.0, 0.0),
+            second_document: (0.0, 1.0),
+            "train testing": (0.9, 0.1),
+        })
+        semantic = ProductSearch(self.index, provider)
+
+        refresh = semantic.refresh_semantic_embeddings()
+        hits = semantic.semantic_search("train testing")
+
+        self.assertEqual(refresh.scanned, 2)
+        self.assertEqual(refresh.embedded, 2)
+        self.assertEqual(refresh.failed, 0)
+        self.assertEqual(hits[0].path, first)
+        self.assertGreater(hits[0].score, hits[1].score)
+
+    def test_semantic_refresh_requires_local_model_readiness(self):
+        provider = FakeEmbeddingProvider({}, ready=False)
+        semantic = ProductSearch(self.index, provider)
+
+        with self.assertRaisesRegex(SearchIndexError, "unavailable"):
+            semantic.refresh_semantic_embeddings()
+
+    def test_semantic_refresh_skips_document_without_searchable_metadata_or_content(self):
+        source = self.organized / "empty.txt"
+        source.write_text("", encoding="utf-8")
+        self.search.refresh(self.organized)
+
+        document = self.index.semantic_document(source)
+        provider = FakeEmbeddingProvider({document: (1.0, 0.0)})
+        semantic = ProductSearch(self.index, provider)
+
+        result = semantic.refresh_semantic_embeddings()
+
+        self.assertEqual(result.scanned, 1)
+        self.assertEqual(result.embedded, 1)
+        self.assertEqual(result.skipped, 0)
+
+    def test_semantic_refresh_reuses_matching_embedding_fingerprint(self):
+        source = self.organized / "notes.txt"
+        source.write_text("semantic stable document", encoding="utf-8")
+        self.search.refresh(self.organized)
+        document = self.index.semantic_document(source)
+        provider = FakeEmbeddingProvider({
+            document: (1.0, 0.0),
+            "query": (1.0, 0.0),
+        })
+        semantic = ProductSearch(self.index, provider)
+
+        first = semantic.refresh_semantic_embeddings()
+        second = semantic.refresh_semantic_embeddings()
+
+        self.assertEqual(first.embedded, 1)
+        self.assertEqual(second.embedded, 0)
+        self.assertEqual(second.unchanged, 1)
+
+    def test_reindex_invalidates_existing_semantic_embedding(self):
+        source = self.organized / "notes.txt"
+        source.write_text("first version", encoding="utf-8")
+        self.search.refresh(self.organized)
+        document = self.index.semantic_document(source)
+        provider = FakeEmbeddingProvider({document: (1.0, 0.0)})
+        semantic = ProductSearch(self.index, provider)
+        semantic.refresh_semantic_embeddings()
+        self.assertIsNotNone(self.index.embedding_fingerprint_for_file(source))
+
+        source.write_text("second version changed", encoding="utf-8")
+        self.search.refresh(self.organized)
+
+        self.assertIsNone(self.index.embedding_fingerprint_for_file(source))
+
+    def test_semantic_search_empty_query_does_not_call_provider(self):
+        provider = FakeEmbeddingProvider({})
+        semantic = ProductSearch(self.index, provider)
+
+        self.assertEqual(semantic.semantic_search("   "), ())
+        self.assertEqual(provider.embed_calls, [])
 
     def test_missing_organized_root_is_refused(self):
         missing = self.root / "missing"
