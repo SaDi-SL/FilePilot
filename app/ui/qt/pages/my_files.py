@@ -392,12 +392,26 @@ class MyFilesPage(QWidget):
 
     def _search_refresh_completed(self, result) -> None:
         self.refresh_search_button.setEnabled(True)
+        semantic_note = ""
+        if getattr(result, "semantic_available", False):
+            semantic_note = (
+                f" Smart index: {result.semantic_embedded} embedded, "
+                f"{result.semantic_unchanged} unchanged"
+                + (
+                    f", {result.semantic_failed} failed."
+                    if result.semantic_failed
+                    else "."
+                )
+            )
+        else:
+            semantic_note = " Smart index unavailable; exact search was still updated."
         self.search_status.setText(
             "Index updated — "
             f"{result.indexed} indexed, "
             f"{result.unchanged} unchanged, "
             f"{result.removed} removed"
             + (f", {result.failed} failed." if result.failed else ".")
+            + semantic_note
         )
 
     def _search_failed(self, name: str, message: str) -> None:
