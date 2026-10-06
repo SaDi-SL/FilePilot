@@ -14,12 +14,7 @@ RUNTIME_ROOT = OCR_ROOT / "runtime"
 MANIFEST_FILE = OCR_ROOT / "runtime-manifest.json"
 
 REQUIRED_LANGUAGES = ("eng", "ara")
-EXCLUDED_NAMES = {
-    "uninstall.exe",
-    "unins000.exe",
-    "unins000.dat",
-    "unins000.msg",
-}
+RUNTIME_EXECUTABLE = "tesseract.exe"
 
 
 def sha256_file(path: Path) -> str:
@@ -61,15 +56,16 @@ def _copy_runtime_files(source: Path) -> list[Path]:
 
     copied: list[Path] = []
 
-    # Tesseract's Windows build relies on DLLs beside the executable. Copy the
-    # complete top-level executable/DLL runtime set rather than guessing a subset.
-    for candidate in sorted(source.iterdir(), key=lambda item: item.name.casefold()):
-        if not candidate.is_file():
-            continue
-        if candidate.name.casefold() in EXCLUDED_NAMES:
-            continue
-        if candidate.suffix.casefold() not in {".exe", ".dll"}:
-            continue
+    # Tesseract's Windows build relies on DLLs beside the executable. Ship the
+    # runtime executable plus its top-level DLL set, but never auxiliary tools,
+    # training executables, uninstallers, or unrelated programs.
+    runtime_files = [executable]
+    runtime_files.extend(
+        candidate
+        for candidate in sorted(source.iterdir(), key=lambda item: item.name.casefold())
+        if candidate.is_file() and candidate.suffix.casefold() == ".dll"
+    )
+    for candidate in runtime_files:
         destination = RUNTIME_ROOT / candidate.name
         shutil.copy2(candidate, destination)
         copied.append(destination)
