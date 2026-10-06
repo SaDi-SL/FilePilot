@@ -45,7 +45,7 @@ def read_plain_text(
 
 def read_pdf_text(
     file_path: Path,
-    max_pages: int = 5,
+    max_pages: int = 2,
     max_chars: int = 4000,
     *,
     lowercase: bool = True,
@@ -70,17 +70,21 @@ def read_pdf_text(
 
 def read_docx_text(
     file_path: Path,
-    max_paragraphs: int | None = None,
+    max_paragraphs: int | None = 30,
     max_chars: int = 4000,
     *,
     lowercase: bool = True,
 ) -> str:
     try:
         document = Document(str(file_path))
-        paragraphs = document.paragraphs
-        if max_paragraphs is not None:
-            paragraphs = paragraphs[:max_paragraphs]
-        texts = [paragraph.text for paragraph in paragraphs if paragraph.text.strip()]
+        texts = []
+        for index, paragraph in enumerate(document.paragraphs):
+            if max_paragraphs is not None and index >= max_paragraphs:
+                break
+            if paragraph.text.strip():
+                texts.append(paragraph.text)
+            if sum(len(text) for text in texts) >= max_chars:
+                break
         return trim_text(
             "\n".join(texts),
             max_chars=max_chars,
@@ -150,7 +154,8 @@ def extract_file_content(
     max_chars: int = 4000,
     *,
     lowercase: bool = True,
-    max_pdf_pages: int = 5,
+    max_pdf_pages: int = 2,
+    max_docx_paragraphs: int | None = 30,
 ) -> str:
     """Extract local text without AI and without mutating the source file."""
     file_path = Path(file_path)
@@ -174,6 +179,7 @@ def extract_file_content(
     if suffix == ".docx":
         return read_docx_text(
             file_path,
+            max_paragraphs=max_docx_paragraphs,
             max_chars=max_chars,
             lowercase=lowercase,
         )
