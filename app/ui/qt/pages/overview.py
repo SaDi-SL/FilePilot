@@ -1,5 +1,5 @@
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QGridLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget
 
 from app.application_service import ProductDataState, ProductSnapshot, RecoverySnapshot, SafetyDataState, StartupStatus
 from app.ui.qt.service_bridge import QtServiceBridge, ServiceSnapshot
@@ -73,33 +73,10 @@ class OverviewPage(QWidget):
         self._arrange_metrics(4)
         self.page_layout.addWidget(self.metrics_widget)
 
-        self.control_row = QWidget()
-        self.control_layout = QHBoxLayout(self.control_row)
-        self.control_layout.setContentsMargins(0, 0, 0, 0)
-        self.control_layout.setSpacing(SPACING.md)
         self.state_panel = StatePanel()
         self.state_panel.start_requested.connect(self.bridge.request_start)
         self.state_panel.stop_requested.connect(self.bridge.request_stop)
-        self.control_layout.addWidget(self.state_panel, 3)
-
-        self.system_status = SectionCard()
-        self.system_status.setAccessibleName("System status summary")
-        self.system_status.content_layout.setSpacing(SPACING.sm)
-        heading = QLabel("Safety status")
-        heading.setProperty("role", "sectionTitle")
-        caption = QLabel("Live facts from FilePilot services")
-        caption.setProperty("role", "caption")
-        self.system_status.content_layout.addWidget(heading)
-        self.system_status.content_layout.addWidget(caption)
-        divider = QFrame()
-        divider.setProperty("divider", True)
-        self.system_status.content_layout.addWidget(divider)
-        self.monitoring_status_value = self._status_row("Monitoring", "Initializing")
-        self.startup_status_value = self._status_row("Startup", "Checking")
-        self.recovery_status_value = self._status_row("Recovery", "Not checked")
-        self.system_status.content_layout.addStretch(1)
-        self.control_layout.addWidget(self.system_status, 2)
-        self.page_layout.addWidget(self.control_row)
+        self.page_layout.addWidget(self.state_panel)
 
         self.recovery_attention = SectionCard(elevated=True)
         self.recovery_attention.setAccessibleName("Recovery attention")
