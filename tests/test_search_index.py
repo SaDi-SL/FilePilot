@@ -315,6 +315,18 @@ class SearchIndexTests(unittest.TestCase):
         self.assertEqual(indexed.extraction_status, "unsupported_format")
         self.assertEqual(self.index.search("legacy")[0].path, source)
 
+    def test_relaxed_search_uses_prefix_roots_and_stop_words(self):
+        source = self.root / "verification.txt"
+        source.write_text(
+            "system integration testing and verification",
+            encoding="utf-8",
+        )
+        self.index.index_file(source)
+
+        results = self.index.search_relaxed("documents about testing")
+
+        self.assertEqual(results[0].path, source)
+
     def test_empty_or_punctuation_only_query_is_safe(self):
         self.assertEqual(self.index.search(""), ())
         self.assertEqual(self.index.search("!!! ---"), ())
