@@ -4,7 +4,14 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from app.search_index import SearchIndex, SearchIndexError, SearchResult
+from app.embedding_service import OllamaEmbeddingProvider
+from app.search_index import (
+    SearchIndex,
+    SearchIndexError,
+    SearchResult,
+    SemanticSearchResult,
+)
+from app.semantic_search import embedding_fingerprint
 
 
 @dataclass(frozen=True)
@@ -17,14 +24,106 @@ class SearchRefreshResult:
     errors: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class SemanticRefreshResult:
+    scanned: int
+    embedded: int
+    unchanged: int
+    skipped: int
+    failed: int
+    errors: tuple[str, ...] = ()
+
+
 class ProductSearch:
     """Reconcile and query FilePilot's local search catalog."""
 
-    def __init__(self, index: SearchIndex | None = None) -> None:
+    def __init__(
+        self,
+        index: SearchIndex | None = None,
+        embedding_provider: OllamaEmbeddingProvider | None = None,
+    ) -> None:
         self._index = index or SearchIndex()
+        self._embedding_provider = embedding_provider
 
     def search(self, query: str, *, limit: int = 25) -> tuple[SearchResult, ...]:
         return self._index.search(query, limit=limit)
+
+    def refresh_semantic_embeddings(
+        self,
+        *,
+        timeout: float = 30.0,
+    ) -> SemanticRefreshResult:
+        provider = self._embedding_provider
+        if provider is None:
+            raise SearchIndexError("Semantic search provider is not configured")
+        if not provider.is_ready(timeout=min(timeout, 3.0)):
+            raise SearchIndexError("Local semantic search model is unavailable")
+
+        scanned = embedded = unchanged = skipped = failed = 0
+        errors: list[str] = []
+        for path in self._index.indexed_paths():
+            scanned += 1
+            try:
+                document = self._index.semantic_document(path)
+                if not document:
+                    skipped += 1
+                    continue
+
+                response = provider.embed(document, timeout=timeout)
+                fingerprint = embedding_fingerprint(
+                    provider=response.provider,
+                    model=response.model,
+                    dimensions=len(response.vector),
+                )
+                if self._index.embedding_fingerprint_for_file(path) == fingerprint:
+                    unchanged += 1
+                    continue
+
+                self._index.upsert_embedding(
+                    path,
+                    response.vector,
+                    provider=response.provider,
+                    model=response.model,
+                    embedding_fingerprint=fingerprint,
+                )
+                embedded += 1
+            except Exception as error:
+                failed += 1
+                errors.append(f"{path.name}: {error}")
+
+        return SemanticRefreshResult(
+            scanned=scanned,
+            embedded=embedded,
+            unchanged=unchanged,
+            skipped=skipped,
+            failed=failed,
+            errors=tuple(errors),
+        )
+
+    def semantic_search(
+        self,
+        query: str,
+        *,
+        limit: int = 25,
+        timeout: float = 30.0,
+    ) -> tuple[SemanticSearchResult, ...]:
+        provider = self._embedding_provider
+        if provider is None:
+            raise SearchIndexError("Semantic search provider is not configured")
+        if not isinstance(query, str) or not query.strip():
+            return ()
+
+        response = provider.embed(query, timeout=timeout)
+        fingerprint = embedding_fingerprint(
+            provider=response.provider,
+            model=response.model,
+            dimensions=len(response.vector),
+        )
+        return self._index.semantic_search(
+            response.vector,
+            embedding_fingerprint=fingerprint,
+            limit=limit,
+        )
 
     def refresh(self, organized_root: str | Path) -> SearchRefreshResult:
         root = Path(organized_root).resolve()
