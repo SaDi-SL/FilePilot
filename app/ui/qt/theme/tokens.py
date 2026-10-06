@@ -3,7 +3,7 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class ColorTokens:
-    background: str = "#0D1117"
+    background: str = "#0C1016"
     sidebar: str = "#101722"
     surface: str = "#151C27"
     surface_elevated: str = "#1B2431"
