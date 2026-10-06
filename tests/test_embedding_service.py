@@ -47,8 +47,8 @@ class OllamaEmbeddingProviderTests(unittest.TestCase):
         self.assertEqual(response.provider, "ollama")
         self.assertEqual(response.model, "nomic-embed-text")
 
-    def test_query_task_uses_search_query_prefix(self):
-        provider = OllamaEmbeddingProvider()
+    def test_nomic_query_task_uses_search_query_prefix(self):
+        provider = OllamaEmbeddingProvider(model="nomic-embed-text")
         with patch(
             "app.ai_service.request.urlopen",
             return_value=urlopen_response({"embeddings": [[1.0, 0.0]]}),
