@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.application_service import OperationPreview, SafetyDataState
+from app.application_service import MoveStatus, OperationPreview, SafetyDataState
 from app.ui.qt.service_bridge import QtServiceBridge
 from app.ui.qt.theme.tokens import SPACING
 from app.ui.qt.widgets.section_card import SectionCard
@@ -93,6 +93,7 @@ class MyFilesPage(QWidget):
         self.bridge = bridge
         self._source: Path | None = None
         self._preview_pending = False
+        self._organize_pending = False
 
         self.setObjectName("MyFilesPage")
         self.setProperty("pageSurface", True)
@@ -212,6 +213,16 @@ class MyFilesPage(QWidget):
         self.preview_warning.setWordWrap(True)
         self.preview_warning.hide()
         self.preview_card.content_layout.addWidget(self.preview_warning)
+
+        action_row = QHBoxLayout()
+        self.organize_button = QPushButton("Organize file")
+        self.organize_button.setProperty("variant", "primary")
+        self.organize_button.setAccessibleName("Organize the selected file using FilePilot safety checks")
+        self.organize_button.setEnabled(False)
+        self.organize_button.clicked.connect(self._organize_file)
+        action_row.addStretch(1)
+        action_row.addWidget(self.organize_button)
+        self.preview_card.content_layout.addLayout(action_row)
         self.preview_card.content_layout.addStretch(1)
 
         footer = QLabel(
@@ -229,6 +240,8 @@ class MyFilesPage(QWidget):
         layout.addStretch(1)
 
         self.bridge.preview_changed.connect(self.render_preview)
+        self.bridge.organize_started.connect(self._organize_started)
+        self.bridge.organize_completed.connect(self._organize_completed)
         self.bridge.safety_request_failed.connect(self._request_failed)
 
     def _preview_row(self, label: str, value: str) -> QLabel:
@@ -281,6 +294,8 @@ class MyFilesPage(QWidget):
         self.selected_path.setText(str(path))
         self.preview_button.setEnabled(True)
         self._preview_pending = False
+        self._organize_pending = False
+        self.organize_button.setEnabled(False)
         self._reset_preview(
             "Ready to preview",
             "File selected. Preview will inspect the current FilePilot configuration without changing the file.",
@@ -291,6 +306,7 @@ class MyFilesPage(QWidget):
             return
         self._preview_pending = True
         self.preview_button.setEnabled(False)
+        self.organize_button.setEnabled(False)
         self._set_badge("Checking", "info")
         self.preview_message.setText(
             "FilePilot is checking classification, duplicate evidence, destination, and safety."
@@ -323,6 +339,12 @@ class MyFilesPage(QWidget):
 
         self._set_badge(badge, tone)
         self.preview_message.setText(preview.message or "Preview completed.")
+        self.organize_button.setEnabled(
+            preview.status is not None
+            and preview.status.value == "ready"
+            and preview.execution_possible
+            and not self._organize_pending
+        )
         self.category_value.setText(preview.category or "Unavailable")
         self.destination_value.setText(
             str(preview.proposed_destination)
@@ -362,11 +384,63 @@ class MyFilesPage(QWidget):
         self.preview_warning.setText(warning or "")
         self.preview_warning.setVisible(bool(warning))
 
+    def _organize_file(self) -> None:
+        if self._source is None or self._organize_pending:
+            return
+        self._organize_pending = True
+        self.preview_button.setEnabled(False)
+        self.organize_button.setEnabled(False)
+        self._set_badge("Revalidating", "info")
+        self.preview_message.setText(
+            "FilePilot is rechecking current evidence before changing anything."
+        )
+        self.bridge.request_organize(str(self._source))
+
+    def _organize_started(self, source: str) -> None:
+        if self._source is None or Path(source) != self._source:
+            return
+        self._organize_pending = True
+        self.preview_button.setEnabled(False)
+        self.organize_button.setEnabled(False)
+
+    def _organize_completed(self, result) -> None:
+        if self._source is None or Path(result.source) != self._source:
+            return
+        self._organize_pending = False
+        if result.status is MoveStatus.MOVED:
+            self._set_badge("Organized", "success")
+            self.preview_message.setText("File organized safely. The operation was journaled and can be reviewed in Activity.")
+            self.destination_value.setText(str(result.destination) if result.destination is not None else "Moved")
+            self.safety_value.setText("Execution completed safely")
+            self.preview_button.setEnabled(False)
+            self.organize_button.setEnabled(False)
+            self.selected_path.setText("Original source moved by FilePilot")
+            return
+        if result.status is MoveStatus.DUPLICATE:
+            self._set_badge("Duplicate", "warning")
+            self.preview_message.setText(
+                "Execution-time checks found a verified duplicate. FilePilot kept the source file."
+            )
+            self.duplicate_value.setText(
+                f"Verified duplicate — {result.duplicate_of}"
+                if result.duplicate_of is not None
+                else "Verified duplicate"
+            )
+        else:
+            self._set_badge("Not organized", "error")
+            self.preview_message.setText(
+                result.error or "FilePilot refused the operation. Nothing unsafe was done."
+            )
+        self.preview_button.setEnabled(self._source.is_file())
+        self.organize_button.setEnabled(False)
+
     def _request_failed(self, name: str, message: str) -> None:
-        if name != "preview":
+        if name not in {"preview", "organize"}:
             return
         self._preview_pending = False
-        self.preview_button.setEnabled(self._source is not None)
+        self._organize_pending = False
+        self.preview_button.setEnabled(self._source is not None and self._source.is_file())
+        self.organize_button.setEnabled(False)
         self._reset_preview(
             "Unavailable",
             message or "Preview could not be completed. Nothing changed.",
@@ -388,6 +462,7 @@ class MyFilesPage(QWidget):
         self.safety_value.setText("—")
         self.preview_warning.clear()
         self.preview_warning.hide()
+        self.organize_button.setEnabled(False)
 
     def _set_badge(self, text: str, tone: str) -> None:
         self.preview_badge.setText(text)
