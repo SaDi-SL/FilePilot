@@ -54,13 +54,35 @@ class ContentReaderTests(unittest.TestCase):
         self.assertEqual(legacy_xls.status, "unsupported_format")
         self.assertIn(".xls", legacy_xls.detail or "")
 
-    def test_pdf_without_embedded_text_reports_ocr_required(self):
-        with patch("app.content_reader.read_pdf_text", return_value=""):
-            result = extract_file_content_result(Path("scan.pdf"))
+    def test_pdf_without_embedded_text_uses_ocr_fallback(self):
+        result_type = type(
+            "PDFOCRResult",
+            (),
+            {
+                "text": "Scanned مرحبا",
+                "status": "extracted",
+                "detail": None,
+            },
+        )
+        with (
+            patch("app.content_reader.read_pdf_text", return_value=""),
+            patch("app.content_reader.run_pdf_ocr", return_value=result_type()) as ocr,
+        ):
+            result = extract_file_content_result(
+                Path("scan.pdf"),
+                max_chars=123,
+                max_pdf_pages=4,
+                lowercase=False,
+            )
 
-        self.assertEqual(result.status, "ocr_required")
-        self.assertEqual(result.method, "pdf_text")
-        self.assertFalse(result.has_text)
+        self.assertEqual(result.status, "extracted")
+        self.assertEqual(result.method, "pdf_ocr")
+        self.assertEqual(result.text, "Scanned مرحبا")
+        ocr.assert_called_once_with(
+            Path("scan.pdf"),
+            max_pages=4,
+            max_output_chars=123,
+        )
 
     def test_image_without_ocr_runtime_reports_ocr_unavailable(self):
         result_type = type(
