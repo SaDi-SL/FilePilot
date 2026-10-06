@@ -15,6 +15,9 @@ from app.search_index import (
 from app.semantic_search import embedding_fingerprint
 
 
+BGE_M3_MIN_RELEVANCE_SCORE = 0.40
+
+
 @dataclass(frozen=True)
 class SearchRefreshResult:
     scanned: int
@@ -248,11 +251,19 @@ class ProductSearch:
             model=response.model,
             dimensions=len(response.vector),
         )
-        return self._index.semantic_search(
+        results = self._index.semantic_search(
             response.vector,
             embedding_fingerprint=fingerprint,
             limit=limit,
         )
+        model_family = response.model.casefold().split(":", 1)[0]
+        if model_family == "bge-m3":
+            results = tuple(
+                item
+                for item in results
+                if item.score >= BGE_M3_MIN_RELEVANCE_SCORE
+            )
+        return results
 
     def refresh(self, organized_root: str | Path) -> SearchRefreshResult:
         root = Path(organized_root).resolve()
