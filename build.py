@@ -39,6 +39,7 @@ BUILD_DIR = ROOT / "build"
 VERSION_INFO_FILE = BUILD_DIR / "metadata" / "FilePilot-version-info.txt"
 BUILD_IDENTITY_FILE = DIST_DIR / f"{APP_NAME}.version"
 OCR_MANIFEST_FILE = ROOT / "third_party" / "ocr" / "runtime-manifest.json"
+OCR_NOTICES_FILE = ROOT / "third_party" / "ocr" / "THIRD-PARTY-NOTICES.md"
 OCR_SOURCE_DIR = ROOT / "third_party" / "ocr" / "runtime"
 OCR_DIST_DIR = DIST_DIR / "ocr"
 
@@ -88,6 +89,7 @@ def release_source_files() -> tuple[Path, ...]:
         ROOT / "requirements-qt.txt",
         ROOT / "requirements-build.txt",
         OCR_MANIFEST_FILE,
+        OCR_NOTICES_FILE,
     }
     files.update((ROOT / "app").rglob("*.py"))
     return tuple(sorted((path for path in files if path.is_file()), key=str))
@@ -188,6 +190,13 @@ def validate_ocr_runtime_inputs() -> list[str]:
             continue
         if not isinstance(license_name, str) or not license_name.strip():
             errors.append(f"OCR manifest is missing license metadata: {relative}")
+        elif license_name.strip().casefold() in {
+            "review_required",
+            "reviewed-third-party-runtime",
+            "unknown",
+            "tbd",
+        }:
+            errors.append(f"OCR manifest license review is incomplete: {relative}")
 
         source = OCR_SOURCE_DIR / path
         try:
@@ -237,6 +246,7 @@ def stage_verified_ocr_runtime() -> bool:
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, destination)
     shutil.copy2(OCR_MANIFEST_FILE, OCR_DIST_DIR / "runtime-manifest.json")
+    shutil.copy2(OCR_NOTICES_FILE, OCR_DIST_DIR / "THIRD-PARTY-NOTICES.md")
     log(f"OCR sidecar: verified and staged -> {OCR_DIST_DIR}")
     return True
 
@@ -260,7 +270,7 @@ def validate_staged_ocr_runtime() -> list[str]:
         for item in manifest["files"]
         if isinstance(item, dict) and isinstance(item.get("path"), str)
     }
-    expected_paths.add("runtime-manifest.json")
+    expected_paths.update({"runtime-manifest.json", "THIRD-PARTY-NOTICES.md"})
 
     actual_paths = {
         path.relative_to(OCR_DIST_DIR).as_posix()
@@ -272,6 +282,14 @@ def validate_staged_ocr_runtime() -> list[str]:
         errors.append(f"Staged OCR runtime file is missing: {relative}")
     for relative in sorted(actual_paths - expected_paths):
         errors.append(f"Staged OCR runtime contains undeclared file: {relative}")
+
+    staged_notices = OCR_DIST_DIR / "THIRD-PARTY-NOTICES.md"
+    if staged_notices.is_file():
+        try:
+            if staged_notices.read_bytes() != OCR_NOTICES_FILE.read_bytes():
+                errors.append("Staged OCR third-party notices do not match release notices")
+        except OSError:
+            errors.append("Staged OCR third-party notices could not be verified")
 
     staged_manifest = OCR_DIST_DIR / "runtime-manifest.json"
     if staged_manifest.is_file():
@@ -303,7 +321,14 @@ def validate_staged_ocr_runtime() -> list[str]:
 def validate_release_inputs() -> list[str]:
     """Fail closed when the explicit release inputs violate the package contract."""
     errors: list[str] = []
-    required = (SPEC_FILE, DEFAULT_CONFIG, ICON_FILE, INSTALLER_FILE, OCR_MANIFEST_FILE)
+    required = (
+        SPEC_FILE,
+        DEFAULT_CONFIG,
+        ICON_FILE,
+        INSTALLER_FILE,
+        OCR_MANIFEST_FILE,
+        OCR_NOTICES_FILE,
+    )
     for path in required:
         if not path.is_file():
             errors.append(f"Required release input is missing: {path.relative_to(ROOT)}")
