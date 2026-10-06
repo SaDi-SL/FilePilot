@@ -93,6 +93,10 @@ class FakeService:
             ProductDataState.AVAILABLE,
             ProductMetrics(0, 0, 0, 0),
         )
+        self.search_calls = []
+        self.search_thread_ids = []
+        self.search_refresh_calls = 0
+        self.search_refresh_thread_ids = []
         self.preview_calls = []
         self.preview_thread_ids = []
         self.preview_entered = threading.Event()
@@ -202,6 +206,18 @@ class FakeService:
             if error is not None:
                 raise error
             return result
+
+    def search_files(self, query, limit=25):
+        with self._operation():
+            self.search_calls.append((query, limit))
+            self.search_thread_ids.append(threading.get_ident())
+            return (query, limit)
+
+    def refresh_search_index(self):
+        with self._operation():
+            self.search_refresh_calls += 1
+            self.search_refresh_thread_ids.append(threading.get_ident())
+            return {"indexed": 1}
 
     def preview_file(self, source):
         with self._operation():
@@ -797,6 +813,49 @@ class QtServiceBridgeTests(unittest.TestCase):
             previews.at(0)[0].source,
             Path("C:/Inbox/latest.txt"),
         )
+
+    def test_search_runs_off_gui_thread_and_preserves_query(self):
+        service = FakeService()
+        bridge = self._bridge(service)
+        results = QSignalSpy(bridge.search_results_changed)
+        observed = QSignalSpy(bridge.operation_thread_observed)
+
+        bridge.request_search("IR50 traction", 25)
+
+        self._wait_until(lambda: results.count() == 1)
+
+        self.assertEqual(service.search_calls, [("IR50 traction", 25)])
+        self.assertEqual(results.at(0)[0], "IR50 traction")
+        self.assertEqual(results.at(0)[1], ("IR50 traction", 25))
+        self.assertNotEqual(service.search_thread_ids[0], threading.get_ident())
+        worker_ids = [
+            observed.at(index)[1]
+            for index in range(observed.count())
+            if observed.at(index)[0] == "search"
+        ]
+        self.assertEqual(len(worker_ids), 1)
+        self.assertNotEqual(worker_ids[0], threading.get_ident())
+
+    def test_search_refresh_runs_off_gui_thread_and_suppresses_duplicate_request(self):
+        service = FakeService()
+        bridge = self._bridge(service)
+        completed = QSignalSpy(bridge.search_refresh_completed)
+        observed = QSignalSpy(bridge.operation_thread_observed)
+
+        bridge.request_search_refresh()
+        bridge.request_search_refresh()
+
+        self._wait_until(lambda: completed.count() == 1)
+
+        self.assertEqual(service.search_refresh_calls, 1)
+        self.assertNotEqual(service.search_refresh_thread_ids[0], threading.get_ident())
+        worker_ids = [
+            observed.at(index)[1]
+            for index in range(observed.count())
+            if observed.at(index)[0] == "search_refresh"
+        ]
+        self.assertEqual(len(worker_ids), 1)
+        self.assertNotEqual(worker_ids[0], threading.get_ident())
 
     def test_manual_organize_runs_off_gui_thread_and_is_not_duplicated(self):
         service = FakeService()
