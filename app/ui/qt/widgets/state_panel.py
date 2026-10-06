@@ -27,13 +27,13 @@ class StatePanel(SectionCard):
     stop_requested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent, elevated=True)
+        super().__init__(parent)
         self.setAccessibleName("Monitoring control")
         self.content_layout.setSpacing(SPACING.sm)
 
         heading_row = QHBoxLayout()
         heading_row.setSpacing(SPACING.md)
-        heading = QLabel("Monitoring Control")
+        heading = QLabel("Automatic organization")
         heading.setProperty("role", "sectionTitle")
         heading_row.addWidget(heading)
         heading_row.addStretch(1)
@@ -88,12 +88,12 @@ class StatePanel(SectionCard):
 
         button_row = QHBoxLayout()
         button_row.setSpacing(SPACING.md)
-        self.start_button = QPushButton("Start Monitoring")
+        self.start_button = QPushButton("Start organizing")
         self.start_button.setProperty("variant", "primary")
         self.start_button.setAccessibleName("Start FilePilot monitoring")
         self.start_button.setMinimumWidth(132)
         self.start_button.clicked.connect(self.start_requested)
-        self.stop_button = QPushButton("Stop Monitoring")
+        self.stop_button = QPushButton("Stop")
         self.stop_button.setAccessibleName("Stop FilePilot monitoring")
         self.stop_button.setMinimumWidth(132)
         self.stop_button.clicked.connect(self.stop_requested)
