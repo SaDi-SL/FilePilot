@@ -1,0 +1,176 @@
+{
+  "schema_version": 1,
+  "reviewed_against": "MSYS2 UCRT64 package metadata and upstream project licensing",
+  "files": {
+    "tesseract.exe": {
+      "component": "Tesseract OCR",
+      "license": "Apache-2.0",
+      "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-tesseract-ocr"
+    },
+    "libtesseract-5.dll": {
+      "component": "Tesseract OCR",
+      "license": "Apache-2.0",
+      "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-tesseract-ocr"
+    },
+    "libleptonica-6.dll": {
+      "component": "Leptonica",
+      "license": "BSD-2-Clause",
+      "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-leptonica"
+    },
+    "libarchive-13.dll": {
+      "component": "libarchive",
+      "license": "BSD-2-Clause",
+      "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-libarchive"
+    },
+    "libcurl-4.dll": {
+      "component": "curl",
+      "license": "MIT",
+      "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-curl"
+    },
+    "libicudt78.dll": {
+      "component": "ICU",
+      "license": "ICU",
+      "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-icu"
+    },
+    "libicuin78.dll": {
+      "component": "ICU",
+      "license": "ICU",
+      "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-icu"
+    },
+    "libicuuc78.dll": {
+      "component": "ICU",
+      "license": "ICU",
+      "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-icu"
+    },
+    "libgio-2.0-0.dll": {
+      "component": "GLib",
+      "license": "LGPL-2.1-or-later",
+      "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-glib2"
+    },
+    "libglib-2.0-0.dll": {
+      "component": "GLib",
+      "license": "LGPL-2.1-or-later",
+      "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-glib2"
+    },
+    "libgmodule-2.0-0.dll": {
+      "component": "GLib",
+      "license": "LGPL-2.1-or-later",
+      "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-glib2"
+    },
+    "libgobject-2.0-0.dll": {
+      "component": "GLib",
+      "license": "LGPL-2.1-or-later",
+      "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-glib2"
+    },
+    "libgcc_s_seh-1.dll": {
+      "component": "GCC runtime",
+      "license": "GPL-3.0-or-later WITH GCC-exception-3.1",
+      "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-gcc-libs"
+    },
+    "libstdc++-6.dll": {
+      "component": "GCC runtime",
+      "license": "GPL-3.0-or-later WITH GCC-exception-3.1",
+      "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-gcc-libs"
+    },
+    "libdeflate.dll": {
+      "component": "libdeflate",
+      "license": "MIT",
+      "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-libdeflate"
+    },
+    "libexpat-1.dll": {
+      "component": "Expat",
+      "license": "MIT",
+      "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-expat"
+    },
+    "libfribidi-0.dll": {
+      "component": "FriBidi",
+      "license": "LGPL-2.1-or-later",
+      "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-fribidi"
+    },
+    "libgraphite2.dll": {
+      "component": "Graphite2",
+      "license": "LGPL-2.1-or-later",
+      "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-graphite2"
+    },
+    "libharfbuzz-0.dll": {
+      "component": "HarfBuzz",
+      "license": "MIT",
+      "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-harfbuzz"
+    },
+    "libiconv-2.dll": {
+      "component": "GNU libiconv",
+      "license": "LGPL-2.1-or-later",
+      "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-libiconv"
+    },
+    "libidn2-0.dll": {
+      "component": "libidn2",
+      "license": "LGPL-3.0-or-later",
+      "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-libidn2"
+    },
+    "libintl-8.dll": {
+      "component": "GNU gettext runtime",
+      "license": "LGPL-2.1-or-later",
+      "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-gettext-runtime"
+    },
+    "libjpeg-8.dll": {
+      "component": "libjpeg-turbo",
+      "license": "custom:BSD-like",
+      "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-libjpeg-turbo"
+    },
+    "libLerc.dll": {
+      "component": "Lerc",
+      "license": "Apache-2.0",
+      "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-lerc"
+    },
+    "libopenjp2-7.dll": {
+      "component": "OpenJPEG",
+      "license": "BSD-2-Clause",
+      "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-openjpeg2"
+    },
+    "libpango-1.0-0.dll": {
+      "component": "Pango",
+      "license": "LGPL-2.1",
+      "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-pango"
+    },
+    "libpangocairo-1.0-0.dll": {
+      "component": "Pango",
+      "license": "LGPL-2.1",
+      "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-pango"
+    },
+    "libpangoft2-1.0-0.dll": {
+      "component": "Pango",
+      "license": "LGPL-2.1",
+      "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-pango"
+    },
+    "libpangowin32-1.0-0.dll": {
+      "component": "Pango",
+      "license": "LGPL-2.1",
+      "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-pango"
+    },
+    "libpcre2-8-0.dll": {
+      "component": "PCRE2",
+      "license": "BSD-3-Clause",
+      "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-pcre2"
+    },
+    "libpixman-1-0.dll": {
+      "component": "Pixman",
+      "license": "MIT",
+      "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-pixman"
+    },
+    "libpsl-5.dll": {
+      "component": "libpsl",
+      "license": "MIT",
+      "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-libpsl"
+    },
+    "tessdata/eng.traineddata": {
+      "component": "tessdata_fast English",
+      "license": "Apache-2.0",
+      "source": "https://github.com/tesseract-ocr/tessdata_fast"
+    },
+    "tessdata/ara.traineddata": {
+      "component": "tessdata_fast Arabic",
+      "license": "Apache-2.0",
+      "source": "https://github.com/tesseract-ocr/tessdata_fast"
+    }
+  }
+}
