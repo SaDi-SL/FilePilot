@@ -53,6 +53,28 @@ class OllamaEmbeddingProviderTests(unittest.TestCase):
         payload = json.loads(opener.call_args.args[0].data.decode("utf-8"))
         self.assertEqual(payload["input"], "search_query: train testing")
 
+    def test_bge_m3_uses_raw_document_and_query_text(self):
+        provider = OllamaEmbeddingProvider(model="bge-m3")
+        responses = [
+            urlopen_response({"embeddings": [[1.0, 0.0]]}),
+            urlopen_response({"embeddings": [[1.0, 0.0]]}),
+        ]
+        with patch(
+            "app.ai_service.request.urlopen",
+            side_effect=responses,
+        ) as opener:
+            provider.embed("swedish engineering document", task="document")
+            provider.embed("train testing", task="query")
+
+        first_payload = json.loads(
+            opener.call_args_list[0].args[0].data.decode("utf-8")
+        )
+        second_payload = json.loads(
+            opener.call_args_list[1].args[0].data.decode("utf-8")
+        )
+        self.assertEqual(first_payload["input"], "swedish engineering document")
+        self.assertEqual(second_payload["input"], "train testing")
+
     def test_invalid_task_is_rejected_without_network(self):
         provider = OllamaEmbeddingProvider()
         with patch("app.ai_service.request.urlopen") as opener:
