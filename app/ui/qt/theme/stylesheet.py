@@ -83,6 +83,12 @@ def build_stylesheet() -> str:
             border: 1px solid {c.border};
             border-radius: {r.panel}px;
         }}
+        QFrame[primaryPanel="true"] {{
+            background-color: {c.surface_elevated};
+            border: 1px solid {c.border_strong};
+            border-left: 3px solid {c.primary};
+            border-radius: {r.panel}px;
+        }}
         QFrame[divider="true"] {{
             background-color: {c.border};
             min-height: 1px;
@@ -248,6 +254,11 @@ def build_stylesheet() -> str:
             outline: none;
             selection-background-color: {c.surface_hover};
             selection-color: {c.text_primary};
+        }}
+        QTreeWidget[activityTable="true"][compactActivity="true"] {{
+            background-color: transparent;
+            border: none;
+            border-radius: 0;
         }}
         QTreeWidget[activityTable="true"]::item {{
             min-height: 34px;
