@@ -240,7 +240,6 @@ class OverviewPage(QWidget):
         width = event.size().width()
         columns = 1 if width < 560 else 2 if width < 980 else 4
         self._arrange_metrics(columns)
-        self.control_layout.setDirection(QHBoxLayout.Direction.TopToBottom if width < 860 else QHBoxLayout.Direction.LeftToRight)
         margin = SPACING.lg if width < 760 else SPACING.xl
         self.page_layout.setContentsMargins(margin, margin, margin, margin)
         self.page_layout.setSpacing(SPACING.md if width < 760 else SPACING.lg)
