@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import math
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable
@@ -17,6 +19,8 @@ from app.ocr_runtime import OCRRuntime
 DEFAULT_PDF_OCR_MAX_PAGES = 5
 DEFAULT_PDF_RENDER_SCALE = 2.0
 MAX_PDF_OCR_PAGES = 20
+DEFAULT_PDF_OCR_TOTAL_TIMEOUT_SECONDS = 60
+MAX_PDF_OCR_TOTAL_TIMEOUT_SECONDS = 300
 
 
 @dataclass(frozen=True)
@@ -44,8 +48,10 @@ def run_pdf_ocr(
     max_pages: int = DEFAULT_PDF_OCR_MAX_PAGES,
     render_scale: float = DEFAULT_PDF_RENDER_SCALE,
     timeout_seconds: int = DEFAULT_OCR_TIMEOUT_SECONDS,
+    total_timeout_seconds: int = DEFAULT_PDF_OCR_TOTAL_TIMEOUT_SECONDS,
     max_output_chars: int = 100_000,
     image_ocr: Callable[..., OCRExecutionResult] = run_image_ocr,
+    clock: Callable[[], float] = time.monotonic,
 ) -> PDFOCRResult:
     """Render a bounded number of PDF pages and OCR them without persistent temp files."""
     source = Path(file_path).resolve()
@@ -71,6 +77,12 @@ def run_pdf_ocr(
     bounded_pages = max(1, min(int(max_pages), MAX_PDF_OCR_PAGES))
     bounded_scale = max(1.0, min(float(render_scale), 4.0))
     bounded_output = max(1, min(int(max_output_chars), 100_000))
+    bounded_total_timeout = max(
+        1,
+        min(int(total_timeout_seconds), MAX_PDF_OCR_TOTAL_TIMEOUT_SECONDS),
+    )
+    started_at = clock()
+    deadline = started_at + bounded_total_timeout
 
     try:
         document = pdfium.PdfDocument(str(source))
@@ -91,6 +103,15 @@ def run_pdf_ocr(
         with tempfile.TemporaryDirectory(prefix="FilePilot-PDF-OCR-") as temp_dir:
             temp_root = Path(temp_dir)
             for page_index in range(page_count):
+                if clock() >= deadline:
+                    return PDFOCRResult(
+                        text="",
+                        status="extraction_failed",
+                        pages_attempted=pages_attempted,
+                        pages_extracted=pages_extracted,
+                        detail="PDF OCR time budget exceeded",
+                    )
+
                 pages_attempted += 1
                 page = None
                 bitmap = None
@@ -104,13 +125,35 @@ def run_pdf_ocr(
                     remaining = bounded_output - sum(len(part) for part in parts)
                     if remaining <= 0:
                         break
+                    remaining_seconds = deadline - clock()
+                    if remaining_seconds <= 0:
+                        return PDFOCRResult(
+                            text="",
+                            status="extraction_failed",
+                            pages_attempted=pages_attempted,
+                            pages_extracted=pages_extracted,
+                            detail="PDF OCR time budget exceeded",
+                        )
+                    page_timeout = max(
+                        1,
+                        min(int(timeout_seconds), int(math.ceil(remaining_seconds))),
+                    )
+
                     result = image_ocr(
                         rendered,
                         runtime=runtime,
                         languages=languages,
-                        timeout_seconds=timeout_seconds,
+                        timeout_seconds=page_timeout,
                         max_output_chars=remaining,
                     )
+                    if clock() > deadline:
+                        return PDFOCRResult(
+                            text="",
+                            status="extraction_failed",
+                            pages_attempted=pages_attempted,
+                            pages_extracted=pages_extracted,
+                            detail="PDF OCR time budget exceeded",
+                        )
                     if result.status == "ocr_unavailable":
                         return PDFOCRResult(
                             text="",
