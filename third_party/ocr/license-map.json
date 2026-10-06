@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "reviewed_against": "MSYS2 UCRT64 package metadata and upstream project licensing",
+  "reviewed_against": "MSYS2 UCRT64 package metadata and upstream project licensing; metadata mapping only, redistribution license texts still required",
   "files": {
     "tesseract.exe": {
       "component": "Tesseract OCR",
@@ -171,6 +171,126 @@
       "component": "tessdata_fast Arabic",
       "license": "Apache-2.0",
       "source": "https://github.com/tesseract-ocr/tessdata_fast"
+    },
+    "libb2-1.dll": {
+      "component": "libb2",
+      "license": "CC0-1.0",
+      "source": "https://packages.msys2.org/package/mingw-w64-ucrt-x86_64-libb2"
+    },
+    "libbrotlicommon.dll": {
+      "component": "Brotli",
+      "license": "MIT",
+      "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-brotli"
+    },
+    "libbrotlidec.dll": {
+      "component": "Brotli",
+      "license": "MIT",
+      "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-brotli"
+    },
+    "libbz2-1.dll": {
+      "component": "bzip2",
+      "license": "custom:bzip2",
+      "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-bzip2"
+    },
+    "libcairo-2.dll": {
+      "component": "Cairo",
+      "license": "LGPL-2.1-or-later OR MPL-1.1",
+      "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-cairo"
+    },
+    "libdatrie-1.dll": {
+      "component": "libdatrie",
+      "license": "LGPL",
+      "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-libdatrie"
+    },
+    "libffi-8.dll": {
+      "component": "libffi",
+      "license": "MIT",
+      "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-libffi"
+    },
+    "libfontconfig-1.dll": {
+      "component": "Fontconfig",
+      "license": "custom:fontconfig",
+      "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-fontconfig"
+    },
+    "libfreetype-6.dll": {
+      "component": "FreeType",
+      "license": "GPL-2.0-or-later OR FTL",
+      "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-freetype"
+    },
+    "libgif-7.dll": {
+      "component": "giflib",
+      "license": "MIT",
+      "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-giflib"
+    },
+    "libjbig-0.dll": {
+      "component": "JBIG-KIT",
+      "license": "GPL-2.0",
+      "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-jbigkit"
+    },
+    "liblz4.dll": {
+      "component": "LZ4",
+      "license": "BSD OR GPL-2.0",
+      "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-lz4"
+    },
+    "liblzma-5.dll": {
+      "component": "XZ Utils / liblzma",
+      "license": "0BSD AND LGPL-2.1-or-later AND GPL-2.0-or-later",
+      "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-xz"
+    },
+    "libpng16-16.dll": {
+      "component": "libpng",
+      "license": "custom:libpng",
+      "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-libpng"
+    },
+    "libsharpyuv-0.dll": {
+      "component": "libwebp (SharpYUV)",
+      "license": "BSD-3-Clause",
+      "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-libwebp"
+    },
+    "libssh2-1.dll": {
+      "component": "libssh2",
+      "license": "BSD-3-Clause",
+      "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-libssh2"
+    },
+    "libthai-0.dll": {
+      "component": "libthai",
+      "license": "LGPL-2.1-or-later",
+      "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-libthai"
+    },
+    "libtiff-6.dll": {
+      "component": "libtiff",
+      "license": "MIT",
+      "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-libtiff"
+    },
+    "libunistring-5.dll": {
+      "component": "GNU libunistring",
+      "license": "LGPL-3.0-or-later OR GPL-3.0-or-later",
+      "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-libunistring"
+    },
+    "libwebp-7.dll": {
+      "component": "libwebp",
+      "license": "BSD-3-Clause",
+      "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-libwebp"
+    },
+    "libwebpmux-3.dll": {
+      "component": "libwebp",
+      "license": "BSD-3-Clause",
+      "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-libwebp"
+    },
+    "libwinpthread-1.dll": {
+      "component": "MinGW-w64 winpthreads",
+      "license": "MIT AND BSD-3-Clause-Clear",
+      "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-libwinpthread"
+    },
+    "libzstd.dll": {
+      "component": "Zstandard",
+      "license": "BSD-3-Clause OR GPL-2.0-or-later",
+      "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-zstd"
+    },
+    "zlib1.dll": {
+      "component": "zlib",
+      "license": "Zlib",
+      "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-zlib"
     }
   }
 }
