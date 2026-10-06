@@ -8,6 +8,7 @@ from docx import Document
 from pypdf import PdfReader
 
 from app.ocr_engine import run_image_ocr
+from app.pdf_ocr import run_pdf_ocr
 
 logger = logging.getLogger(__name__)
 
@@ -217,11 +218,28 @@ def extract_file_content_result(
                 max_chars=max_chars,
                 lowercase=lowercase,
             )
+            if text:
+                return ContentExtractionResult(
+                    text=text,
+                    status="extracted",
+                    method="pdf_text",
+                )
+
+            ocr = run_pdf_ocr(
+                file_path,
+                max_pages=max_pdf_pages,
+                max_output_chars=max_chars,
+            )
+            ocr_text = trim_text(
+                ocr.text,
+                max_chars=max_chars,
+                lowercase=lowercase,
+            )
             return ContentExtractionResult(
-                text=text,
-                status="extracted" if text else "ocr_required",
-                method="pdf_text",
-                detail=None if text else "No embedded PDF text was found",
+                text=ocr_text,
+                status=ocr.status,
+                method="pdf_ocr",
+                detail=ocr.detail,
             )
 
         if suffix == ".docx":
