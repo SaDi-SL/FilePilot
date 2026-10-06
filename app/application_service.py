@@ -294,7 +294,23 @@ class FilePilotService:
                     "Search indexing requires a configured organized folder"
                 )
             organized_root = Path(organized)
-        return self._product_search.refresh(organized_root)
+        lexical = self._product_search.refresh(organized_root)
+        try:
+            semantic = self._product_search.refresh_semantic_embeddings()
+        except SearchIndexError:
+            return lexical
+        return SearchRefreshResult(
+            scanned=lexical.scanned,
+            indexed=lexical.indexed,
+            unchanged=lexical.unchanged,
+            removed=lexical.removed,
+            failed=lexical.failed,
+            errors=lexical.errors,
+            semantic_embedded=semantic.embedded,
+            semantic_unchanged=semantic.unchanged,
+            semantic_failed=semantic.failed,
+            semantic_available=True,
+        )
 
     def get_product_configuration(self) -> ProductConfigurationSnapshot:
         """Read one immutable product configuration snapshot."""
