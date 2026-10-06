@@ -90,7 +90,11 @@ def _write_manifest(files: list[Path]) -> None:
             {
                 "path": relative,
                 "sha256": sha256_file(path),
-                "license": "reviewed-third-party-runtime",
+                "license": (
+                    "Apache-2.0"
+                    if relative == "tesseract.exe" or relative.startswith("tessdata/")
+                    else "REVIEW_REQUIRED"
+                ),
             }
         )
 
