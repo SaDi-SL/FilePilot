@@ -201,7 +201,7 @@ class MyFilesPage(QWidget):
         self.preview_rows = QVBoxLayout()
         self.preview_rows.setSpacing(SPACING.sm)
         self.category_value = self._preview_row("Category", "—")
-        self.destination_value = self._preview_row("Destination", "—")
+        self.destination_value = self._preview_block("Proposed destination", "—")
         self.classification_value = self._preview_row("Classified by", "—")
         self.duplicate_value = self._preview_row("Duplicate check", "—")
         self.safety_value = self._preview_row("Safety", "—")
@@ -247,6 +247,20 @@ class MyFilesPage(QWidget):
         row.addStretch(1)
         row.addWidget(value_label, 2)
         self.preview_rows.addLayout(row)
+        return value_label
+
+    def _preview_block(self, label: str, value: str) -> QLabel:
+        block = QVBoxLayout()
+        block.setSpacing(2)
+        name = QLabel(label)
+        name.setProperty("role", "secondary")
+        value_label = QLabel(value)
+        value_label.setProperty("role", "body")
+        value_label.setWordWrap(True)
+        value_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        block.addWidget(name)
+        block.addWidget(value_label)
+        self.preview_rows.addLayout(block)
         return value_label
 
     def _browse(self) -> None:
@@ -316,15 +330,29 @@ class MyFilesPage(QWidget):
             else "No destination proposed"
         )
         classification = preview.classification_method or preview.classification_source
-        self.classification_value.setText(classification or "Unavailable")
-        duplicate_text = preview.duplicate_status.value.replace("_", " ").title()
+        classification_labels = {
+            "extension": "Extension rule",
+            "fallback": "Fallback rule",
+        }
+        self.classification_value.setText(
+            classification_labels.get(classification, classification or "Unavailable")
+        )
+        duplicate_labels = {
+            "not_found": "No duplicate found",
+            "proven": "Verified duplicate",
+            "unknown": "Could not verify",
+        }
+        duplicate_text = duplicate_labels.get(
+            preview.duplicate_status.value,
+            preview.duplicate_status.value.replace("_", " ").title(),
+        )
         if preview.duplicate_of is not None:
             duplicate_text += f" — {preview.duplicate_of}"
         self.duplicate_value.setText(duplicate_text)
         self.safety_value.setText(
-            "Validated for preview"
+            "Preview checks passed"
             if preview.safety_validated
-            else "Not validated for execution"
+            else "Execution not currently validated"
         )
         warning = preview.warning
         if preview.alternative_name_required:
