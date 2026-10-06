@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Iterable
 
 
-SEMANTIC_PIPELINE_REVISION = "9c-semantic-search-v1"
+SEMANTIC_PIPELINE_REVISION = "9c-semantic-search-v2-asymmetric-tasks"
 MAX_EMBEDDING_DIMENSIONS = 4096
 
 
