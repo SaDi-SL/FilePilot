@@ -12,10 +12,16 @@ from pathlib import Path
 from app.application_paths import get_application_paths
 from app.content_reader import extract_file_content_result
 from app.ocr_runtime import discover_ocr_runtime
+from app.semantic_search import (
+    SemanticSearchError,
+    decode_vector,
+    encode_vector,
+    normalize_vector,
+)
 
 
 SEARCH_APPLICATION_ID = 0x46505349  # "FPSI"
-SEARCH_SCHEMA_VERSION = 2
+SEARCH_SCHEMA_VERSION = 3
 SEARCH_EXTRACTION_PIPELINE_REVISION = "9b-richer-extraction-ocr-v1"
 MAX_SEARCH_RESULTS = 100
 
@@ -45,6 +51,15 @@ class SearchResult:
     category: str | None
     snippet: str
     rank: float
+
+
+@dataclass(frozen=True)
+class SemanticSearchResult:
+    path: Path
+    filename: str
+    extension: str
+    category: str | None
+    score: float
 
 
 def current_extraction_fingerprint() -> str:
@@ -122,6 +137,20 @@ class SearchIndex:
                         content='files',
                         content_rowid='rowid'
                     );
+
+                    CREATE TABLE IF NOT EXISTS file_embeddings (
+                        path TEXT PRIMARY KEY NOT NULL,
+                        vector BLOB NOT NULL,
+                        dimensions INTEGER NOT NULL CHECK(dimensions > 0),
+                        provider TEXT NOT NULL,
+                        model TEXT NOT NULL,
+                        embedding_fingerprint TEXT NOT NULL,
+                        embedded_at_utc TEXT NOT NULL,
+                        FOREIGN KEY(path) REFERENCES files(path) ON DELETE CASCADE
+                    );
+
+                    CREATE INDEX IF NOT EXISTS idx_file_embeddings_fingerprint
+                    ON file_embeddings(embedding_fingerprint);
 
                     CREATE TRIGGER IF NOT EXISTS files_ai AFTER INSERT ON files BEGIN
                         INSERT INTO files_fts(rowid, filename, path, category, content)
@@ -315,6 +344,149 @@ class SearchIndex:
             extraction_fingerprint=row["extraction_fingerprint"],
             indexed_at_utc=row["indexed_at_utc"],
         )
+
+    def semantic_document(self, file_path: str | Path, *, max_chars: int = 12_000) -> str | None:
+        """Return bounded indexed text for local embedding without re-reading the source file."""
+        source = Path(file_path).resolve()
+        bounded_chars = max(256, min(int(max_chars), 100_000))
+        try:
+            with closing(self._connect()) as connection, connection:
+                row = connection.execute(
+                    "SELECT filename, category, content FROM files WHERE path = ?",
+                    (str(source),),
+                ).fetchone()
+        except sqlite3.Error as error:
+            raise SearchIndexError(f"Search index read failed: {error}") from error
+        if row is None:
+            return None
+        parts = [row["filename"]]
+        if row["category"]:
+            parts.append(str(row["category"]))
+        if row["content"]:
+            parts.append(str(row["content"]))
+        return "\n".join(parts)[:bounded_chars].strip()
+
+    def upsert_embedding(
+        self,
+        file_path: str | Path,
+        vector,
+        *,
+        provider: str,
+        model: str,
+        embedding_fingerprint: str,
+    ) -> None:
+        """Persist one normalized local embedding for an already indexed file."""
+        source = Path(file_path).resolve()
+        provider_name = provider.strip()
+        model_name = model.strip()
+        fingerprint = embedding_fingerprint.strip()
+        if not provider_name or not model_name or not fingerprint:
+            raise SearchIndexError("Embedding metadata is incomplete")
+        try:
+            payload, dimensions = encode_vector(vector)
+        except SemanticSearchError as error:
+            raise SearchIndexError(f"Embedding is invalid: {error}") from error
+        embedded_at = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+        try:
+            with closing(self._connect()) as connection, connection:
+                exists = connection.execute(
+                    "SELECT 1 FROM files WHERE path = ?",
+                    (str(source),),
+                ).fetchone()
+                if exists is None:
+                    raise SearchIndexError("File must be indexed before embedding")
+                connection.execute(
+                    """
+                    INSERT INTO file_embeddings (
+                        path, vector, dimensions, provider, model,
+                        embedding_fingerprint, embedded_at_utc
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(path) DO UPDATE SET
+                        vector = excluded.vector,
+                        dimensions = excluded.dimensions,
+                        provider = excluded.provider,
+                        model = excluded.model,
+                        embedding_fingerprint = excluded.embedding_fingerprint,
+                        embedded_at_utc = excluded.embedded_at_utc
+                    """,
+                    (
+                        str(source),
+                        payload,
+                        dimensions,
+                        provider_name,
+                        model_name,
+                        fingerprint,
+                        embedded_at,
+                    ),
+                )
+        except SearchIndexError:
+            raise
+        except sqlite3.Error as error:
+            raise SearchIndexError(f"Embedding persistence failed: {error}") from error
+
+    def semantic_search(
+        self,
+        query_vector,
+        *,
+        embedding_fingerprint: str,
+        limit: int = 25,
+    ) -> tuple[SemanticSearchResult, ...]:
+        """Perform bounded cosine search over embeddings from one exact model fingerprint."""
+        fingerprint = embedding_fingerprint.strip()
+        if not fingerprint:
+            return ()
+        bounded_limit = max(1, min(int(limit), MAX_SEARCH_RESULTS))
+        try:
+            normalized_query = normalize_vector(query_vector)
+        except SemanticSearchError as error:
+            raise SearchIndexError(f"Semantic query is invalid: {error}") from error
+
+        try:
+            with closing(self._connect()) as connection, connection:
+                rows = connection.execute(
+                    """
+                    SELECT
+                        files.path,
+                        files.filename,
+                        files.extension,
+                        files.category,
+                        file_embeddings.vector,
+                        file_embeddings.dimensions
+                    FROM file_embeddings
+                    JOIN files ON files.path = file_embeddings.path
+                    WHERE file_embeddings.embedding_fingerprint = ?
+                    ORDER BY files.filename COLLATE NOCASE
+                    """,
+                    (fingerprint,),
+                ).fetchall()
+        except sqlite3.Error as error:
+            raise SearchIndexError(f"Semantic search failed: {error}") from error
+
+        scored: list[SemanticSearchResult] = []
+        for row in rows:
+            try:
+                candidate = decode_vector(row["vector"], row["dimensions"])
+            except SemanticSearchError:
+                continue
+            if len(candidate) != len(normalized_query):
+                continue
+            score = sum(
+                left * right
+                for left, right in zip(normalized_query, candidate, strict=True)
+            )
+            scored.append(
+                SemanticSearchResult(
+                    path=Path(row["path"]),
+                    filename=row["filename"],
+                    extension=row["extension"],
+                    category=row["category"],
+                    score=max(-1.0, min(1.0, float(score))),
+                )
+            )
+
+        scored.sort(key=lambda item: (-item.score, item.filename.casefold()))
+        return tuple(scored[:bounded_limit])
 
     def search(self, query: str, *, limit: int = 25) -> tuple[SearchResult, ...]:
         bounded_limit = max(1, min(int(limit), MAX_SEARCH_RESULTS))
