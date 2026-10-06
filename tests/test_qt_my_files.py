@@ -14,11 +14,10 @@ except ImportError as error:
     ) from error
 
 from app.application_service import (
-    DuplicateStatus,
     OperationPreview,
     SafetyDataState,
 )
-from app.mover import MoveResult, MoveStatus, PreviewStatus
+from app.mover import DuplicateStatus, MoveResult, MoveStatus, PreviewStatus
 from app.ui.qt.application import create_application
 from app.ui.qt.pages.my_files import MyFilesPage
 
