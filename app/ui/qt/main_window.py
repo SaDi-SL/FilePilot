@@ -66,6 +66,10 @@ class MainWindow(QMainWindow):
         self._page_indexes["overview"] = self.page_stack.addWidget(overview)
         self.overview_page = overview
 
+        my_files = MyFilesPage(self.bridge)
+        self._page_indexes["my_files"] = self.page_stack.addWidget(my_files)
+        self.my_files_page = my_files
+
         activity = ActivityPage(self.bridge)
         self._page_indexes["activity"] = self.page_stack.addWidget(activity)
         self.activity_page = activity
