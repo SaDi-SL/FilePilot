@@ -81,6 +81,39 @@ class SearchIndexTests(unittest.TestCase):
         self.assertEqual([result.path for result in results], [first, second])
         self.assertGreater(results[0].score, results[1].score)
 
+    def test_semantic_search_uses_best_chunk_per_file(self):
+        first = self.root / "long-report.txt"
+        second = self.root / "short-test.txt"
+        first.write_text("long report", encoding="utf-8")
+        second.write_text("short test", encoding="utf-8")
+        self.index.index_file(first)
+        self.index.index_file(second)
+
+        fingerprint = "chunk-test"
+        self.index.upsert_embedding_chunks(
+            first,
+            [[0.0, 1.0], [1.0, 0.0]],
+            provider="test",
+            model="tiny",
+            embedding_fingerprint=fingerprint,
+        )
+        self.index.upsert_embedding_chunks(
+            second,
+            [[0.6, 0.8]],
+            provider="test",
+            model="tiny",
+            embedding_fingerprint=fingerprint,
+        )
+
+        results = self.index.semantic_search(
+            [1.0, 0.0],
+            embedding_fingerprint=fingerprint,
+        )
+
+        self.assertEqual(results[0].path, first)
+        self.assertGreater(results[0].score, results[1].score)
+        self.assertEqual(len([item for item in results if item.path == first]), 1)
+
     def test_semantic_search_ignores_other_embedding_fingerprint(self):
         source = self.root / "one.txt"
         source.write_text("semantic content", encoding="utf-8")
