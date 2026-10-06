@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 
 from docx import Document
@@ -12,7 +13,22 @@ TEXT_BASED_EXTENSIONS = {
     ".txt", ".md", ".csv", ".json", ".log"
 }
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".webp"}
-EXCEL_EXTENSIONS = {".xlsx", ".xls"}
+EXCEL_EXTENSIONS = {".xlsx"}
+LEGACY_EXCEL_EXTENSIONS = {".xls"}
+
+
+@dataclass(frozen=True)
+class ContentExtractionResult:
+    """Truthful local extraction outcome used by indexing and future OCR flows."""
+
+    text: str
+    status: str
+    method: str
+    detail: str | None = None
+
+    @property
+    def has_text(self) -> bool:
+        return bool(self.text)
 
 
 def trim_text(
@@ -149,6 +165,106 @@ def read_image_ocr(
         return ""
 
 
+def extract_file_content_result(
+    file_path: Path,
+    max_chars: int = 4000,
+    *,
+    lowercase: bool = True,
+    max_pdf_pages: int = 2,
+    max_docx_paragraphs: int | None = 30,
+) -> ContentExtractionResult:
+    """Extract local text and preserve why content was or was not available."""
+    file_path = Path(file_path)
+    suffix = file_path.suffix.lower()
+
+    try:
+        if suffix in TEXT_BASED_EXTENSIONS:
+            text = read_plain_text(
+                file_path,
+                max_chars=max_chars,
+                lowercase=lowercase,
+            )
+            return ContentExtractionResult(
+                text=text,
+                status="extracted" if text else "empty",
+                method="plain_text",
+            )
+
+        if suffix == ".pdf":
+            text = read_pdf_text(
+                file_path,
+                max_pages=max_pdf_pages,
+                max_chars=max_chars,
+                lowercase=lowercase,
+            )
+            return ContentExtractionResult(
+                text=text,
+                status="extracted" if text else "ocr_required",
+                method="pdf_text",
+                detail=None if text else "No embedded PDF text was found",
+            )
+
+        if suffix == ".docx":
+            text = read_docx_text(
+                file_path,
+                max_paragraphs=max_docx_paragraphs,
+                max_chars=max_chars,
+                lowercase=lowercase,
+            )
+            return ContentExtractionResult(
+                text=text,
+                status="extracted" if text else "empty",
+                method="docx",
+            )
+
+        if suffix in EXCEL_EXTENSIONS:
+            text = read_excel_text(
+                file_path,
+                max_chars=max_chars,
+                lowercase=lowercase,
+            )
+            return ContentExtractionResult(
+                text=text,
+                status="extracted" if text else "empty",
+                method="xlsx",
+            )
+
+        if suffix in LEGACY_EXCEL_EXTENSIONS:
+            return ContentExtractionResult(
+                text="",
+                status="unsupported_format",
+                method="none",
+                detail="Legacy .xls files are not supported by the local extractor",
+            )
+
+        if suffix in IMAGE_EXTENSIONS:
+            text = read_image_ocr(
+                file_path,
+                max_chars=max_chars,
+                lowercase=lowercase,
+            )
+            return ContentExtractionResult(
+                text=text,
+                status="extracted" if text else "ocr_unavailable",
+                method="image_ocr",
+                detail=None if text else "OCR produced no searchable text",
+            )
+
+        return ContentExtractionResult(
+            text="",
+            status="unsupported_format",
+            method="none",
+        )
+    except Exception as error:
+        logger.debug("Content extraction failed for %s: %s", file_path.name, error)
+        return ContentExtractionResult(
+            text="",
+            status="extraction_failed",
+            method="none",
+            detail=type(error).__name__,
+        )
+
+
 def extract_file_content(
     file_path: Path,
     max_chars: int = 4000,
@@ -157,45 +273,11 @@ def extract_file_content(
     max_pdf_pages: int = 2,
     max_docx_paragraphs: int | None = 30,
 ) -> str:
-    """Extract local text without AI and without mutating the source file."""
-    file_path = Path(file_path)
-    suffix = file_path.suffix.lower()
-
-    if suffix in TEXT_BASED_EXTENSIONS:
-        return read_plain_text(
-            file_path,
-            max_chars=max_chars,
-            lowercase=lowercase,
-        )
-
-    if suffix == ".pdf":
-        return read_pdf_text(
-            file_path,
-            max_pages=max_pdf_pages,
-            max_chars=max_chars,
-            lowercase=lowercase,
-        )
-
-    if suffix == ".docx":
-        return read_docx_text(
-            file_path,
-            max_paragraphs=max_docx_paragraphs,
-            max_chars=max_chars,
-            lowercase=lowercase,
-        )
-
-    if suffix in EXCEL_EXTENSIONS:
-        return read_excel_text(
-            file_path,
-            max_chars=max_chars,
-            lowercase=lowercase,
-        )
-
-    if suffix in IMAGE_EXTENSIONS:
-        return read_image_ocr(
-            file_path,
-            max_chars=max_chars,
-            lowercase=lowercase,
-        )
-
-    return ""
+    """Compatibility API returning only extracted text."""
+    return extract_file_content_result(
+        file_path,
+        max_chars=max_chars,
+        lowercase=lowercase,
+        max_pdf_pages=max_pdf_pages,
+        max_docx_paragraphs=max_docx_paragraphs,
+    ).text
