@@ -50,7 +50,11 @@ class OllamaEmbeddingProvider:
             raise ValueError("Embedding input must contain text")
         if task not in {"document", "query"}:
             raise ValueError("Embedding task must be document or query")
-        prefix = "search_document: " if task == "document" else "search_query: "
+        model_family = self.model.casefold().split(":", 1)[0]
+        if model_family == "nomic-embed-text":
+            prefix = "search_document: " if task == "document" else "search_query: "
+        else:
+            prefix = ""
         bounded = (prefix + text)[:MAX_EMBED_INPUT_CHARS]
         payload: dict[str, Any] = {
             "model": self.model,
