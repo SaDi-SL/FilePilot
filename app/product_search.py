@@ -64,26 +64,30 @@ class ProductSearch:
         for path in self._index.indexed_paths():
             scanned += 1
             try:
-                document = self._index.semantic_document(path)
-                if not document:
+                chunks = self._index.semantic_document_chunks(path)
+                if not chunks:
                     skipped += 1
                     continue
 
-                response = provider.embed(document, timeout=timeout, task="document")
+                responses = [
+                    provider.embed(chunk, timeout=timeout, task="document")
+                    for chunk in chunks
+                ]
+                first = responses[0]
                 fingerprint = embedding_fingerprint(
-                    provider=response.provider,
-                    model=response.model,
-                    dimensions=len(response.vector),
+                    provider=first.provider,
+                    model=first.model,
+                    dimensions=len(first.vector),
                 )
                 if self._index.embedding_fingerprint_for_file(path) == fingerprint:
                     unchanged += 1
                     continue
 
-                self._index.upsert_embedding(
+                self._index.upsert_embedding_chunks(
                     path,
-                    response.vector,
-                    provider=response.provider,
-                    model=response.model,
+                    [response.vector for response in responses],
+                    provider=first.provider,
+                    model=first.model,
                     embedding_fingerprint=fingerprint,
                 )
                 embedded += 1
