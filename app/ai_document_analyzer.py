@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Callable
 
 from app.ai_service import AIService
+from app.content_reader import extract_file_content
 
 logger = logging.getLogger(__name__)
 
@@ -63,93 +64,23 @@ class DocumentAnalysis:
         return len(self.key_dates) > 0
 
 
-# ── Content extractors ────────────────────────────────────────────────────────
+# ── Content extraction ────────────────────────────────────────────────────────
 
 def _extract_text(file_path: Path, max_chars: int = 3000) -> str:
-    """Extract text from any supported file type."""
-    suffix = file_path.suffix.lower()
-
+    """Compatibility wrapper over FilePilot's canonical local extractor."""
     try:
-        # Plain text files
-        if suffix in (".txt", ".md", ".csv", ".log"):
-            return file_path.read_text(encoding="utf-8", errors="ignore")[:max_chars]
-
-        # PDF
-        if suffix == ".pdf":
-            return _extract_pdf(file_path, max_chars)
-
-        # Word documents
-        if suffix in (".docx", ".doc"):
-            return _extract_docx(file_path, max_chars)
-
-        # Excel
-        if suffix in (".xlsx", ".xls"):
-            return _extract_excel(file_path, max_chars)
-
-        # Images — OCR
-        if suffix in (".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".webp"):
-            return _extract_image_ocr(file_path, max_chars)
-
-        # Fallback — filename only
-        return f"[Cannot read content of {suffix} file]"
-
-    except Exception as e:
-        logger.warning(f"Content extraction failed for {file_path.name}: {e}")
-        return f"[Extraction error: {e}]"
-
-
-def _extract_pdf(file_path: Path, max_chars: int) -> str:
-    try:
-        import pypdf
-        reader = pypdf.PdfReader(str(file_path))
-        text = ""
-        for page in reader.pages[:5]:  # First 5 pages
-            text += page.extract_text() or ""
-            if len(text) >= max_chars:
-                break
-        return text[:max_chars]
-    except ImportError:
-        return "[pypdf not installed — pip install pypdf]"
-
-
-def _extract_docx(file_path: Path, max_chars: int) -> str:
-    try:
-        import docx
-        doc = docx.Document(str(file_path))
-        text = "\n".join(p.text for p in doc.paragraphs)
-        return text[:max_chars]
-    except ImportError:
-        return "[python-docx not installed — pip install python-docx]"
-
-
-def _extract_excel(file_path: Path, max_chars: int) -> str:
-    try:
-        import openpyxl
-        wb = openpyxl.load_workbook(str(file_path), read_only=True, data_only=True)
-        ws = wb.active
-        rows = []
-        for i, row in enumerate(ws.iter_rows(values_only=True)):
-            if i > 50:
-                break
-            row_text = " | ".join(str(c) for c in row if c is not None)
-            if row_text.strip():
-                rows.append(row_text)
-        return "\n".join(rows)[:max_chars]
-    except ImportError:
-        return "[openpyxl not installed — pip install openpyxl]"
-
-
-def _extract_image_ocr(file_path: Path, max_chars: int) -> str:
-    try:
-        import pytesseract
-        from PIL import Image
-        img = Image.open(str(file_path))
-        text = pytesseract.image_to_string(img)
-        return text[:max_chars]
-    except ImportError:
-        return "[pytesseract not installed — pip install pytesseract]"
-    except Exception as e:
-        return f"[OCR failed: {e}]"
+        content = extract_file_content(
+            Path(file_path),
+            max_chars=max_chars,
+            lowercase=False,
+            max_pdf_pages=5,
+        )
+        if content:
+            return content
+        return f"[Cannot read content of {Path(file_path).suffix.lower()} file]"
+    except Exception as error:
+        logger.warning("Content extraction failed for %s: %s", Path(file_path).name, error)
+        return f"[Extraction error: {error}]"
 
 
 # ── AI prompt ─────────────────────────────────────────────────────────────────
