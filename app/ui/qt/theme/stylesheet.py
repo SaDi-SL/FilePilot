@@ -94,6 +94,11 @@ def build_stylesheet() -> str:
             min-height: 1px;
             max-height: 1px;
         }}
+        QFrame[dropZone="true"] {{
+            background-color: {c.background};
+            border: 1px dashed {c.border_strong};
+            border-radius: {r.panel}px;
+        }}
         QPushButton {{
             min-height: 38px;
             padding: 0 16px;
