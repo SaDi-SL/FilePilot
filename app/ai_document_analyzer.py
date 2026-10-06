@@ -74,6 +74,7 @@ def _extract_text(file_path: Path, max_chars: int = 3000) -> str:
             max_chars=max_chars,
             lowercase=False,
             max_pdf_pages=5,
+            max_docx_paragraphs=None,
         )
         if content:
             return content
