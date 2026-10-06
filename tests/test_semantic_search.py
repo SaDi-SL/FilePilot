@@ -33,6 +33,22 @@ class SemanticSearchTests(unittest.TestCase):
         self.assertAlmostEqual(cosine_similarity([1, 0], [2, 0]), 1.0)
         self.assertAlmostEqual(cosine_similarity([1, 0], [0, 1]), 0.0)
 
+    def test_embedding_fingerprint_changes_with_pipeline_revision(self):
+        first = embedding_fingerprint(
+            provider="ollama",
+            model="embed-a",
+            dimensions=3,
+            revision="pipeline-a",
+        )
+        second = embedding_fingerprint(
+            provider="ollama",
+            model="embed-a",
+            dimensions=3,
+            revision="pipeline-b",
+        )
+
+        self.assertNotEqual(first, second)
+
     def test_embedding_fingerprint_changes_with_model_or_dimensions(self):
         first = embedding_fingerprint(provider="ollama", model="embed-a", dimensions=3)
         same = embedding_fingerprint(provider="OLLAMA", model="embed-a", dimensions=3)
