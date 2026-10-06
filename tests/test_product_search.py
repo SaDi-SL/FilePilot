@@ -264,6 +264,38 @@ class ProductSearchTests(unittest.TestCase):
         self.assertEqual(semantic.hybrid_search("   "), ())
         self.assertEqual(provider.embed_calls, [])
 
+    def test_semantic_query_removes_generic_command_words(self):
+        self.assertEqual(
+            ProductSearch._semantic_query_text("documents about train testing"),
+            "train testing",
+        )
+        self.assertEqual(
+            ProductSearch._semantic_query_text("please show me files about railway systems"),
+            "railway systems",
+        )
+
+    def test_semantic_search_embeds_normalized_query(self):
+        source = self.organized / "railway.txt"
+        source.write_text("railway system testing", encoding="utf-8")
+        self.search.refresh(self.organized)
+
+        chunk = self.index.semantic_document_chunks(source)[0]
+        provider = FakeEmbeddingProvider({
+            chunk: (1.0, 0.0),
+            "train testing": (1.0, 0.0),
+        })
+        semantic = ProductSearch(self.index, provider)
+        semantic.refresh_semantic_embeddings()
+
+        results = semantic.semantic_search("documents about train testing")
+
+        self.assertEqual(results[0].path, source)
+        self.assertIn(("train testing", 30.0, "query"), provider.embed_calls)
+        self.assertNotIn(
+            ("documents about train testing", 30.0, "query"),
+            provider.embed_calls,
+        )
+
     def test_semantic_search_empty_query_does_not_call_provider(self):
         provider = FakeEmbeddingProvider({})
         semantic = ProductSearch(self.index, provider)
