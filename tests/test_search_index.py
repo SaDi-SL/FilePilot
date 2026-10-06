@@ -80,7 +80,7 @@ class SearchIndexTests(unittest.TestCase):
         source.write_bytes(b"\x00\x01")
         indexed = self.index.index_file(source, category="engineering")
 
-        self.assertEqual(indexed.extraction_status, "metadata_only")
+        self.assertEqual(indexed.extraction_status, "unsupported_format")
         self.assertEqual(self.index.search("diagram")[0].path, source)
         self.assertEqual(self.index.search("engineering")[0].path, source)
 
@@ -133,9 +133,16 @@ class SearchIndexTests(unittest.TestCase):
 
         def mutate(path, **_kwargs):
             path.write_text("after content is different", encoding="utf-8")
-            return "before"
+            return type(
+                "Extraction",
+                (),
+                {"text": "before", "status": "extracted"},
+            )()
 
-        with patch("app.search_index.extract_file_content", side_effect=mutate):
+        with patch(
+            "app.search_index.extract_file_content_result",
+            side_effect=mutate,
+        ):
             with self.assertRaisesRegex(SearchIndexError, "changed while"):
                 self.index.index_file(source)
 
