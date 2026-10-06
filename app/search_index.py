@@ -674,6 +674,52 @@ class SearchIndex:
         scored.sort(key=lambda item: (-item.score, item.filename.casefold()))
         return tuple(scored[:bounded_limit])
 
+    def search_relaxed(
+        self,
+        query: str,
+        *,
+        limit: int = 50,
+    ) -> tuple[SearchResult, ...]:
+        """Return lexical candidates using OR + safe prefix roots for hybrid ranking."""
+        bounded_limit = max(1, min(int(limit), MAX_SEARCH_RESULTS))
+        match_query = self._build_relaxed_match_query(query)
+        if not match_query:
+            return ()
+
+        try:
+            with closing(self._connect()) as connection, connection:
+                rows = connection.execute(
+                    """
+                    SELECT
+                        files.path,
+                        files.filename,
+                        files.extension,
+                        files.category,
+                        snippet(files_fts, 3, '[', ']', ' … ', 18) AS snippet,
+                        bm25(files_fts, 4.0, 1.0, 2.0, 1.0) AS rank
+                    FROM files_fts
+                    JOIN files ON files.rowid = files_fts.rowid
+                    WHERE files_fts MATCH ?
+                    ORDER BY rank, files.filename COLLATE NOCASE
+                    LIMIT ?
+                    """,
+                    (match_query, bounded_limit),
+                ).fetchall()
+        except sqlite3.Error as error:
+            raise SearchIndexError(f"Search failed: {error}") from error
+
+        return tuple(
+            SearchResult(
+                path=Path(row["path"]),
+                filename=row["filename"],
+                extension=row["extension"],
+                category=row["category"],
+                snippet=row["snippet"] or "",
+                rank=float(row["rank"]),
+            )
+            for row in rows
+        )
+
     def search(self, query: str, *, limit: int = 25) -> tuple[SearchResult, ...]:
         bounded_limit = max(1, min(int(limit), MAX_SEARCH_RESULTS))
         match_query = self._build_match_query(query)
@@ -712,6 +758,35 @@ class SearchIndex:
                 rank=float(row["rank"]),
             )
             for row in rows
+        )
+
+    @staticmethod
+    def _build_relaxed_match_query(query: str) -> str:
+        stop_words = {
+            "a", "an", "and", "about", "document", "documents", "file", "files",
+            "for", "in", "of", "on", "or", "the", "to", "with",
+        }
+        terms = [
+            token.casefold()
+            for token in re.findall(r"\w+", query, flags=re.UNICODE)
+            if token
+        ]
+        roots: list[str] = []
+        for term in terms[:20]:
+            if term in stop_words or len(term) < 3:
+                continue
+            root = term
+            for suffix in ("ing", "ed", "es", "s"):
+                if root.endswith(suffix) and len(root) - len(suffix) >= 4:
+                    root = root[:-len(suffix)]
+                    break
+            if root not in roots:
+                roots.append(root)
+        if not roots:
+            return ""
+        return " OR ".join(
+            '"' + root.replace('"', '""') + '"*'
+            for root in roots
         )
 
     @staticmethod
