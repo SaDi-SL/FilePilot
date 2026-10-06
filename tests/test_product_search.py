@@ -296,6 +296,52 @@ class ProductSearchTests(unittest.TestCase):
             provider.embed_calls,
         )
 
+    def test_bge_m3_semantic_search_filters_weak_matches(self):
+        strong = self.organized / "strong.txt"
+        weak = self.organized / "weak.txt"
+        strong.write_text("relevant engineering content", encoding="utf-8")
+        weak.write_text("unrelated content", encoding="utf-8")
+        self.search.refresh(self.organized)
+
+        strong_chunk = self.index.semantic_document_chunks(strong)[0]
+        weak_chunk = self.index.semantic_document_chunks(weak)[0]
+        provider = FakeEmbeddingProvider(
+            {
+                strong_chunk: (1.0, 0.0),
+                weak_chunk: (0.35, 0.93675),
+                "train testing": (1.0, 0.0),
+            },
+            model="bge-m3",
+        )
+        semantic = ProductSearch(self.index, provider)
+        semantic.refresh_semantic_embeddings()
+
+        results = semantic.semantic_search("train testing")
+
+        self.assertEqual([item.path for item in results], [strong])
+        self.assertGreaterEqual(results[0].score, 0.40)
+
+    def test_non_bge_model_keeps_existing_semantic_behavior(self):
+        source = self.organized / "legacy.txt"
+        source.write_text("legacy embedding behavior", encoding="utf-8")
+        self.search.refresh(self.organized)
+
+        chunk = self.index.semantic_document_chunks(source)[0]
+        provider = FakeEmbeddingProvider(
+            {
+                chunk: (0.35, 0.93675),
+                "query": (1.0, 0.0),
+            },
+            model="embed-test",
+        )
+        semantic = ProductSearch(self.index, provider)
+        semantic.refresh_semantic_embeddings()
+
+        results = semantic.semantic_search("query")
+
+        self.assertEqual(len(results), 1)
+        self.assertLess(results[0].score, 0.40)
+
     def test_semantic_search_empty_query_does_not_call_provider(self):
         provider = FakeEmbeddingProvider({})
         semantic = ProductSearch(self.index, provider)
