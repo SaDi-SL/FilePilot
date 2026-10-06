@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -48,6 +49,27 @@ class SemanticRefreshResult:
 
 class ProductSearch:
     """Reconcile and query FilePilot's local search catalog."""
+
+    @staticmethod
+    def _semantic_query_text(query: str) -> str:
+        """Remove generic search-command wording while preserving user concepts."""
+        stop_words = {
+            "a", "an", "about", "document", "documents", "file", "files",
+            "find", "for", "give", "in", "me", "of", "on", "please", "search",
+            "show", "the", "to", "with",
+        }
+        tokens = [
+            token
+            for token in re.findall(r"\w+", query, flags=re.UNICODE)
+            if token
+        ]
+        meaningful = [
+            token
+            for token in tokens
+            if token.casefold() not in stop_words
+        ]
+        normalized = " ".join(meaningful).strip()
+        return normalized or query.strip()
 
     def __init__(
         self,
@@ -215,7 +237,8 @@ class ProductSearch:
         if not isinstance(query, str) or not query.strip():
             return ()
 
-        response = provider.embed(query, timeout=timeout, task="query")
+        semantic_query = self._semantic_query_text(query)
+        response = provider.embed(semantic_query, timeout=timeout, task="query")
         fingerprint = embedding_fingerprint(
             provider=response.provider,
             model=response.model,
