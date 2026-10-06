@@ -146,7 +146,9 @@ class OCRPackagingContractTests(unittest.TestCase):
                 entries.append({
                     "path": relative,
                     "sha256": hashlib.sha256(payload).hexdigest(),
+                    "component": "Test OCR payload",
                     "license": "Apache-2.0",
+                    "source": "https://example.invalid/test-ocr",
                 })
 
             manifest = {
@@ -164,6 +166,7 @@ class OCRPackagingContractTests(unittest.TestCase):
             with (
                 patch.object(self.build, "OCR_SOURCE_DIR", runtime),
                 patch.object(self.build, "_load_ocr_manifest", return_value=(manifest, None)),
+                patch.object(self.build, "validate_ocr_license_bundle", return_value=[]),
             ):
                 self.assertEqual(self.build.validate_ocr_runtime_inputs(), [])
                 entries[0]["sha256"] = "0" * 64
@@ -215,16 +218,37 @@ class OCRPackagingContractTests(unittest.TestCase):
             manifest_bytes = (json.dumps(manifest, indent=2) + "\n").encode("utf-8")
             manifest_path = root / "runtime-manifest.json"
             notices_path = root / "THIRD-PARTY-NOTICES.md"
+            license_bundle_path = root / "license-bundle.json"
+            licenses_dir = root / "licenses"
+            licenses_dir.mkdir()
+            apache_text = licenses_dir / "Apache-2.0.txt"
+            apache_text.write_text("Apache license text", encoding="utf-8")
+            license_bundle_path.write_text(
+                json.dumps({
+                    "schema_version": 1,
+                    "licenses": {"Apache-2.0": "licenses/Apache-2.0.txt"},
+                }),
+                encoding="utf-8",
+            )
+
             manifest_path.write_bytes(manifest_bytes)
             notices_path.write_text("notices", encoding="utf-8")
             (staged_runtime / "runtime-manifest.json").write_bytes(manifest_bytes)
             (staged_runtime / "THIRD-PARTY-NOTICES.md").write_text("notices", encoding="utf-8")
+            (staged_runtime / "license-bundle.json").write_text(
+                license_bundle_path.read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+            staged_license = staged_runtime / "licenses" / "Apache-2.0.txt"
+            staged_license.parent.mkdir()
+            staged_license.write_text("Apache license text", encoding="utf-8")
 
             with (
                 patch.object(self.build, "OCR_SOURCE_DIR", source_runtime),
                 patch.object(self.build, "OCR_DIST_DIR", staged_runtime),
                 patch.object(self.build, "OCR_MANIFEST_FILE", manifest_path),
                 patch.object(self.build, "OCR_NOTICES_FILE", notices_path),
+                patch.object(self.build, "OCR_LICENSE_BUNDLE_FILE", license_bundle_path),
                 patch.object(self.build, "_load_ocr_manifest", return_value=(manifest, None)),
             ):
                 self.assertEqual(self.build.validate_staged_ocr_runtime(), [])
