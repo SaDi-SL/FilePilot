@@ -29,7 +29,8 @@ class StatePanel(SectionCard):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setAccessibleName("Monitoring control")
-        self.content_layout.setSpacing(SPACING.sm)
+        self.setProperty("primaryPanel", True)
+        self.content_layout.setSpacing(SPACING.xs)
 
         heading_row = QHBoxLayout()
         heading_row.setSpacing(SPACING.md)
