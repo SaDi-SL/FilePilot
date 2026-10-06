@@ -1,85 +1,31 @@
 {
   "schema_version": 1,
-  "status": "review_required",
-  "note": "Each exact license expression used by the OCR runtime must map to one or more redistributed license/notice text files before public release.",
+  "purpose": "Required redistribution license and notice texts for the bundled OCR runtime",
+  "note": "A public OCR bundle is releasable only when every license identifier referenced by runtime-manifest.json resolves to a non-empty bundled text file.",
   "licenses": {
-    "Apache-2.0": [
-      "Apache-2.0.txt"
-    ],
-    "BSD-2-Clause": [
-      "BSD-2-Clause.txt"
-    ],
-    "MIT": [
-      "MIT.txt"
-    ],
-    "ICU": [
-      "ICU.txt"
-    ],
-    "LGPL-2.1-or-later": [
-      "LGPL-2.1.txt"
-    ],
-    "GPL-3.0-or-later WITH GCC-exception-3.1": [
-      "GPL-3.0.txt",
-      "GCC-exception-3.1.txt"
-    ],
-    "custom:BSD-like": [
-      "libjpeg-turbo-LICENSE.txt"
-    ],
-    "LGPL-3.0-or-later": [
-      "LGPL-3.0.txt"
-    ],
-    "LGPL-2.1": [
-      "LGPL-2.1.txt"
-    ],
-    "BSD-3-Clause": [
-      "BSD-3-Clause.txt"
-    ],
-    "CC0-1.0": [
-      "CC0-1.0.txt"
-    ],
-    "custom:bzip2": [
-      "bzip2-LICENSE.txt"
-    ],
-    "LGPL-2.1-or-later OR MPL-1.1": [
-      "LGPL-2.1.txt",
-      "MPL-1.1.txt"
-    ],
-    "LGPL": [
-      "libdatrie-COPYING.txt"
-    ],
-    "custom:fontconfig": [
-      "fontconfig-COPYING.txt"
-    ],
-    "GPL-2.0-or-later OR FTL": [
-      "GPL-2.0.txt",
-      "FTL.txt"
-    ],
-    "GPL-2.0": [
-      "GPL-2.0.txt"
-    ],
-    "BSD OR GPL-2.0": [
-      "lz4-LICENSE.txt",
-      "GPL-2.0.txt"
-    ],
-    "0BSD AND LGPL-2.1-or-later AND GPL-2.0-or-later": [
-      "0BSD.txt",
-      "LGPL-2.1.txt",
-      "GPL-2.0.txt"
-    ],
-    "custom:libpng": [
-      "libpng-LICENSE.txt"
-    ],
-    "MIT AND BSD-3-Clause-Clear": [
-      "MIT.txt",
-      "BSD-3-Clause-Clear.txt"
-    ],
-    "BSD-3-Clause OR GPL-2.0-or-later": [
-      "BSD-3-Clause.txt",
-      "GPL-2.0.txt"
-    ],
-    "Zlib": [
-      "Zlib.txt"
-    ]
-  },
-  "files": {}
+    "0BSD": "licenses/0BSD.txt",
+    "Apache-2.0": "licenses/Apache-2.0.txt",
+    "BSD": "licenses/BSD.txt",
+    "BSD-2-Clause": "licenses/BSD-2-Clause.txt",
+    "BSD-3-Clause": "licenses/BSD-3-Clause.txt",
+    "BSD-3-Clause-Clear": "licenses/BSD-3-Clause-Clear.txt",
+    "CC0-1.0": "licenses/CC0-1.0.txt",
+    "FTL": "licenses/FTL.txt",
+    "GCC-exception-3.1": "licenses/GCC-exception-3.1.txt",
+    "GPL-2.0": "licenses/GPL-2.0.txt",
+    "GPL-2.0-or-later": "licenses/GPL-2.0-or-later.txt",
+    "GPL-3.0-or-later": "licenses/GPL-3.0-or-later.txt",
+    "ICU": "licenses/ICU.txt",
+    "LGPL": "licenses/LGPL.txt",
+    "LGPL-2.1": "licenses/LGPL-2.1.txt",
+    "LGPL-2.1-or-later": "licenses/LGPL-2.1-or-later.txt",
+    "LGPL-3.0-or-later": "licenses/LGPL-3.0-or-later.txt",
+    "MIT": "licenses/MIT.txt",
+    "MPL-1.1": "licenses/MPL-1.1.txt",
+    "Zlib": "licenses/Zlib.txt",
+    "custom:bzip2": "licenses/bzip2.txt",
+    "custom:fontconfig": "licenses/fontconfig.txt",
+    "custom:libjpeg-turbo": "licenses/libjpeg-turbo.txt",
+    "custom:libpng": "licenses/libpng.txt"
+  }
 }
