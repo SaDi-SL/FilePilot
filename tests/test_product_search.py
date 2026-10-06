@@ -153,8 +153,8 @@ class ProductSearchTests(unittest.TestCase):
         second.write_text("pasta recipe", encoding="utf-8")
         self.search.refresh(self.organized)
 
-        first_document = self.index.semantic_document(first)
-        second_document = self.index.semantic_document(second)
+        first_document = self.index.semantic_document_chunks(first)[0]
+        second_document = self.index.semantic_document_chunks(second)[0]
         provider = FakeEmbeddingProvider({
             first_document: (1.0, 0.0),
             second_document: (0.0, 1.0),
@@ -183,7 +183,7 @@ class ProductSearchTests(unittest.TestCase):
         source.write_text("", encoding="utf-8")
         self.search.refresh(self.organized)
 
-        document = self.index.semantic_document(source)
+        document = self.index.semantic_document_chunks(source)[0]
         provider = FakeEmbeddingProvider({document: (1.0, 0.0)})
         semantic = ProductSearch(self.index, provider)
 
@@ -197,7 +197,7 @@ class ProductSearchTests(unittest.TestCase):
         source = self.organized / "notes.txt"
         source.write_text("semantic stable document", encoding="utf-8")
         self.search.refresh(self.organized)
-        document = self.index.semantic_document(source)
+        document = self.index.semantic_document_chunks(source)[0]
         provider = FakeEmbeddingProvider({
             document: (1.0, 0.0),
             "query": (1.0, 0.0),
@@ -215,7 +215,7 @@ class ProductSearchTests(unittest.TestCase):
         source = self.organized / "notes.txt"
         source.write_text("first version", encoding="utf-8")
         self.search.refresh(self.organized)
-        document = self.index.semantic_document(source)
+        document = self.index.semantic_document_chunks(source)[0]
         provider = FakeEmbeddingProvider({document: (1.0, 0.0)})
         semantic = ProductSearch(self.index, provider)
         semantic.refresh_semantic_embeddings()
