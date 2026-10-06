@@ -274,6 +274,10 @@ class SearchIndex:
                         indexed_at,
                     ),
                 )
+                connection.execute(
+                    "DELETE FROM file_embeddings WHERE path = ?",
+                    (str(source),),
+                )
         except sqlite3.Error as error:
             raise SearchIndexError(f"File indexing failed: {error}") from error
 
@@ -344,6 +348,19 @@ class SearchIndex:
             extraction_fingerprint=row["extraction_fingerprint"],
             indexed_at_utc=row["indexed_at_utc"],
         )
+
+    def embedding_fingerprint_for_file(self, file_path: str | Path) -> str | None:
+        source = Path(file_path).resolve()
+        try:
+            with closing(self._connect()) as connection, connection:
+                row = connection.execute(
+                    "SELECT embedding_fingerprint FROM file_embeddings WHERE path = ?",
+                    (str(source),),
+                ).fetchone()
+        except sqlite3.Error as error:
+            raise SearchIndexError(f"Embedding metadata read failed: {error}") from error
+        return None if row is None else str(row["embedding_fingerprint"])
+
 
     def semantic_document(self, file_path: str | Path, *, max_chars: int = 12_000) -> str | None:
         """Return bounded indexed text for local embedding without re-reading the source file."""
