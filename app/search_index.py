@@ -21,7 +21,7 @@ from app.semantic_search import (
 
 
 SEARCH_APPLICATION_ID = 0x46505349  # "FPSI"
-SEARCH_SCHEMA_VERSION = 3
+SEARCH_SCHEMA_VERSION = 4
 SEARCH_EXTRACTION_PIPELINE_REVISION = "9b-richer-extraction-ocr-v1"
 MAX_SEARCH_RESULTS = 100
 
@@ -152,6 +152,22 @@ class SearchIndex:
                     CREATE INDEX IF NOT EXISTS idx_file_embeddings_fingerprint
                     ON file_embeddings(embedding_fingerprint);
 
+                    CREATE TABLE IF NOT EXISTS file_embedding_chunks (
+                        path TEXT NOT NULL,
+                        chunk_index INTEGER NOT NULL CHECK(chunk_index >= 0),
+                        vector BLOB NOT NULL,
+                        dimensions INTEGER NOT NULL CHECK(dimensions > 0),
+                        provider TEXT NOT NULL,
+                        model TEXT NOT NULL,
+                        embedding_fingerprint TEXT NOT NULL,
+                        embedded_at_utc TEXT NOT NULL,
+                        PRIMARY KEY(path, chunk_index),
+                        FOREIGN KEY(path) REFERENCES files(path) ON DELETE CASCADE
+                    );
+
+                    CREATE INDEX IF NOT EXISTS idx_file_embedding_chunks_fingerprint
+                    ON file_embedding_chunks(embedding_fingerprint);
+
                     CREATE TRIGGER IF NOT EXISTS files_ai AFTER INSERT ON files BEGIN
                         INSERT INTO files_fts(rowid, filename, path, category, content)
                         VALUES (new.rowid, new.filename, new.path, new.category, new.content);
@@ -278,6 +294,10 @@ class SearchIndex:
                     "DELETE FROM file_embeddings WHERE path = ?",
                     (str(source),),
                 )
+                connection.execute(
+                    "DELETE FROM file_embedding_chunks WHERE path = ?",
+                    (str(source),),
+                )
         except sqlite3.Error as error:
             raise SearchIndexError(f"File indexing failed: {error}") from error
 
@@ -354,9 +374,20 @@ class SearchIndex:
         try:
             with closing(self._connect()) as connection, connection:
                 row = connection.execute(
-                    "SELECT embedding_fingerprint FROM file_embeddings WHERE path = ?",
+                    """
+                    SELECT embedding_fingerprint
+                    FROM file_embedding_chunks
+                    WHERE path = ?
+                    ORDER BY chunk_index
+                    LIMIT 1
+                    """,
                     (str(source),),
                 ).fetchone()
+                if row is None:
+                    row = connection.execute(
+                        "SELECT embedding_fingerprint FROM file_embeddings WHERE path = ?",
+                        (str(source),),
+                    ).fetchone()
         except sqlite3.Error as error:
             raise SearchIndexError(f"Embedding metadata read failed: {error}") from error
         return None if row is None else str(row["embedding_fingerprint"])
@@ -382,6 +413,128 @@ class SearchIndex:
         if row["content"]:
             parts.append(str(row["content"]))
         return "\n".join(parts)[:bounded_chars].strip()
+
+    def semantic_document_chunks(
+        self,
+        file_path: str | Path,
+        *,
+        max_chunk_chars: int = 2_000,
+        overlap_chars: int = 250,
+        max_chunks: int = 24,
+    ) -> tuple[str, ...]:
+        """Split indexed content into bounded overlapping chunks for semantic retrieval."""
+        source = Path(file_path).resolve()
+        chunk_size = max(512, min(int(max_chunk_chars), 8_000))
+        overlap = max(0, min(int(overlap_chars), chunk_size // 2))
+        chunk_limit = max(1, min(int(max_chunks), 64))
+        try:
+            with closing(self._connect()) as connection, connection:
+                row = connection.execute(
+                    "SELECT filename, category, content FROM files WHERE path = ?",
+                    (str(source),),
+                ).fetchone()
+        except sqlite3.Error as error:
+            raise SearchIndexError(f"Search index read failed: {error}") from error
+        if row is None:
+            return ()
+
+        header_parts = [str(row["filename"])]
+        if row["category"]:
+            header_parts.append(str(row["category"]))
+        header = "\n".join(header_parts).strip()
+        content = str(row["content"] or "").strip()
+        if not content:
+            return (header,) if header else ()
+
+        chunks: list[str] = []
+        start = 0
+        step = max(1, chunk_size - overlap)
+        while start < len(content) and len(chunks) < chunk_limit:
+            end = min(len(content), start + chunk_size)
+            body = content[start:end].strip()
+            if body:
+                chunks.append(f"{header}\n{body}".strip())
+            if end >= len(content):
+                break
+            start += step
+        return tuple(chunks)
+
+    def upsert_embedding_chunks(
+        self,
+        file_path: str | Path,
+        vectors,
+        *,
+        provider: str,
+        model: str,
+        embedding_fingerprint: str,
+    ) -> None:
+        """Replace all semantic chunks for one indexed file atomically."""
+        source = Path(file_path).resolve()
+        provider_name = provider.strip()
+        model_name = model.strip()
+        fingerprint = embedding_fingerprint.strip()
+        vector_list = list(vectors)
+        if not provider_name or not model_name or not fingerprint:
+            raise SearchIndexError("Embedding metadata is incomplete")
+        if not vector_list:
+            raise SearchIndexError("At least one embedding chunk is required")
+
+        encoded: list[tuple[bytes, int]] = []
+        expected_dimensions: int | None = None
+        try:
+            for vector in vector_list:
+                payload, dimensions = encode_vector(vector)
+                if expected_dimensions is None:
+                    expected_dimensions = dimensions
+                elif dimensions != expected_dimensions:
+                    raise SemanticSearchError("Embedding chunks have different dimensions")
+                encoded.append((payload, dimensions))
+        except SemanticSearchError as error:
+            raise SearchIndexError(f"Embedding is invalid: {error}") from error
+
+        embedded_at = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+        try:
+            with closing(self._connect()) as connection, connection:
+                exists = connection.execute(
+                    "SELECT 1 FROM files WHERE path = ?",
+                    (str(source),),
+                ).fetchone()
+                if exists is None:
+                    raise SearchIndexError("File must be indexed before embedding")
+                connection.execute(
+                    "DELETE FROM file_embedding_chunks WHERE path = ?",
+                    (str(source),),
+                )
+                connection.execute(
+                    "DELETE FROM file_embeddings WHERE path = ?",
+                    (str(source),),
+                )
+                connection.executemany(
+                    """
+                    INSERT INTO file_embedding_chunks (
+                        path, chunk_index, vector, dimensions, provider, model,
+                        embedding_fingerprint, embedded_at_utc
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        (
+                            str(source),
+                            index,
+                            payload,
+                            dimensions,
+                            provider_name,
+                            model_name,
+                            fingerprint,
+                            embedded_at,
+                        )
+                        for index, (payload, dimensions) in enumerate(encoded)
+                    ],
+                )
+        except SearchIndexError:
+            raise
+        except sqlite3.Error as error:
+            raise SearchIndexError(f"Embedding persistence failed: {error}") from error
 
     def upsert_embedding(
         self,
@@ -449,7 +602,7 @@ class SearchIndex:
         embedding_fingerprint: str,
         limit: int = 25,
     ) -> tuple[SemanticSearchResult, ...]:
-        """Perform bounded cosine search over embeddings from one exact model fingerprint."""
+        """Return each file's best matching chunk for one exact embedding fingerprint."""
         fingerprint = embedding_fingerprint.strip()
         if not fingerprint:
             return ()
@@ -461,7 +614,22 @@ class SearchIndex:
 
         try:
             with closing(self._connect()) as connection, connection:
-                rows = connection.execute(
+                chunk_rows = connection.execute(
+                    """
+                    SELECT
+                        files.path,
+                        files.filename,
+                        files.extension,
+                        files.category,
+                        file_embedding_chunks.vector,
+                        file_embedding_chunks.dimensions
+                    FROM file_embedding_chunks
+                    JOIN files ON files.path = file_embedding_chunks.path
+                    WHERE file_embedding_chunks.embedding_fingerprint = ?
+                    """,
+                    (fingerprint,),
+                ).fetchall()
+                legacy_rows = connection.execute(
                     """
                     SELECT
                         files.path,
@@ -473,15 +641,14 @@ class SearchIndex:
                     FROM file_embeddings
                     JOIN files ON files.path = file_embeddings.path
                     WHERE file_embeddings.embedding_fingerprint = ?
-                    ORDER BY files.filename COLLATE NOCASE
                     """,
                     (fingerprint,),
                 ).fetchall()
         except sqlite3.Error as error:
             raise SearchIndexError(f"Semantic search failed: {error}") from error
 
-        scored: list[SemanticSearchResult] = []
-        for row in rows:
+        best_by_path: dict[str, SemanticSearchResult] = {}
+        for row in (*chunk_rows, *legacy_rows):
             try:
                 candidate = decode_vector(row["vector"], row["dimensions"])
             except SemanticSearchError:
@@ -492,16 +659,18 @@ class SearchIndex:
                 left * right
                 for left, right in zip(normalized_query, candidate, strict=True)
             )
-            scored.append(
-                SemanticSearchResult(
-                    path=Path(row["path"]),
-                    filename=row["filename"],
-                    extension=row["extension"],
-                    category=row["category"],
-                    score=max(-1.0, min(1.0, float(score))),
-                )
+            result = SemanticSearchResult(
+                path=Path(row["path"]),
+                filename=row["filename"],
+                extension=row["extension"],
+                category=row["category"],
+                score=max(-1.0, min(1.0, float(score))),
             )
+            previous = best_by_path.get(str(result.path))
+            if previous is None or result.score > previous.score:
+                best_by_path[str(result.path)] = result
 
+        scored = list(best_by_path.values())
         scored.sort(key=lambda item: (-item.score, item.filename.casefold()))
         return tuple(scored[:bounded_limit])
 
