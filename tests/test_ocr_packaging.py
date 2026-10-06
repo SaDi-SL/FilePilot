@@ -41,6 +41,59 @@ class OCRPackagingContractTests(unittest.TestCase):
         with patch.object(self.build, "_load_ocr_manifest", return_value=(manifest, None)):
             self.assertEqual(self.build.validate_ocr_runtime_inputs(), [])
 
+    def test_bundled_license_gate_rejects_missing_text(self):
+        manifest = {
+            "bundled": True,
+            "files": [{"license": "Apache-2.0 OR MIT"}],
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir).resolve()
+            bundle = root / "license-bundle.json"
+            bundle.write_text(
+                json.dumps({
+                    "schema_version": 1,
+                    "licenses": {
+                        "Apache-2.0": "licenses/Apache-2.0.txt",
+                        "MIT": "licenses/MIT.txt",
+                    },
+                }),
+                encoding="utf-8",
+            )
+            licenses = root / "licenses"
+            licenses.mkdir()
+            (licenses / "Apache-2.0.txt").write_text("Apache text", encoding="utf-8")
+            with patch.object(self.build, "OCR_LICENSE_BUNDLE_FILE", bundle):
+                errors = self.build.validate_ocr_license_bundle(manifest)
+
+        self.assertTrue(any("MIT" in error and "missing" in error for error in errors))
+
+    def test_bundled_license_gate_accepts_all_declared_texts(self):
+        manifest = {
+            "bundled": True,
+            "files": [{"license": "Apache-2.0 OR MIT"}],
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir).resolve()
+            bundle = root / "license-bundle.json"
+            bundle.write_text(
+                json.dumps({
+                    "schema_version": 1,
+                    "licenses": {
+                        "Apache-2.0": "licenses/Apache-2.0.txt",
+                        "MIT": "licenses/MIT.txt",
+                    },
+                }),
+                encoding="utf-8",
+            )
+            licenses = root / "licenses"
+            licenses.mkdir()
+            (licenses / "Apache-2.0.txt").write_text("Apache text", encoding="utf-8")
+            (licenses / "MIT.txt").write_text("MIT text", encoding="utf-8")
+            with patch.object(self.build, "OCR_LICENSE_BUNDLE_FILE", bundle):
+                errors = self.build.validate_ocr_license_bundle(manifest)
+
+        self.assertEqual(errors, [])
+
     def test_bundled_manifest_rejects_placeholder_dependency_license(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             runtime = Path(temp_dir).resolve()
