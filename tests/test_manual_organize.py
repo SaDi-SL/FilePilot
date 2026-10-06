@@ -76,11 +76,16 @@ class ManualOrganizeServiceTests(unittest.TestCase):
             "manual organize content",
         )
         self.assertIsNotNone(result.operation_id)
-        operation = OperationJournal(self.journal_path).get_operation(
-            result.operation_id
-        )
+        journal = OperationJournal(self.journal_path)
+        operation = journal.get_operation(result.operation_id)
         self.assertIs(operation.operation_status, OperationStatus.COMPLETE)
-        self.assertEqual(operation.category, "documents")
+        snapshot = journal.read_recent_operations(limit=20)
+        context = next(
+            item
+            for item in snapshot.contexts
+            if item.operation_id == result.operation_id
+        )
+        self.assertEqual(context.category, "documents")
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0].status, "moved")
         self.assertEqual(events[0].operation_id, result.operation_id)
