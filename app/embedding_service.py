@@ -14,7 +14,7 @@ from app.ai_service import (
 from app.semantic_search import SemanticSearchError, normalize_vector
 
 
-DEFAULT_OLLAMA_EMBEDDING_MODEL = "nomic-embed-text"
+DEFAULT_OLLAMA_EMBEDDING_MODEL = "bge-m3"
 MAX_EMBED_INPUT_CHARS = 12_000
 
 
