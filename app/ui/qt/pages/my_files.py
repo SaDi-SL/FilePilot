@@ -141,7 +141,8 @@ class MyFilesPage(QWidget):
         search_title = QLabel("Search your organized files")
         search_title.setProperty("role", "sectionTitle")
         search_caption = QLabel(
-            "Find files by filename, category, or text extracted from supported documents."
+            "Search by meaning across filenames, categories, and extracted document text. "
+            "Smart search stays local on this device."
         )
         search_caption.setProperty("role", "caption")
         search_caption.setWordWrap(True)
@@ -162,10 +163,10 @@ class MyFilesPage(QWidget):
         search_row = QHBoxLayout()
         search_row.setSpacing(SPACING.sm)
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("Search filenames, categories, or document text…")
+        self.search_input.setPlaceholderText("Try: documents about train testing…")
         self.search_input.setAccessibleName("Search organized files")
         self.search_input.returnPressed.connect(self._request_search)
-        self.search_button = QPushButton("Search")
+        self.search_button = QPushButton("Smart search")
         self.search_button.setProperty("variant", "primary")
         self.search_button.setAccessibleName("Search organized files")
         self.search_button.clicked.connect(self._request_search)
@@ -174,7 +175,7 @@ class MyFilesPage(QWidget):
         self.search_card.content_layout.addLayout(search_row)
 
         self.search_status = QLabel(
-            "Search stays local on this device. Update the index after adding or changing files."
+            "Smart search uses the local semantic index. Update the index after adding or changing files."
         )
         self.search_status.setProperty("role", "caption")
         self.search_status.setWordWrap(True)
@@ -300,6 +301,13 @@ class MyFilesPage(QWidget):
         search_signal = getattr(self.bridge, "search_results_changed", None)
         if search_signal is not None:
             search_signal.connect(self._render_search_results)
+        semantic_search_signal = getattr(
+            self.bridge,
+            "semantic_search_results_changed",
+            None,
+        )
+        if semantic_search_signal is not None:
+            semantic_search_signal.connect(self._render_search_results)
         search_refresh_signal = getattr(
             self.bridge,
             "search_refresh_completed",
@@ -331,12 +339,20 @@ class MyFilesPage(QWidget):
             self.search_results.hide()
             self.search_status.setText("Enter a search term to find organized files.")
             return
-        request = getattr(self.bridge, "request_search", None)
+        request = getattr(self.bridge, "request_semantic_search", None)
+        mode = "smart"
+        if request is None:
+            request = getattr(self.bridge, "request_search", None)
+            mode = "exact"
         if request is None:
             self.search_status.setText("Local search is unavailable in this runtime.")
             return
         self.search_button.setEnabled(False)
-        self.search_status.setText("Searching the local FilePilot index…")
+        self.search_status.setText(
+            "Searching by meaning on this device…"
+            if mode == "smart"
+            else "Searching the local FilePilot index…"
+        )
         request(query, 25)
 
     def _request_search_refresh(self) -> None:
@@ -358,7 +374,7 @@ class MyFilesPage(QWidget):
             item = QListWidgetItem(
                 f"{result.filename}\n{category}  •  {result.path}"
             )
-            detail = result.snippet.strip()
+            detail = getattr(result, "snippet", "").strip()
             if detail:
                 item.setToolTip(detail)
             item.setData(Qt.ItemDataRole.UserRole, str(result.path))
@@ -367,7 +383,7 @@ class MyFilesPage(QWidget):
         self.search_results.setVisible(count > 0)
         if count:
             self.search_status.setText(
-                f"{count} result{'s' if count != 1 else ''} found for “{query}”."
+                f"{count} smart result{'s' if count != 1 else ''} found for “{query}”."
             )
         else:
             self.search_status.setText(
@@ -385,7 +401,17 @@ class MyFilesPage(QWidget):
         )
 
     def _search_failed(self, name: str, message: str) -> None:
-        if name == "search":
+        if name == "semantic_search":
+            fallback = getattr(self.bridge, "request_search", None)
+            if fallback is not None:
+                query = self.search_input.text().strip()
+                self.search_status.setText(
+                    "Smart search is unavailable. Falling back to exact local search…"
+                )
+                fallback(query, 25)
+                return
+            self.search_button.setEnabled(True)
+        elif name == "search":
             self.search_button.setEnabled(True)
         elif name == "search_refresh":
             self.refresh_search_button.setEnabled(True)
