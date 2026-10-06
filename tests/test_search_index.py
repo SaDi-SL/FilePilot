@@ -45,6 +45,94 @@ class SearchIndexTests(unittest.TestCase):
         self.assertEqual(indexed.extraction_fingerprint, "capability-a")
         self.assertEqual(self.index.get_file(source).extraction_fingerprint, "capability-a")
 
+    def test_semantic_embedding_round_trip_and_search(self):
+        first = self.root / "alpha.txt"
+        second = self.root / "beta.txt"
+        first.write_text("train traction report", encoding="utf-8")
+        second.write_text("holiday cooking notes", encoding="utf-8")
+        self.index.index_file(first, category="reports")
+        self.index.index_file(second, category="notes")
+
+        fingerprint = "embed-test-v1"
+        self.index.upsert_embedding(
+            first,
+            [1.0, 0.0, 0.0],
+            provider="test",
+            model="tiny",
+            embedding_fingerprint=fingerprint,
+        )
+        self.index.upsert_embedding(
+            second,
+            [0.0, 1.0, 0.0],
+            provider="test",
+            model="tiny",
+            embedding_fingerprint=fingerprint,
+        )
+
+        document = self.index.semantic_document(first)
+        results = self.index.semantic_search(
+            [0.9, 0.1, 0.0],
+            embedding_fingerprint=fingerprint,
+        )
+
+        self.assertIn("alpha.txt", document)
+        self.assertIn("reports", document)
+        self.assertIn("train traction report", document)
+        self.assertEqual([result.path for result in results], [first, second])
+        self.assertGreater(results[0].score, results[1].score)
+
+    def test_semantic_search_ignores_other_embedding_fingerprint(self):
+        source = self.root / "one.txt"
+        source.write_text("semantic content", encoding="utf-8")
+        self.index.index_file(source)
+        self.index.upsert_embedding(
+            source,
+            [1.0, 0.0],
+            provider="test",
+            model="tiny",
+            embedding_fingerprint="fingerprint-a",
+        )
+
+        self.assertEqual(
+            self.index.semantic_search(
+                [1.0, 0.0],
+                embedding_fingerprint="fingerprint-b",
+            ),
+            (),
+        )
+
+    def test_remove_file_cascades_semantic_embedding(self):
+        source = self.root / "remove-vector.txt"
+        source.write_text("semantic content", encoding="utf-8")
+        self.index.index_file(source)
+        self.index.upsert_embedding(
+            source,
+            [1.0, 0.0],
+            provider="test",
+            model="tiny",
+            embedding_fingerprint="fingerprint-a",
+        )
+
+        self.assertTrue(self.index.remove_file(source))
+        self.assertEqual(
+            self.index.semantic_search(
+                [1.0, 0.0],
+                embedding_fingerprint="fingerprint-a",
+            ),
+            (),
+        )
+
+    def test_embedding_requires_existing_indexed_file(self):
+        missing = self.root / "missing.txt"
+        with self.assertRaisesRegex(SearchIndexError, "indexed before embedding"):
+            self.index.upsert_embedding(
+                missing,
+                [1.0, 0.0],
+                provider="test",
+                model="tiny",
+                embedding_fingerprint="fingerprint-a",
+            )
+
     def test_version_one_database_migrates_with_empty_fingerprint(self):
         legacy = self.root / "data" / "legacy-search.sqlite3"
         with closing(sqlite3.connect(legacy)) as connection:
