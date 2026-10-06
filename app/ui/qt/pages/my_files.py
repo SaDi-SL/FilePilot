@@ -116,7 +116,7 @@ class MyFilesPage(QWidget):
         title = QLabel("My Files")
         title.setProperty("role", "pageTitle")
         description = QLabel(
-            "Choose a file and see exactly how FilePilot would organize it before anything changes."
+            "Preview where a file will go, then organize it only after FilePilot revalidates safety."
         )
         description.setProperty("role", "secondary")
         description.setWordWrap(True)
@@ -125,9 +125,9 @@ class MyFilesPage(QWidget):
         heading.addWidget(description)
         header.addLayout(heading, 1)
 
-        preview_only = QLabel("Preview only")
+        preview_only = QLabel("Safety first")
         preview_only.setProperty("badgeTone", "info")
-        preview_only.setToolTip("Preview never changes or moves the selected file.")
+        preview_only.setToolTip("FilePilot previews first, then revalidates safety again before organizing.")
         header.addWidget(preview_only, 0, Qt.AlignmentFlag.AlignTop)
         layout.addLayout(header)
 
@@ -226,7 +226,7 @@ class MyFilesPage(QWidget):
         self.preview_card.content_layout.addStretch(1)
 
         footer = QLabel(
-            "Preview does not move, rename, delete, or overwrite files. Execution will remain separate and revalidate safety."
+            "Preview never changes the file. Organize rechecks duplicates, collisions, and safety before moving anything."
         )
         footer.setProperty("role", "caption")
         footer.setWordWrap(True)
