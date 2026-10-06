@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "bundled": false,
+  "engine": {
+    "name": "Tesseract OCR",
+    "version": "5.5.x",
+    "license": "Apache-2.0",
+    "distribution_note": "Windows runtime binaries must be reviewed and pinned before bundled=true."
+  },
+  "languages": [
+    {
+      "code": "eng",
+      "source_family": "tessdata_fast",
+      "license": "Apache-2.0"
+    },
+    {
+      "code": "ara",
+      "source_family": "tessdata_fast",
+      "license": "Apache-2.0"
+    }
+  ],
+  "files": []
+}
