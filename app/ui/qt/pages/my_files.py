@@ -239,10 +239,18 @@ class MyFilesPage(QWidget):
         layout.addWidget(self.workspace, 0, Qt.AlignmentFlag.AlignTop)
         layout.addStretch(1)
 
-        self.bridge.preview_changed.connect(self.render_preview)
-        self.bridge.organize_started.connect(self._organize_started)
-        self.bridge.organize_completed.connect(self._organize_completed)
-        self.bridge.safety_request_failed.connect(self._request_failed)
+        preview_signal = getattr(self.bridge, "preview_changed", None)
+        if preview_signal is not None:
+            preview_signal.connect(self.render_preview)
+        organize_started_signal = getattr(self.bridge, "organize_started", None)
+        if organize_started_signal is not None:
+            organize_started_signal.connect(self._organize_started)
+        organize_completed_signal = getattr(self.bridge, "organize_completed", None)
+        if organize_completed_signal is not None:
+            organize_completed_signal.connect(self._organize_completed)
+        safety_failed_signal = getattr(self.bridge, "safety_request_failed", None)
+        if safety_failed_signal is not None:
+            safety_failed_signal.connect(self._request_failed)
 
     def _preview_row(self, label: str, value: str) -> QLabel:
         row = QHBoxLayout()
@@ -311,7 +319,17 @@ class MyFilesPage(QWidget):
         self.preview_message.setText(
             "FilePilot is checking classification, duplicate evidence, destination, and safety."
         )
-        self.bridge.request_preview(str(self._source))
+        request = getattr(self.bridge, "request_preview", None)
+        if request is None:
+            self._preview_pending = False
+            self.preview_button.setEnabled(True)
+            self._reset_preview(
+                "Unavailable",
+                "Organization preview is unavailable in this runtime.",
+                "error",
+            )
+            return
+        request(str(self._source))
 
     def render_preview(self, preview: OperationPreview) -> None:
         if self._source is not None and Path(preview.source) != self._source:
@@ -394,7 +412,17 @@ class MyFilesPage(QWidget):
         self.preview_message.setText(
             "FilePilot is rechecking current evidence before changing anything."
         )
-        self.bridge.request_organize(str(self._source))
+        request = getattr(self.bridge, "request_organize", None)
+        if request is None:
+            self._organize_pending = False
+            self.preview_button.setEnabled(self._source.is_file())
+            self._reset_preview(
+                "Unavailable",
+                "Manual organization is unavailable in this runtime.",
+                "error",
+            )
+            return
+        request(str(self._source))
 
     def _organize_started(self, source: str) -> None:
         if self._source is None or Path(source) != self._source:
