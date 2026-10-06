@@ -25,7 +25,7 @@
     "Zlib": "licenses/Zlib.txt",
     "custom:bzip2": "licenses/bzip2.txt",
     "custom:fontconfig": "licenses/fontconfig.txt",
-    "custom:libjpeg-turbo": "licenses/libjpeg-turbo.txt",
-    "custom:libpng": "licenses/libpng.txt"
+    "custom:libpng": "licenses/libpng.txt",
+    "custom:BSD-like": "licenses/libjpeg-turbo.txt"
   }
 }
