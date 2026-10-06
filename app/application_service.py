@@ -35,8 +35,9 @@ from app.product_configuration import (
     StaleConfigurationError,
     configuration_revision,
 )
+from app.embedding_service import OllamaEmbeddingProvider
 from app.product_search import ProductSearch, SearchRefreshResult
-from app.search_index import SearchIndexError, SearchResult
+from app.search_index import SearchIndexError, SearchResult, SemanticSearchResult
 from app.product_read_model import (
     ActivityRecord,
     ActivityStatus,
@@ -177,7 +178,9 @@ class FilePilotService:
         self._monitor_builder = monitor_builder
         self._journal_path = Path(journal_path) if journal_path is not None else None
         self._product_reader = product_reader or ProductReadModel(journal_path)
-        self._product_search = product_search or ProductSearch()
+        self._product_search = product_search or ProductSearch(
+            embedding_provider=OllamaEmbeddingProvider()
+        )
         self._configuration_store = ProductConfigurationStore(self._config_path)
         self._settings_store = ProductSettingsStore(self._configuration_store)
         self._lifecycle_lock = threading.RLock()
@@ -267,6 +270,15 @@ class FilePilotService:
     ) -> tuple[SearchResult, ...]:
         """Search the durable local catalog without changing user files."""
         return self._product_search.search(query, limit=limit)
+
+    def semantic_search_files(
+        self,
+        query: str,
+        *,
+        limit: int = 25,
+    ) -> tuple[SemanticSearchResult, ...]:
+        """Search the local semantic catalog without changing user files."""
+        return self._product_search.semantic_search(query, limit=limit)
 
     def refresh_search_index(self) -> SearchRefreshResult:
         """Reconcile the local search catalog with the configured organized root."""
