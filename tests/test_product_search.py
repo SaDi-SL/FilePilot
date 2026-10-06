@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from app.product_search import ProductSearch
@@ -44,6 +45,52 @@ class ProductSearchTests(unittest.TestCase):
         self.assertEqual(result.scanned, 1)
         self.assertEqual(result.indexed, 0)
         self.assertEqual(result.unchanged, 1)
+
+    def test_refresh_reindexes_unchanged_file_when_extraction_capability_changes(self):
+        source = self.organized / "scan.pdf"
+        source.write_bytes(b"%PDF-placeholder")
+
+        with (
+            mock.patch.object(
+                self.index,
+                "extraction_fingerprint",
+                return_value="capability-a",
+            ),
+            mock.patch(
+                "app.search_index.current_extraction_fingerprint",
+                return_value="capability-a",
+            ),
+            mock.patch(
+                "app.search_index.extract_file_content_result",
+                return_value=type("Extraction", (), {"text": "", "status": "ocr_unavailable"})(),
+            ),
+        ):
+            first = self.search.refresh(self.organized)
+
+        self.assertEqual(first.indexed, 1)
+        self.assertEqual(self.index.get_file(source).extraction_fingerprint, "capability-a")
+
+        with (
+            mock.patch.object(
+                self.index,
+                "extraction_fingerprint",
+                return_value="capability-b",
+            ),
+            mock.patch(
+                "app.search_index.current_extraction_fingerprint",
+                return_value="capability-b",
+            ),
+            mock.patch(
+                "app.search_index.extract_file_content_result",
+                return_value=type("Extraction", (), {"text": "now searchable", "status": "extracted"})(),
+            ),
+        ):
+            second = self.search.refresh(self.organized)
+
+        self.assertEqual(second.indexed, 1)
+        self.assertEqual(second.unchanged, 0)
+        self.assertEqual(len(self.search.search("searchable")), 1)
+        self.assertEqual(self.index.get_file(source).extraction_fingerprint, "capability-b")
 
     def test_refresh_reindexes_changed_file(self):
         source = self.organized / "notes.txt"
