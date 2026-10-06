@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from app.application_paths import get_application_paths
-from app.content_reader import extract_file_content
+from app.content_reader import extract_file_content_result
 
 
 SEARCH_APPLICATION_ID = 0x46505349  # "FPSI"
@@ -142,13 +142,14 @@ class SearchIndex:
         if not source.is_file():
             raise SearchIndexError("Only regular files can be indexed")
 
-        content = extract_file_content(
+        extraction = extract_file_content_result(
             source,
             max_chars=max_chars,
             lowercase=False,
             max_pdf_pages=20,
             max_docx_paragraphs=None,
         )
+        content = extraction.text
 
         try:
             after = source.stat()
@@ -165,7 +166,16 @@ class SearchIndex:
             )
 
         indexed_at = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
-        extraction_status = "indexed" if content else "metadata_only"
+        extraction_status = (
+            "indexed"
+            if content
+            else {
+                "ocr_required": "ocr_required",
+                "ocr_unavailable": "ocr_unavailable",
+                "extraction_failed": "extraction_failed",
+                "unsupported_format": "unsupported_format",
+            }.get(extraction.status, "metadata_only")
+        )
         normalized_category = category.strip() if isinstance(category, str) and category.strip() else None
 
         try:
