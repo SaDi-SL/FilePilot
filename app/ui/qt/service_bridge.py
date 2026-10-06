@@ -48,7 +48,7 @@ class _ServiceWorker(QObject):
     shutdown_finished = Signal(int)
     product_read_finished = Signal(int, object, int, int)
     product_read_failed = Signal(int, str, int, int)
-    search_finished = Signal(int, object, int)
+    search_finished = Signal(int, str, object, int)
     search_refresh_finished = Signal(int, object, int)
     search_failed = Signal(str, int, str, int)
     preview_finished = Signal(int, object, int)
@@ -141,7 +141,7 @@ class _ServiceWorker(QObject):
                 threading.get_ident(),
             )
             return
-        self.search_finished.emit(request_id, result, threading.get_ident())
+        self.search_finished.emit(request_id, query, result, threading.get_ident())
 
     @Slot(int)
     def refresh_search_index(self, request_id: int) -> None:
@@ -1168,10 +1168,11 @@ class QtServiceBridge(QObject):
             self._product_refresh_pending = True
         self._dispatch_pending_product_read()
 
-    @Slot(int, object, int)
+    @Slot(int, str, object, int)
     def _on_search_finished(
         self,
         request_id: int,
+        query: str,
         results: object,
         worker_thread_id: int,
     ) -> None:
@@ -1179,7 +1180,7 @@ class QtServiceBridge(QObject):
             return
         self._active_search_id = None
         self.operation_thread_observed.emit("search", worker_thread_id)
-        self.search_results_changed.emit("", results)
+        self.search_results_changed.emit(query, results)
 
     @Slot(int, object, int)
     def _on_search_refresh_finished(
