@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import importlib.util
 import re
 import sqlite3
 from contextlib import closing
@@ -9,10 +11,12 @@ from pathlib import Path
 
 from app.application_paths import get_application_paths
 from app.content_reader import extract_file_content_result
+from app.ocr_runtime import discover_ocr_runtime
 
 
 SEARCH_APPLICATION_ID = 0x46505349  # "FPSI"
-SEARCH_SCHEMA_VERSION = 1
+SEARCH_SCHEMA_VERSION = 2
+SEARCH_EXTRACTION_PIPELINE_REVISION = "9b-richer-extraction-ocr-v1"
 MAX_SEARCH_RESULTS = 100
 
 
@@ -29,6 +33,7 @@ class IndexedFile:
     modified_ns: int
     category: str | None
     extraction_status: str
+    extraction_fingerprint: str
     indexed_at_utc: str
 
 
@@ -40,6 +45,21 @@ class SearchResult:
     category: str | None
     snippet: str
     rank: float
+
+
+def current_extraction_fingerprint() -> str:
+    """Fingerprint extraction semantics and local capabilities that affect searchable content."""
+    runtime = discover_ocr_runtime()
+    pdf_renderer_available = importlib.util.find_spec("pypdfium2") is not None
+    payload = "|".join(
+        (
+            SEARCH_EXTRACTION_PIPELINE_REVISION,
+            f"ocr_available={int(runtime.available)}",
+            "ocr_languages=" + ",".join(sorted(language.casefold() for language in runtime.languages)),
+            f"pdf_renderer={int(pdf_renderer_available)}",
+        )
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 class SearchIndex:
@@ -90,6 +110,7 @@ class SearchIndex:
                         category TEXT,
                         content TEXT NOT NULL DEFAULT '',
                         extraction_status TEXT NOT NULL,
+                        extraction_fingerprint TEXT NOT NULL DEFAULT '',
                         indexed_at_utc TEXT NOT NULL
                     );
 
@@ -120,6 +141,17 @@ class SearchIndex:
                     END;
                     """
                 )
+                if user_version < 2:
+                    columns = {
+                        row["name"]
+                        for row in connection.execute("PRAGMA table_info(files)").fetchall()
+                    }
+                    if "extraction_fingerprint" not in columns:
+                        connection.execute(
+                            "ALTER TABLE files ADD COLUMN "
+                            "extraction_fingerprint TEXT NOT NULL DEFAULT ''"
+                        )
+
                 connection.execute(f"PRAGMA application_id = {SEARCH_APPLICATION_ID}")
                 connection.execute(f"PRAGMA user_version = {SEARCH_SCHEMA_VERSION}")
         except SearchIndexError:
@@ -166,6 +198,7 @@ class SearchIndex:
             )
 
         indexed_at = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+        extraction_fingerprint = current_extraction_fingerprint()
         extraction_status = (
             "indexed"
             if content
@@ -184,9 +217,10 @@ class SearchIndex:
                     """
                     INSERT INTO files (
                         path, filename, extension, size_bytes, modified_ns,
-                        category, content, extraction_status, indexed_at_utc
+                        category, content, extraction_status, extraction_fingerprint,
+                        indexed_at_utc
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(path) DO UPDATE SET
                         filename = excluded.filename,
                         extension = excluded.extension,
@@ -195,6 +229,7 @@ class SearchIndex:
                         category = excluded.category,
                         content = excluded.content,
                         extraction_status = excluded.extraction_status,
+                        extraction_fingerprint = excluded.extraction_fingerprint,
                         indexed_at_utc = excluded.indexed_at_utc
                     """,
                     (
@@ -206,6 +241,7 @@ class SearchIndex:
                         normalized_category,
                         content,
                         extraction_status,
+                        extraction_fingerprint,
                         indexed_at,
                     ),
                 )
@@ -220,6 +256,7 @@ class SearchIndex:
             modified_ns=after.st_mtime_ns,
             category=normalized_category,
             extraction_status=extraction_status,
+            extraction_fingerprint=extraction_fingerprint,
             indexed_at_utc=indexed_at,
         )
 
@@ -246,6 +283,9 @@ class SearchIndex:
             raise SearchIndexError(f"Search index read failed: {error}") from error
         return tuple(Path(row["path"]) for row in rows)
 
+    def extraction_fingerprint(self) -> str:
+        return current_extraction_fingerprint()
+
     def get_file(self, file_path: str | Path) -> IndexedFile | None:
         source = Path(file_path).resolve()
         try:
@@ -253,7 +293,8 @@ class SearchIndex:
                 row = connection.execute(
                     """
                     SELECT path, filename, extension, size_bytes, modified_ns,
-                           category, extraction_status, indexed_at_utc
+                           category, extraction_status, extraction_fingerprint,
+                           indexed_at_utc
                     FROM files
                     WHERE path = ?
                     """,
@@ -271,6 +312,7 @@ class SearchIndex:
             modified_ns=row["modified_ns"],
             category=row["category"],
             extraction_status=row["extraction_status"],
+            extraction_fingerprint=row["extraction_fingerprint"],
             indexed_at_utc=row["indexed_at_utc"],
         )
 
