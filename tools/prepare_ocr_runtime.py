@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 OCR_ROOT = ROOT / "third_party" / "ocr"
 RUNTIME_ROOT = OCR_ROOT / "runtime"
 MANIFEST_FILE = OCR_ROOT / "runtime-manifest.json"
+LICENSE_MAP_FILE = OCR_ROOT / "license-map.json"
 
 REQUIRED_LANGUAGES = ("eng", "ara")
 RUNTIME_EXECUTABLE = "tesseract.exe"
@@ -81,20 +82,37 @@ def _copy_runtime_files(source: Path) -> list[Path]:
     return copied
 
 
+def _load_license_map() -> dict[str, dict[str, str]]:
+    try:
+        document = json.loads(LICENSE_MAP_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(document, dict) or document.get("schema_version") != 1:
+        return {}
+    entries = document.get("files")
+    if not isinstance(entries, dict):
+        return {}
+    return {
+        str(path): metadata
+        for path, metadata in entries.items()
+        if isinstance(path, str) and isinstance(metadata, dict)
+    }
+
+
 def _write_manifest(files: list[Path]) -> None:
     original = json.loads(MANIFEST_FILE.read_text(encoding="utf-8"))
+    license_map = _load_license_map()
     entries = []
     for path in sorted(files, key=lambda item: item.relative_to(RUNTIME_ROOT).as_posix().casefold()):
         relative = path.relative_to(RUNTIME_ROOT).as_posix()
+        reviewed = license_map.get(relative, {})
         entries.append(
             {
                 "path": relative,
                 "sha256": sha256_file(path),
-                "license": (
-                    "Apache-2.0"
-                    if relative == "tesseract.exe" or relative.startswith("tessdata/")
-                    else "REVIEW_REQUIRED"
-                ),
+                "component": reviewed.get("component", "REVIEW_REQUIRED"),
+                "license": reviewed.get("license", "REVIEW_REQUIRED"),
+                "source": reviewed.get("source", "REVIEW_REQUIRED"),
             }
         )
 
