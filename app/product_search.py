@@ -23,6 +23,10 @@ class SearchRefreshResult:
     removed: int
     failed: int
     errors: tuple[str, ...] = ()
+    semantic_embedded: int = 0
+    semantic_unchanged: int = 0
+    semantic_failed: int = 0
+    semantic_available: bool = False
 
 
 @dataclass(frozen=True)
