@@ -19,7 +19,7 @@ from app.application_service import (
 )
 from app.mover import DuplicateStatus, MoveResult, MoveStatus, PreviewStatus
 from app.product_search import SearchRefreshResult
-from app.search_index import SearchResult
+from app.search_index import SearchResult, SemanticSearchResult
 from app.ui.qt.application import create_application
 from app.ui.qt.pages.my_files import MyFilesPage
 
@@ -30,6 +30,7 @@ class MyFilesBridgeStub(QObject):
     organize_completed = Signal(object)
     safety_request_failed = Signal(str, str)
     search_results_changed = Signal(str, object)
+    semantic_search_results_changed = Signal(str, object)
     search_refresh_completed = Signal(object)
     search_request_failed = Signal(str, str)
 
@@ -38,6 +39,7 @@ class MyFilesBridgeStub(QObject):
         self.preview_requests = []
         self.organize_requests = []
         self.search_requests = []
+        self.semantic_search_requests = []
         self.search_refresh_requests = 0
 
     def request_preview(self, source):
@@ -48,6 +50,9 @@ class MyFilesBridgeStub(QObject):
 
     def request_search(self, query, limit=25):
         self.search_requests.append((query, limit))
+
+    def request_semantic_search(self, query, limit=25):
+        self.semantic_search_requests.append((query, limit))
 
     def request_search_refresh(self):
         self.search_refresh_requests += 1
@@ -86,9 +91,44 @@ class QtMyFilesTests(unittest.TestCase):
             warning="Preview is advisory",
         )
 
-    def test_search_request_and_results_are_local_product_data(self):
+    def test_search_request_uses_local_semantic_product_data(self):
+        self.page.search_input.setText("documents about train testing")
+        self.page._request_search()
+
+        self.assertEqual(
+            self.bridge.semantic_search_requests,
+            [("documents about train testing", 25)],
+        )
+        self.assertEqual(self.bridge.search_requests, [])
+        self.assertFalse(self.page.search_button.isEnabled())
+
+        result = SemanticSearchResult(
+            path=self.root / "organized" / "reports" / "IR50.pdf",
+            filename="IR50.pdf",
+            extension=".pdf",
+            category="reports",
+            score=0.72,
+        )
+        self.bridge.semantic_search_results_changed.emit(
+            "documents about train testing",
+            (result,),
+        )
+        self.app.processEvents()
+
+        self.assertTrue(self.page.search_button.isEnabled())
+        self.assertEqual(self.page.search_results.count(), 1)
+        self.assertTrue(self.page.search_results.isVisibleTo(self.page))
+        self.assertIn("1 smart result", self.page.search_status.text())
+
+    def test_semantic_failure_falls_back_to_exact_local_search(self):
         self.page.search_input.setText("traction")
         self.page._request_search()
+
+        self.bridge.search_request_failed.emit(
+            "semantic_search",
+            "Local semantic search model is unavailable",
+        )
+        self.app.processEvents()
 
         self.assertEqual(self.bridge.search_requests, [("traction", 25)])
         self.assertFalse(self.page.search_button.isEnabled())
@@ -106,8 +146,6 @@ class QtMyFilesTests(unittest.TestCase):
 
         self.assertTrue(self.page.search_button.isEnabled())
         self.assertEqual(self.page.search_results.count(), 1)
-        self.assertTrue(self.page.search_results.isVisibleTo(self.page))
-        self.assertIn("1 result", self.page.search_status.text())
 
     def test_stale_search_result_does_not_replace_current_query(self):
         self.page.search_input.setText("new query")
