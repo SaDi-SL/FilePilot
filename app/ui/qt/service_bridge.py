@@ -48,6 +48,9 @@ class _ServiceWorker(QObject):
     shutdown_finished = Signal(int)
     product_read_finished = Signal(int, object, int, int)
     product_read_failed = Signal(int, str, int, int)
+    search_finished = Signal(int, object, int)
+    search_refresh_finished = Signal(int, object, int)
+    search_failed = Signal(str, int, str, int)
     preview_finished = Signal(int, object, int)
     organize_finished = Signal(int, object, int)
     undo_availability_finished = Signal(int, object, int)
@@ -123,6 +126,38 @@ class _ServiceWorker(QObject):
             request_id,
             snapshot,
             activity_revision,
+            threading.get_ident(),
+        )
+
+    @Slot(int, str, int)
+    def search_files(self, request_id: int, query: str, limit: int) -> None:
+        try:
+            result = self._service.search_files(query, limit=limit)
+        except Exception as error:
+            self.search_failed.emit(
+                "search",
+                request_id,
+                str(error),
+                threading.get_ident(),
+            )
+            return
+        self.search_finished.emit(request_id, result, threading.get_ident())
+
+    @Slot(int)
+    def refresh_search_index(self, request_id: int) -> None:
+        try:
+            result = self._service.refresh_search_index()
+        except Exception as error:
+            self.search_failed.emit(
+                "search_refresh",
+                request_id,
+                str(error),
+                threading.get_ident(),
+            )
+            return
+        self.search_refresh_finished.emit(
+            request_id,
+            result,
             threading.get_ident(),
         )
 
@@ -379,6 +414,9 @@ class QtServiceBridge(QObject):
     activity_received = Signal(object)
     product_snapshot_changed = Signal(object)
     product_read_failed = Signal(str)
+    search_results_changed = Signal(str, object)
+    search_refresh_completed = Signal(object)
+    search_request_failed = Signal(str, str)
     preview_changed = Signal(object)
     organize_started = Signal(str)
     organize_completed = Signal(object)
@@ -410,6 +448,8 @@ class QtServiceBridge(QObject):
     _stop_worker = Signal()
     _shutdown_worker = Signal()
     _product_read_worker = Signal(int, int, int)
+    _search_worker = Signal(int, str, int)
+    _search_refresh_worker = Signal(int)
     _preview_worker = Signal(int, str)
     _organize_worker = Signal(int, str)
     _undo_availability_worker = Signal(int, str)
@@ -452,6 +492,11 @@ class QtServiceBridge(QObject):
         self._product_refresh_pending = False
         self._pending_product_limit = 100
         self._product_retry_revision: int | None = None
+        self._search_sequence = 0
+        self._active_search_id: int | None = None
+        self._search_refresh_sequence = 0
+        self._search_refresh_active = False
+        self._active_search_refresh_id: int | None = None
         self._preview_sequence = 0
         self._preview_active = False
         self._active_preview_id: int | None = None
@@ -532,6 +577,14 @@ class QtServiceBridge(QObject):
             self._worker.read_product_data,
             Qt.ConnectionType.QueuedConnection,
         )
+        self._search_worker.connect(
+            self._worker.search_files,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self._search_refresh_worker.connect(
+            self._worker.refresh_search_index,
+            Qt.ConnectionType.QueuedConnection,
+        )
         self._preview_worker.connect(
             self._worker.preview_file,
             Qt.ConnectionType.QueuedConnection,
@@ -599,6 +652,11 @@ class QtServiceBridge(QObject):
         self._worker.shutdown_finished.connect(self._on_worker_shutdown)
         self._worker.product_read_finished.connect(self._on_product_read_finished)
         self._worker.product_read_failed.connect(self._on_product_read_failed)
+        self._worker.search_finished.connect(self._on_search_finished)
+        self._worker.search_refresh_finished.connect(
+            self._on_search_refresh_finished
+        )
+        self._worker.search_failed.connect(self._on_search_failed)
         self._worker.preview_finished.connect(self._on_preview_finished)
         self._worker.organize_finished.connect(self._on_organize_finished)
         self._worker.undo_availability_finished.connect(
@@ -698,6 +756,24 @@ class QtServiceBridge(QObject):
             self._product_refresh_pending = True
             return
         self._dispatch_product_read(self._pending_product_limit)
+
+    @Slot(str, int)
+    def request_search(self, query: str, limit: int = 25) -> None:
+        if self._closing:
+            return
+        self._search_sequence += 1
+        self._active_search_id = self._search_sequence
+        bounded_limit = max(1, min(int(limit), 100))
+        self._search_worker.emit(self._search_sequence, query, bounded_limit)
+
+    @Slot()
+    def request_search_refresh(self) -> None:
+        if self._closing or self._search_refresh_active:
+            return
+        self._search_refresh_sequence += 1
+        self._active_search_refresh_id = self._search_refresh_sequence
+        self._search_refresh_active = True
+        self._search_refresh_worker.emit(self._search_refresh_sequence)
 
     @Slot(str)
     def request_preview(self, source: str) -> None:
@@ -1091,6 +1167,61 @@ class QtServiceBridge(QObject):
         else:
             self._product_refresh_pending = True
         self._dispatch_pending_product_read()
+
+    @Slot(int, object, int)
+    def _on_search_finished(
+        self,
+        request_id: int,
+        results: object,
+        worker_thread_id: int,
+    ) -> None:
+        if request_id != self._active_search_id or self._closing:
+            return
+        self._active_search_id = None
+        self.operation_thread_observed.emit("search", worker_thread_id)
+        self.search_results_changed.emit("", results)
+
+    @Slot(int, object, int)
+    def _on_search_refresh_finished(
+        self,
+        request_id: int,
+        result: object,
+        worker_thread_id: int,
+    ) -> None:
+        if request_id != self._active_search_refresh_id:
+            return
+        self._search_refresh_active = False
+        self._active_search_refresh_id = None
+        if self._closing:
+            return
+        self.operation_thread_observed.emit("search_refresh", worker_thread_id)
+        self.search_refresh_completed.emit(result)
+
+    @Slot(str, int, str, int)
+    def _on_search_failed(
+        self,
+        name: str,
+        request_id: int,
+        message: str,
+        worker_thread_id: int,
+    ) -> None:
+        accepted = (
+            name == "search" and request_id == self._active_search_id
+        ) or (
+            name == "search_refresh"
+            and request_id == self._active_search_refresh_id
+        )
+        if not accepted:
+            return
+        if name == "search":
+            self._active_search_id = None
+        else:
+            self._search_refresh_active = False
+            self._active_search_refresh_id = None
+        if self._closing:
+            return
+        self.operation_thread_observed.emit(name, worker_thread_id)
+        self.search_request_failed.emit(name, message)
 
     @Slot(int, object, int)
     def _on_preview_finished(
