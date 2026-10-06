@@ -1,15 +1,7 @@
 from dataclasses import dataclass
 
 from PySide6.QtCore import QSize, Qt, Signal
-from PySide6.QtWidgets import (
-    QButtonGroup,
-    QFrame,
-    QHBoxLayout,
-    QLabel,
-    QPushButton,
-    QVBoxLayout,
-    QWidget,
-)
+from PySide6.QtWidgets import QButtonGroup, QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from app.product_identity import PRODUCT_IDENTITY
 from app.ui.qt.icons import brand_icon, navigation_icon
@@ -35,9 +27,8 @@ NAVIGATION_ITEMS = (
 
 class NavigationSidebar(QFrame):
     page_selected = Signal(str)
-
-    EXPANDED_WIDTH = 240
-    COMPACT_WIDTH = 72
+    EXPANDED_WIDTH = 216
+    COMPACT_WIDTH = 68
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -45,74 +36,71 @@ class NavigationSidebar(QFrame):
         self.setAccessibleName("Primary navigation")
         self._compact = False
         self._buttons: dict[str, QPushButton] = {}
+        self._section_labels: list[QLabel] = []
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(
-            SPACING.md,
-            SPACING.xl,
-            SPACING.md,
-            SPACING.lg,
-        )
-        layout.setSpacing(SPACING.sm)
+        layout.setContentsMargins(SPACING.md, SPACING.lg, SPACING.md, SPACING.md)
+        layout.setSpacing(SPACING.xs)
 
         brand_row = QHBoxLayout()
         brand_row.setSpacing(SPACING.md)
         self.brand_mark = QLabel()
         self.brand_mark.setProperty("brandMark", True)
-        self.brand_mark.setFixedSize(38, 38)
+        self.brand_mark.setFixedSize(36, 36)
         self.brand_mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.brand_mark.setPixmap(brand_icon().pixmap(22, 22))
+        self.brand_mark.setPixmap(brand_icon().pixmap(21, 21))
         self.brand_mark.setAccessibleName("FilePilot application mark")
         brand_copy = QVBoxLayout()
-        brand_copy.setSpacing(1)
+        brand_copy.setSpacing(0)
         self.brand_name = QLabel(PRODUCT_IDENTITY.product_name)
         self.brand_name.setProperty("role", "brand")
-        self.brand_tagline = QLabel("Desktop file automation")
+        self.brand_tagline = QLabel("Files, under control")
         self.brand_tagline.setProperty("role", "caption")
         brand_copy.addWidget(self.brand_name)
         brand_copy.addWidget(self.brand_tagline)
         brand_row.addWidget(self.brand_mark)
         brand_row.addLayout(brand_copy, 1)
         layout.addLayout(brand_row)
-        layout.addSpacing(SPACING.md)
-
-        divider = QFrame()
-        divider.setProperty("divider", True)
-        layout.addWidget(divider)
-        layout.addSpacing(SPACING.sm)
-
-        self.section_label = QLabel("WORKSPACE")
-        self.section_label.setProperty("role", "caption")
-        layout.addWidget(self.section_label)
-        layout.addSpacing(SPACING.xs)
+        layout.addSpacing(SPACING.lg)
 
         group = QButtonGroup(self)
         group.setExclusive(True)
-        for index, item in enumerate(NAVIGATION_ITEMS):
-            button = QPushButton(item.label)
-            button.setProperty("navItem", True)
-            button.setCheckable(True)
-            button.setIcon(navigation_icon(item.icon))
-            button.setIconSize(QSize(18, 18))
-            button.setToolTip(item.label)
-            button.setAccessibleName(f"Open {item.label}")
-            button.clicked.connect(
-                lambda checked=False, key=item.key: self.page_selected.emit(key)
-            )
-            group.addButton(button)
-            layout.addWidget(button)
-            self._buttons[item.key] = button
-            if index > 0:
-                QWidget.setTabOrder(
-                    self._buttons[NAVIGATION_ITEMS[index - 1].key],
-                    button,
-                )
-
-        layout.addStretch(1)
-        self.version_label = QLabel(
-            f"{PRODUCT_IDENTITY.product_name} {PRODUCT_IDENTITY.display_version}"
+        sections = (
+            ("WORKSPACE", NAVIGATION_ITEMS[:3]),
+            ("AUTOMATION", NAVIGATION_ITEMS[3:5]),
+            ("SYSTEM", NAVIGATION_ITEMS[5:]),
         )
+        previous_button = None
+        for section_index, (section_name, items) in enumerate(sections):
+            if section_index:
+                layout.addSpacing(SPACING.md)
+            label = QLabel(section_name)
+            label.setProperty("role", "caption")
+            self._section_labels.append(label)
+            layout.addWidget(label)
+            layout.addSpacing(SPACING.xs)
+            for item in items:
+                button = QPushButton(item.label)
+                button.setProperty("navItem", True)
+                button.setCheckable(True)
+                button.setIcon(navigation_icon(item.icon))
+                button.setIconSize(QSize(18, 18))
+                button.setToolTip(item.label)
+                button.setAccessibleName(f"Open {item.label}")
+                button.clicked.connect(lambda checked=False, key=item.key: self.page_selected.emit(key))
+                group.addButton(button)
+                layout.addWidget(button)
+                self._buttons[item.key] = button
+                if previous_button is not None:
+                    QWidget.setTabOrder(previous_button, button)
+                previous_button = button
+
+        # Kept for compatibility with the original Qt shell tests.
+        self.section_label = self._section_labels[0]
+        layout.addStretch(1)
+        self.version_label = QLabel(PRODUCT_IDENTITY.display_version)
         self.version_label.setProperty("role", "caption")
+        self.version_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.version_label)
 
         self._buttons["overview"].setChecked(True)
@@ -130,12 +118,11 @@ class NavigationSidebar(QFrame):
         if compact == self._compact:
             return
         self._compact = compact
-        self.setFixedWidth(
-            self.COMPACT_WIDTH if compact else self.EXPANDED_WIDTH
-        )
+        self.setFixedWidth(self.COMPACT_WIDTH if compact else self.EXPANDED_WIDTH)
         self.brand_name.setVisible(not compact)
         self.brand_tagline.setVisible(not compact)
-        self.section_label.setVisible(not compact)
+        for label in self._section_labels:
+            label.setVisible(not compact)
         self.version_label.setVisible(not compact)
         for item in NAVIGATION_ITEMS:
             button = self._buttons[item.key]
