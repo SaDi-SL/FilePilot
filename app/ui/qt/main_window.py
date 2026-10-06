@@ -43,7 +43,7 @@ class MainWindow(QMainWindow):
             f"{PRODUCT_IDENTITY.product_name} {PRODUCT_IDENTITY.display_version}"
         )
         self.setAccessibleName("FilePilot main window")
-        self.resize(1280, 760)
+        self.resize(1180, 680)
         self.setMinimumSize(760, 520)
 
         root = QWidget()
