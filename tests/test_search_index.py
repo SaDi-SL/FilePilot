@@ -1,5 +1,6 @@
 import sqlite3
 import tempfile
+from contextlib import closing
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -24,7 +25,7 @@ class SearchIndexTests(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def test_database_identity_and_schema_version_are_set(self):
-        with sqlite3.connect(self.database) as connection:
+        with closing(sqlite3.connect(self.database)) as connection:
             self.assertEqual(
                 connection.execute("PRAGMA application_id").fetchone()[0],
                 SEARCH_APPLICATION_ID,
@@ -115,7 +116,7 @@ class SearchIndexTests(unittest.TestCase):
 
     def test_unrelated_sqlite_database_is_rejected_without_overwrite(self):
         other = self.root / "other.sqlite3"
-        with sqlite3.connect(other) as connection:
+        with closing(sqlite3.connect(other)) as connection:
             connection.execute("PRAGMA application_id = 123456")
             connection.execute("CREATE TABLE sentinel(value TEXT)")
             connection.execute("INSERT INTO sentinel VALUES ('keep')")
@@ -124,7 +125,7 @@ class SearchIndexTests(unittest.TestCase):
         with self.assertRaisesRegex(SearchIndexError, "another application"):
             SearchIndex(other)
 
-        with sqlite3.connect(other) as connection:
+        with closing(sqlite3.connect(other)) as connection:
             self.assertEqual(
                 connection.execute("SELECT value FROM sentinel").fetchone()[0],
                 "keep",
