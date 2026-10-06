@@ -52,6 +52,7 @@ Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription
 ; User configuration and runtime data are created under LocalAppData by the app.
 ; The installer owns only application binaries and never packages live user data.
 Source: "dist\{#AppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "dist\ocr\*"; DestDir: "{app}\ocr"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
 
 [Icons]
 Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"
