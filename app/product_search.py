@@ -139,11 +139,12 @@ class ProductSearch:
         )
 
         # RRF is deliberately rank-based so BM25 and cosine remain on their
-        # native scales. Semantic gets a modest lead because concept search is
-        # the primary intent; lexical evidence breaks generic semantic ties.
+        # native scales. Lexical evidence gets a modest boost so a generic
+        # semantic near-match cannot outrank a result that also contains
+        # concrete query evidence.
         rrf_k = 60.0
-        semantic_weight = 1.15
-        lexical_weight = 1.0
+        semantic_weight = 1.0
+        lexical_weight = 1.35
         combined: dict[Path, dict] = {}
 
         for rank, item in enumerate(semantic, start=1):
