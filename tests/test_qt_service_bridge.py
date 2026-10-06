@@ -38,6 +38,7 @@ from app.application_service import (
     UndoStatus,
 )
 from app.ui.qt.service_bridge import QtServiceBridge
+from app.mover import MoveResult, MoveStatus
 from app.product_configuration import (
     ConfigurationDataState,
     ConfigurationSaveResult,
@@ -97,6 +98,11 @@ class FakeService:
         self.preview_entered = threading.Event()
         self.release_preview = threading.Event()
         self.release_preview.set()
+        self.organize_calls = []
+        self.organize_thread_ids = []
+        self.organize_entered = threading.Event()
+        self.release_organize = threading.Event()
+        self.release_organize.set()
         self.undo_availability_calls = []
         self.undo_calls = []
         self.undo_entered = threading.Event()
@@ -209,6 +215,20 @@ class FakeService:
                 PreviewStatus.READY,
                 Path(source),
                 message="Safe preview",
+            )
+
+    def organize_file(self, source):
+        with self._operation():
+            self.organize_calls.append(source)
+            self.organize_thread_ids.append(threading.get_ident())
+            self.organize_entered.set()
+            if not self.release_organize.wait(3):
+                raise RuntimeError("organize timed out")
+            return MoveResult(
+                MoveStatus.MOVED,
+                Path(source),
+                destination=Path("C:/Organized") / Path(source).name,
+                operation_id="manual-organize-1",
             )
 
     def get_undo_availability(self, operation_id):
@@ -777,6 +797,33 @@ class QtServiceBridgeTests(unittest.TestCase):
             previews.at(0)[0].source,
             Path("C:/Inbox/latest.txt"),
         )
+
+    def test_manual_organize_runs_off_gui_thread_and_is_not_duplicated(self):
+        service = FakeService()
+        service.release_organize.clear()
+        bridge = self._bridge(service)
+        completed = QSignalSpy(bridge.organize_completed)
+        started = QSignalSpy(bridge.organize_started)
+        observed = QSignalSpy(bridge.operation_thread_observed)
+
+        bridge.request_organize("C:/Inbox/report.txt")
+        bridge.request_organize("C:/Inbox/report.txt")
+        self.assertTrue(service.organize_entered.wait(1))
+        service.release_organize.set()
+
+        self._wait_until(lambda: completed.count() == 1)
+
+        self.assertEqual(started.count(), 1)
+        self.assertEqual(service.organize_calls, ["C:/Inbox/report.txt"])
+        self.assertEqual(completed.at(0)[0].status, MoveStatus.MOVED)
+        self.assertNotEqual(service.organize_thread_ids[0], threading.get_ident())
+        worker_ids = [
+            observed.at(index)[1]
+            for index in range(observed.count())
+            if observed.at(index)[0] == "organize"
+        ]
+        self.assertEqual(len(worker_ids), 1)
+        self.assertNotEqual(worker_ids[0], threading.get_ident())
 
     def test_mutating_safety_requests_are_serialized_and_not_duplicated(self):
         service = FakeService()
