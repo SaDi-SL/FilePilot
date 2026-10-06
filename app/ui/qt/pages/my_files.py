@@ -30,7 +30,7 @@ class FileDropZone(QFrame):
         self.setProperty("dropZone", True)
         self.setAcceptDrops(True)
         self.setAccessibleName("Choose a file for organization preview")
-        self.setMinimumHeight(180)
+        self.setMinimumHeight(170)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(
@@ -225,7 +225,8 @@ class MyFilesPage(QWidget):
         self.workspace_layout.addWidget(self.preview_card, 0, 1)
         self.workspace_layout.setColumnStretch(0, 2)
         self.workspace_layout.setColumnStretch(1, 3)
-        layout.addWidget(self.workspace, 1)
+        layout.addWidget(self.workspace, 0, Qt.AlignmentFlag.AlignTop)
+        layout.addStretch(1)
 
         self.bridge.preview_changed.connect(self.render_preview)
         self.bridge.safety_request_failed.connect(self._request_failed)
