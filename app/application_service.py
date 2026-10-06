@@ -35,6 +35,8 @@ from app.product_configuration import (
     StaleConfigurationError,
     configuration_revision,
 )
+from app.product_search import ProductSearch, SearchRefreshResult
+from app.search_index import SearchIndexError, SearchResult
 from app.product_read_model import (
     ActivityRecord,
     ActivityStatus,
@@ -167,6 +169,7 @@ class FilePilotService:
         monitor_builder: Callable[[], tuple[dict, object]] | None = None,
         journal_path: str | Path | None = None,
         product_reader: ProductReadModel | None = None,
+        product_search: ProductSearch | None = None,
     ) -> None:
         self._config_path = (
             Path(config_path) if config_path is not None else get_external_config_path()
@@ -174,6 +177,7 @@ class FilePilotService:
         self._monitor_builder = monitor_builder
         self._journal_path = Path(journal_path) if journal_path is not None else None
         self._product_reader = product_reader or ProductReadModel(journal_path)
+        self._product_search = product_search or ProductSearch()
         self._configuration_store = ProductConfigurationStore(self._config_path)
         self._settings_store = ProductSettingsStore(self._configuration_store)
         self._lifecycle_lock = threading.RLock()
@@ -254,6 +258,31 @@ class FilePilotService:
 
     def get_recent_activity(self, limit: int = 20) -> tuple[ActivityRecord, ...]:
         return self.get_product_snapshot(limit=limit).activity
+
+    def search_files(
+        self,
+        query: str,
+        *,
+        limit: int = 25,
+    ) -> tuple[SearchResult, ...]:
+        """Search the durable local catalog without changing user files."""
+        return self._product_search.search(query, limit=limit)
+
+    def refresh_search_index(self) -> SearchRefreshResult:
+        """Reconcile the local search catalog with the configured organized root."""
+        with self._lifecycle_lock:
+            if self.startup_status is not StartupStatus.READY:
+                raise SearchIndexError(
+                    "Search indexing requires a ready FilePilot configuration"
+                )
+            config = dict(self.config or {})
+            organized = config.get("organized_base_folder")
+            if not isinstance(organized, str) or not organized.strip():
+                raise SearchIndexError(
+                    "Search indexing requires a configured organized folder"
+                )
+            organized_root = Path(organized)
+        return self._product_search.refresh(organized_root)
 
     def get_product_configuration(self) -> ProductConfigurationSnapshot:
         """Read one immutable product configuration snapshot."""
