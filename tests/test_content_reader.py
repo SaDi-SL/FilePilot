@@ -84,6 +84,25 @@ class ContentReaderTests(unittest.TestCase):
         self.assertEqual(result.method, "docx")
         self.assertEqual(result.detail, "OSError")
 
+    def test_xlsx_content_is_extracted_when_dependency_is_available(self):
+        import openpyxl
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "sheet.xlsx"
+            workbook = openpyxl.Workbook()
+            worksheet = workbook.active
+            worksheet.append(["Project", "Status"])
+            worksheet.append(["IR50", "Ready"])
+            workbook.save(path)
+            workbook.close()
+
+            result = extract_file_content_result(path, lowercase=False)
+
+        self.assertEqual(result.status, "extracted")
+        self.assertEqual(result.method, "xlsx")
+        self.assertIn("IR50", result.text)
+        self.assertIn("Ready", result.text)
+
     def test_structured_xlsx_failure_is_not_reported_as_empty(self):
         with patch.dict("sys.modules", {"openpyxl": None}):
             result = extract_file_content_result(Path("broken.xlsx"))
