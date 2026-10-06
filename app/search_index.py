@@ -146,6 +146,8 @@ class SearchIndex:
             source,
             max_chars=max_chars,
             lowercase=False,
+            max_pdf_pages=20,
+            max_docx_paragraphs=None,
         )
 
         try:
