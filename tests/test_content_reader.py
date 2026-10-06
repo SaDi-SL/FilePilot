@@ -6,6 +6,7 @@ from unittest.mock import patch
 from app import ai_document_analyzer
 from app.content_reader import (
     extract_file_content,
+    extract_file_content_result,
     read_docx_text,
     read_pdf_text,
     safe_trim,
@@ -42,6 +43,30 @@ class ContentReaderTests(unittest.TestCase):
             path.write_bytes(b"binary")
 
             self.assertEqual(extract_file_content(path), "")
+
+    def test_structured_result_distinguishes_unsupported_and_legacy_xls(self):
+        unsupported = extract_file_content_result(Path("archive.bin"))
+        legacy_xls = extract_file_content_result(Path("legacy.xls"))
+
+        self.assertEqual(unsupported.status, "unsupported_format")
+        self.assertEqual(unsupported.text, "")
+        self.assertEqual(legacy_xls.status, "unsupported_format")
+        self.assertIn(".xls", legacy_xls.detail or "")
+
+    def test_pdf_without_embedded_text_reports_ocr_required(self):
+        with patch("app.content_reader.read_pdf_text", return_value=""):
+            result = extract_file_content_result(Path("scan.pdf"))
+
+        self.assertEqual(result.status, "ocr_required")
+        self.assertEqual(result.method, "pdf_text")
+        self.assertFalse(result.has_text)
+
+    def test_image_without_ocr_text_reports_ocr_unavailable(self):
+        with patch("app.content_reader.read_image_ocr", return_value=""):
+            result = extract_file_content_result(Path("scan.png"))
+
+        self.assertEqual(result.status, "ocr_unavailable")
+        self.assertEqual(result.method, "image_ocr")
 
     def test_legacy_reader_limits_remain_default_contract(self):
         with patch("app.content_reader.PdfReader") as reader:
