@@ -23,9 +23,10 @@
     "MIT": "licenses/MIT.txt",
     "MPL-1.1": "licenses/MPL-1.1.txt",
     "Zlib": "licenses/Zlib.txt",
-    "custom:bzip2": "licenses/bzip2.txt",
     "custom:fontconfig": "licenses/fontconfig.txt",
-    "custom:libpng": "licenses/libpng.txt",
-    "custom:BSD-like": "licenses/libjpeg-turbo.txt"
+    "bzip2-1.0.6": "licenses/bzip2-1.0.6.txt",
+    "custom:libdatrie": "licenses/libdatrie-COPYING.txt",
+    "custom:libjpeg-turbo": "licenses/libjpeg-turbo-LICENSE.md",
+    "Libpng": "licenses/Libpng.txt"
   }
 }
