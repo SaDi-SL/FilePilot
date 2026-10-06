@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 
 from app.ai_service import AIProviderResponseError, AIProviderRequestError
 from app.embedding_service import (
+    DEFAULT_OLLAMA_EMBEDDING_MODEL,
     MAX_EMBED_INPUT_CHARS,
     OllamaEmbeddingProvider,
 )
@@ -19,6 +20,10 @@ def urlopen_response(payload):
 
 
 class OllamaEmbeddingProviderTests(unittest.TestCase):
+    def test_default_embedding_model_is_multilingual_bge_m3(self):
+        self.assertEqual(DEFAULT_OLLAMA_EMBEDDING_MODEL, "bge-m3")
+        self.assertEqual(OllamaEmbeddingProvider().model, "bge-m3")
+
     def test_embed_uses_local_api_and_normalizes_vector(self):
         provider = OllamaEmbeddingProvider(
             model="nomic-embed-text",
