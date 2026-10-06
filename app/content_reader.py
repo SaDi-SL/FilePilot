@@ -147,22 +147,67 @@ def read_excel_text(
         return ""
 
 
+def extract_image_ocr_result(
+    file_path: Path,
+    max_chars: int = 4000,
+    *,
+    lowercase: bool = False,
+) -> ContentExtractionResult:
+    try:
+        import pytesseract
+        from PIL import Image
+    except ImportError as error:
+        logger.debug("OCR Python dependency unavailable for %s: %s", file_path.name, error)
+        return ContentExtractionResult(
+            text="",
+            status="ocr_unavailable",
+            method="image_ocr",
+            detail="OCR Python dependency is unavailable",
+        )
+
+    try:
+        pytesseract.get_tesseract_version()
+    except Exception as error:
+        logger.debug("Tesseract runtime unavailable for %s: %s", file_path.name, error)
+        return ContentExtractionResult(
+            text="",
+            status="ocr_unavailable",
+            method="image_ocr",
+            detail="Tesseract OCR runtime is unavailable",
+        )
+
+    try:
+        with Image.open(str(file_path)) as image:
+            text = pytesseract.image_to_string(image)
+        trimmed = trim_text(text, max_chars=max_chars, lowercase=lowercase)
+        return ContentExtractionResult(
+            text=trimmed,
+            status="extracted" if trimmed else "empty",
+            method="image_ocr",
+            detail=None if trimmed else "OCR found no searchable text",
+        )
+    except Exception as error:
+        logger.debug("OCR extraction failed for %s: %s", file_path.name, error)
+        return ContentExtractionResult(
+            text="",
+            status="extraction_failed",
+            method="image_ocr",
+            detail=type(error).__name__,
+        )
+
+
 def read_image_ocr(
     file_path: Path,
     max_chars: int = 4000,
     *,
     lowercase: bool = False,
 ) -> str:
-    try:
-        import pytesseract
-        from PIL import Image
-
-        with Image.open(str(file_path)) as image:
-            text = pytesseract.image_to_string(image)
-        return trim_text(text, max_chars=max_chars, lowercase=lowercase)
-    except Exception as error:
-        logger.debug("OCR extraction unavailable for %s: %s", file_path.name, error)
-        return ""
+    """Compatibility API returning only OCR text."""
+    return extract_image_ocr_result(
+        file_path,
+        max_chars=max_chars,
+        lowercase=lowercase,
+    ).text
 
 
 def extract_file_content_result(
@@ -238,16 +283,10 @@ def extract_file_content_result(
             )
 
         if suffix in IMAGE_EXTENSIONS:
-            text = read_image_ocr(
+            return extract_image_ocr_result(
                 file_path,
                 max_chars=max_chars,
                 lowercase=lowercase,
-            )
-            return ContentExtractionResult(
-                text=text,
-                status="extracted" if text else "ocr_unavailable",
-                method="image_ocr",
-                detail=None if text else "OCR produced no searchable text",
             )
 
         return ContentExtractionResult(
