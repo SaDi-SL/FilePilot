@@ -7,6 +7,7 @@ from app import ai_document_analyzer
 from app.content_reader import (
     extract_file_content,
     extract_file_content_result,
+    extract_image_ocr_result,
     read_docx_text,
     read_pdf_text,
     safe_trim,
@@ -61,11 +62,46 @@ class ContentReaderTests(unittest.TestCase):
         self.assertEqual(result.method, "pdf_text")
         self.assertFalse(result.has_text)
 
-    def test_image_without_ocr_text_reports_ocr_unavailable(self):
-        with patch("app.content_reader.read_image_ocr", return_value=""):
-            result = extract_file_content_result(Path("scan.png"))
+    def test_image_without_ocr_dependency_reports_ocr_unavailable(self):
+        with patch.dict("sys.modules", {"pytesseract": None}):
+            result = extract_image_ocr_result(Path("scan.png"))
 
         self.assertEqual(result.status, "ocr_unavailable")
+        self.assertEqual(result.method, "image_ocr")
+        self.assertIn("dependency", result.detail or "")
+
+    def test_image_with_available_ocr_but_no_text_reports_empty(self):
+        fake_pytesseract = type(
+            "FakeTesseract",
+            (),
+            {
+                "get_tesseract_version": staticmethod(lambda: "5.0"),
+                "image_to_string": staticmethod(lambda _image: ""),
+            },
+        )
+        fake_image = type(
+            "FakeImageModule",
+            (),
+            {
+                "open": staticmethod(
+                    lambda _path: type(
+                        "ImageContext",
+                        (),
+                        {
+                            "__enter__": lambda self: object(),
+                            "__exit__": lambda self, *_args: False,
+                        },
+                    )()
+                )
+            },
+        )
+        with patch.dict(
+            "sys.modules",
+            {"pytesseract": fake_pytesseract, "PIL": type("PIL", (), {"Image": fake_image})},
+        ):
+            result = extract_image_ocr_result(Path("scan.png"))
+
+        self.assertEqual(result.status, "empty")
         self.assertEqual(result.method, "image_ocr")
 
     def test_legacy_reader_limits_remain_default_contract(self):
