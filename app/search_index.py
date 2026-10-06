@@ -223,6 +223,17 @@ class SearchIndex:
         except sqlite3.Error as error:
             raise SearchIndexError(f"Search index removal failed: {error}") from error
 
+    def indexed_paths(self) -> tuple[Path, ...]:
+        """Return a snapshot of indexed paths for reconciliation."""
+        try:
+            with closing(self._connect()) as connection, connection:
+                rows = connection.execute(
+                    "SELECT path FROM files ORDER BY path"
+                ).fetchall()
+        except sqlite3.Error as error:
+            raise SearchIndexError(f"Search index read failed: {error}") from error
+        return tuple(Path(row["path"]) for row in rows)
+
     def get_file(self, file_path: str | Path) -> IndexedFile | None:
         source = Path(file_path).resolve()
         try:
