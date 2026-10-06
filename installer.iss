@@ -13,6 +13,9 @@
 #ifndef AppExeName
   #error AppExeName must be supplied by build.py
 #endif
+#ifndef OCRBundled
+  #error OCRBundled must be supplied by build.py
+#endif
 
 [Setup]
 ; Keep this AppId stable: it is the product's Windows upgrade identity.
@@ -52,7 +55,9 @@ Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription
 ; User configuration and runtime data are created under LocalAppData by the app.
 ; The installer owns only application binaries and never packages live user data.
 Source: "dist\{#AppExeName}"; DestDir: "{app}"; Flags: ignoreversion
-Source: "dist\ocr\*"; DestDir: "{app}\ocr"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
+#if OCRBundled
+Source: "dist\ocr\*"; DestDir: "{app}\ocr"; Flags: ignoreversion recursesubdirs createallsubdirs
+#endif
 
 [Icons]
 Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"
