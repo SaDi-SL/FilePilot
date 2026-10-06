@@ -77,6 +77,11 @@ class PrepareOCRRuntimeTests(unittest.TestCase):
         self.assertNotIn("text2image.exe", relative)
         self.assertNotIn("README.txt", relative)
         self.assertTrue(all(len(item["sha256"]) == 64 for item in document["files"]))
+        licenses = {item["path"]: item["license"] for item in document["files"]}
+        self.assertEqual(licenses["tesseract.exe"], "Apache-2.0")
+        self.assertEqual(licenses["tessdata/eng.traineddata"], "Apache-2.0")
+        self.assertEqual(licenses["tessdata/ara.traineddata"], "Apache-2.0")
+        self.assertEqual(licenses["libtesseract.dll"], "REVIEW_REQUIRED")
 
     def test_missing_required_language_fails_before_runtime_is_cleared(self):
         with tempfile.TemporaryDirectory() as temp_dir:
