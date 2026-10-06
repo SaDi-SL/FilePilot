@@ -54,6 +54,44 @@ class ContentReaderTests(unittest.TestCase):
         self.assertEqual(legacy_xls.status, "unsupported_format")
         self.assertIn(".xls", legacy_xls.detail or "")
 
+    def test_structured_plain_text_failure_is_not_reported_as_empty(self):
+        with patch("pathlib.Path.read_text", side_effect=PermissionError("blocked")):
+            result = extract_file_content_result(Path("blocked.txt"))
+
+        self.assertEqual(result.status, "extraction_failed")
+        self.assertEqual(result.method, "plain_text")
+        self.assertEqual(result.detail, "PermissionError")
+        self.assertEqual(result.text, "")
+
+    def test_malformed_pdf_does_not_fall_through_to_ocr(self):
+        with (
+            patch("app.content_reader.PdfReader", side_effect=ValueError("broken")),
+            patch("app.content_reader.run_pdf_ocr") as ocr,
+        ):
+            result = extract_file_content_result(Path("broken.pdf"))
+
+        self.assertEqual(result.status, "extraction_failed")
+        self.assertEqual(result.method, "pdf_text")
+        self.assertEqual(result.detail, "ValueError")
+        self.assertEqual(result.text, "")
+        ocr.assert_not_called()
+
+    def test_structured_docx_failure_is_not_reported_as_empty(self):
+        with patch("app.content_reader.Document", side_effect=OSError("broken")):
+            result = extract_file_content_result(Path("broken.docx"))
+
+        self.assertEqual(result.status, "extraction_failed")
+        self.assertEqual(result.method, "docx")
+        self.assertEqual(result.detail, "OSError")
+
+    def test_structured_xlsx_failure_is_not_reported_as_empty(self):
+        with patch.dict("sys.modules", {"openpyxl": None}):
+            result = extract_file_content_result(Path("broken.xlsx"))
+
+        self.assertEqual(result.status, "extraction_failed")
+        self.assertEqual(result.method, "xlsx")
+        self.assertIn(result.detail, {"ModuleNotFoundError", "ImportError"})
+
     def test_pdf_without_embedded_text_uses_ocr_fallback(self):
         result_type = type(
             "PDFOCRResult",
