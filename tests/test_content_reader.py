@@ -45,9 +45,8 @@ class ContentReaderTests(unittest.TestCase):
 
     def test_legacy_reader_limits_remain_default_contract(self):
         with patch("app.content_reader.PdfReader") as reader:
-            reader.return_value.pages = [object(), object(), object()]
-            for page in reader.return_value.pages:
-                page.extract_text = lambda: "Page"
+            page_type = type("Page", (), {"extract_text": lambda self: "Page"})
+            reader.return_value.pages = [page_type(), page_type(), page_type()]
             self.assertEqual(read_pdf_text(Path("report.pdf")), "page\npage")
 
         with patch("app.content_reader.Document") as document:
