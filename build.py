@@ -241,6 +241,65 @@ def stage_verified_ocr_runtime() -> bool:
     return True
 
 
+def validate_staged_ocr_runtime() -> list[str]:
+    """Verify the exact OCR payload that the installer would consume from dist/ocr."""
+    manifest, error = _load_ocr_manifest()
+    if error:
+        return [error]
+    assert manifest is not None
+
+    if not manifest["bundled"]:
+        return []
+
+    if not OCR_DIST_DIR.is_dir():
+        return ["Bundled OCR runtime is not staged in dist/ocr"]
+
+    errors: list[str] = []
+    expected_paths = {
+        Path(item["path"]).as_posix()
+        for item in manifest["files"]
+        if isinstance(item, dict) and isinstance(item.get("path"), str)
+    }
+    expected_paths.add("runtime-manifest.json")
+
+    actual_paths = {
+        path.relative_to(OCR_DIST_DIR).as_posix()
+        for path in OCR_DIST_DIR.rglob("*")
+        if path.is_file()
+    }
+
+    for relative in sorted(expected_paths - actual_paths):
+        errors.append(f"Staged OCR runtime file is missing: {relative}")
+    for relative in sorted(actual_paths - expected_paths):
+        errors.append(f"Staged OCR runtime contains undeclared file: {relative}")
+
+    staged_manifest = OCR_DIST_DIR / "runtime-manifest.json"
+    if staged_manifest.is_file():
+        try:
+            if staged_manifest.read_bytes() != OCR_MANIFEST_FILE.read_bytes():
+                errors.append("Staged OCR runtime manifest does not match release manifest")
+        except OSError:
+            errors.append("Staged OCR runtime manifest could not be verified")
+
+    entries = {
+        Path(item["path"]).as_posix(): item
+        for item in manifest["files"]
+        if isinstance(item, dict) and isinstance(item.get("path"), str)
+    }
+    for relative, item in entries.items():
+        staged = OCR_DIST_DIR / Path(relative)
+        if not staged.is_file():
+            continue
+        expected_hash = item.get("sha256")
+        if (
+            not isinstance(expected_hash, str)
+            or _sha256_file(staged).casefold() != expected_hash.casefold()
+        ):
+            errors.append(f"Staged OCR runtime hash mismatch: {relative}")
+
+    return errors
+
+
 def validate_release_inputs() -> list[str]:
     """Fail closed when the explicit release inputs violate the package contract."""
     errors: list[str] = []
@@ -537,6 +596,20 @@ def build_installer(*, required: bool) -> bool | None:
     if not executable_matches_identity():
         log("ERROR: Build the executable for the current product identity first.")
         return False
+
+    staged_ocr_errors = validate_staged_ocr_runtime()
+    if staged_ocr_errors:
+        for message in staged_ocr_errors:
+            log(f"ERROR: {message}")
+        log("ERROR: Refusing to build an installer with an incomplete or unverified OCR sidecar.")
+        return False
+
+    manifest, manifest_error = _load_ocr_manifest()
+    if manifest_error or manifest is None:
+        log(f"ERROR: {manifest_error or 'OCR runtime manifest is unavailable'}")
+        return False
+    ocr_bundled = 1 if manifest["bundled"] else 0
+
     metadata = windows_version_metadata()
     ok = run([
         str(compiler),
@@ -544,6 +617,7 @@ def build_installer(*, required: bool) -> bool | None:
         f"/DAppVersion={APP_VERSION}",
         f"/DAppNumericVersion={metadata.numeric_string}",
         f"/DAppExeName={APP_EXE_NAME}",
+        f"/DOCRBundled={ocr_bundled}",
         str(INSTALLER_FILE),
     ])
     output = DIST_DIR / "installer" / f"FilePilot-Setup-{APP_VERSION}.exe"
