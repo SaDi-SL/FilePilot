@@ -38,6 +38,9 @@ DIST_DIR = ROOT / "dist"
 BUILD_DIR = ROOT / "build"
 VERSION_INFO_FILE = BUILD_DIR / "metadata" / "FilePilot-version-info.txt"
 BUILD_IDENTITY_FILE = DIST_DIR / f"{APP_NAME}.version"
+OCR_MANIFEST_FILE = ROOT / "third_party" / "ocr" / "runtime-manifest.json"
+OCR_SOURCE_DIR = ROOT / "third_party" / "ocr" / "runtime"
+OCR_DIST_DIR = DIST_DIR / "ocr"
 
 PACKAGED_DATA_FILES = (DEFAULT_CONFIG, ICON_FILE)
 EXCLUDED_DISTRIBUTION_PATHS = (
@@ -84,6 +87,7 @@ def release_source_files() -> tuple[Path, ...]:
         ROOT / "requirements.txt",
         ROOT / "requirements-qt.txt",
         ROOT / "requirements-build.txt",
+        OCR_MANIFEST_FILE,
     }
     files.update((ROOT / "app").rglob("*.py"))
     return tuple(sorted((path for path in files if path.is_file()), key=str))
@@ -106,10 +110,141 @@ def release_source_fingerprint() -> str:
     return digest.hexdigest()
 
 
+def _load_ocr_manifest() -> tuple[dict | None, str | None]:
+    if not OCR_MANIFEST_FILE.is_file():
+        return None, "OCR runtime manifest is missing"
+    try:
+        manifest = json.loads(OCR_MANIFEST_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        return None, f"OCR runtime manifest is invalid: {error}"
+    if not isinstance(manifest, dict) or manifest.get("schema_version") != 1:
+        return None, "OCR runtime manifest schema is unsupported"
+    if not isinstance(manifest.get("bundled"), bool):
+        return None, "OCR runtime manifest must declare bundled as a boolean"
+    if not isinstance(manifest.get("engine"), dict):
+        return None, "OCR runtime manifest must declare engine metadata"
+    if not isinstance(manifest.get("languages"), list):
+        return None, "OCR runtime manifest must declare languages"
+    if not isinstance(manifest.get("files"), list):
+        return None, "OCR runtime manifest must declare files"
+    return manifest, None
+
+
+def validate_ocr_runtime_inputs() -> list[str]:
+    """Fail closed before distributing any third-party OCR payload."""
+    manifest, error = _load_ocr_manifest()
+    if error:
+        return [error]
+    assert manifest is not None
+
+    if not manifest["bundled"]:
+        return [] if not manifest["files"] else [
+            "OCR manifest cannot list distributable files while bundled is false"
+        ]
+
+    errors: list[str] = []
+    engine = manifest["engine"]
+    for field in ("name", "version", "license"):
+        if not isinstance(engine.get(field), str) or not engine[field].strip():
+            errors.append(f"OCR engine metadata is missing: {field}")
+
+    language_codes = {
+        item.get("code")
+        for item in manifest["languages"]
+        if isinstance(item, dict) and isinstance(item.get("code"), str)
+    }
+    for code in ("eng", "ara"):
+        if code not in language_codes:
+            errors.append(f"OCR manifest is missing required language: {code}")
+
+    seen: set[str] = set()
+    declared: set[str] = set()
+    for item in manifest["files"]:
+        if not isinstance(item, dict):
+            errors.append("OCR manifest contains a malformed file entry")
+            continue
+        relative = item.get("path")
+        expected_hash = item.get("sha256")
+        license_name = item.get("license")
+        if not isinstance(relative, str) or not relative:
+            errors.append("OCR manifest contains an invalid file path")
+            continue
+
+        path = Path(relative)
+        normalized = path.as_posix()
+        if path.is_absolute() or normalized.startswith("../") or "/../" in f"/{normalized}/":
+            errors.append(f"OCR manifest contains an unsafe file path: {relative}")
+            continue
+
+        key = normalized.casefold()
+        if key in seen:
+            errors.append(f"OCR manifest contains duplicate path: {relative}")
+            continue
+        seen.add(key)
+        declared.add(normalized)
+
+        if not isinstance(expected_hash, str) or re.fullmatch(r"[0-9a-fA-F]{64}", expected_hash) is None:
+            errors.append(f"OCR manifest has invalid sha256: {relative}")
+            continue
+        if not isinstance(license_name, str) or not license_name.strip():
+            errors.append(f"OCR manifest is missing license metadata: {relative}")
+
+        source = OCR_SOURCE_DIR / path
+        try:
+            source.resolve().relative_to(OCR_SOURCE_DIR.resolve())
+        except ValueError:
+            errors.append(f"OCR runtime file escapes source root: {relative}")
+            continue
+        if not source.is_file():
+            errors.append(f"OCR runtime file is missing: {relative}")
+            continue
+        if _sha256_file(source).casefold() != expected_hash.casefold():
+            errors.append(f"OCR runtime hash mismatch: {relative}")
+
+    required = {
+        "tesseract.exe",
+        "tessdata/eng.traineddata",
+        "tessdata/ara.traineddata",
+    }
+    for relative in sorted(required - declared):
+        errors.append(f"OCR manifest is missing required file: {relative}")
+    return errors
+
+
+def stage_verified_ocr_runtime() -> bool:
+    """Stage only a fully verified OCR sidecar into dist/ocr."""
+    manifest, error = _load_ocr_manifest()
+    if error:
+        log(f"ERROR: {error}")
+        return False
+    assert manifest is not None
+
+    if not manifest["bundled"]:
+        log("OCR sidecar: not bundled in this development manifest")
+        return True
+
+    errors = validate_ocr_runtime_inputs()
+    if errors:
+        for message in errors:
+            log(f"ERROR: {message}")
+        return False
+
+    if OCR_DIST_DIR.exists():
+        shutil.rmtree(OCR_DIST_DIR)
+    for item in manifest["files"]:
+        source = OCR_SOURCE_DIR / item["path"]
+        destination = OCR_DIST_DIR / item["path"]
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+    shutil.copy2(OCR_MANIFEST_FILE, OCR_DIST_DIR / "runtime-manifest.json")
+    log(f"OCR sidecar: verified and staged -> {OCR_DIST_DIR}")
+    return True
+
+
 def validate_release_inputs() -> list[str]:
     """Fail closed when the explicit release inputs violate the package contract."""
     errors: list[str] = []
-    required = (SPEC_FILE, DEFAULT_CONFIG, ICON_FILE, INSTALLER_FILE)
+    required = (SPEC_FILE, DEFAULT_CONFIG, ICON_FILE, INSTALLER_FILE, OCR_MANIFEST_FILE)
     for path in required:
         if not path.is_file():
             errors.append(f"Required release input is missing: {path.relative_to(ROOT)}")
@@ -161,6 +296,7 @@ def validate_release_inputs() -> list[str]:
         if users_path_pattern.search(source):
             errors.append(f"Personal absolute path in packaged source: {path.relative_to(ROOT)}")
 
+    errors.extend(validate_ocr_runtime_inputs())
     return errors
 
 
@@ -442,6 +578,8 @@ def main() -> int:
         return 1
     prepare_build_outputs()
     if not build_executable():
+        return 1
+    if not stage_verified_ocr_runtime():
         return 1
     installer_result = None if "--exe" in args else build_installer(required=False)
     if installer_result is False:
