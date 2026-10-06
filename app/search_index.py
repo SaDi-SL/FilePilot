@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -61,7 +62,7 @@ class SearchIndex:
 
     def _initialize(self) -> None:
         try:
-            with self._connect() as connection:
+            with closing(self._connect()) as connection, connection:
                 application_id = connection.execute(
                     "PRAGMA application_id"
                 ).fetchone()[0]
@@ -166,7 +167,7 @@ class SearchIndex:
         normalized_category = category.strip() if isinstance(category, str) and category.strip() else None
 
         try:
-            with self._connect() as connection:
+            with closing(self._connect()) as connection, connection:
                 connection.execute(
                     """
                     INSERT INTO files (
@@ -213,7 +214,7 @@ class SearchIndex:
     def remove_file(self, file_path: str | Path) -> bool:
         source = Path(file_path).resolve()
         try:
-            with self._connect() as connection:
+            with closing(self._connect()) as connection, connection:
                 cursor = connection.execute(
                     "DELETE FROM files WHERE path = ?",
                     (str(source),),
@@ -225,7 +226,7 @@ class SearchIndex:
     def get_file(self, file_path: str | Path) -> IndexedFile | None:
         source = Path(file_path).resolve()
         try:
-            with self._connect() as connection:
+            with closing(self._connect()) as connection, connection:
                 row = connection.execute(
                     """
                     SELECT path, filename, extension, size_bytes, modified_ns,
@@ -257,7 +258,7 @@ class SearchIndex:
             return ()
 
         try:
-            with self._connect() as connection:
+            with closing(self._connect()) as connection, connection:
                 rows = connection.execute(
                     """
                     SELECT
