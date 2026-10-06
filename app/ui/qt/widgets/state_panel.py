@@ -101,8 +101,6 @@ class StatePanel(SectionCard):
         button_row.addWidget(self.stop_button)
         button_row.addStretch(1)
 
-        QWidget.setTabOrder(self.start_button, self.stop_button)
-
         self.content_layout.addLayout(heading_row)
         self.content_layout.addWidget(self.title_label)
         self.content_layout.addWidget(self.message_label)
