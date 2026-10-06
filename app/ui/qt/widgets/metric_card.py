@@ -9,7 +9,7 @@ class MetricCard(SectionCard):
     def __init__(self, title: str, value: str = "Not available", detail: str = "", parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setAccessibleName(f"{title} status summary")
-        self.setMinimumHeight(104)
+        self.setMinimumHeight(94)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.content_layout.setSpacing(SPACING.xs)
 
