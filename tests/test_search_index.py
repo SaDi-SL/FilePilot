@@ -84,6 +84,33 @@ class SearchIndexTests(unittest.TestCase):
         self.assertEqual(self.index.search("diagram")[0].path, source)
         self.assertEqual(self.index.search("engineering")[0].path, source)
 
+    def test_scanned_pdf_status_is_preserved_for_future_ocr(self):
+        source = self.root / "scanned.pdf"
+        source.write_bytes(b"%PDF-placeholder")
+
+        extraction = type(
+            "Extraction",
+            (),
+            {"text": "", "status": "ocr_required"},
+        )()
+        with patch(
+            "app.search_index.extract_file_content_result",
+            return_value=extraction,
+        ):
+            indexed = self.index.index_file(source)
+
+        self.assertEqual(indexed.extraction_status, "ocr_required")
+        self.assertEqual(self.index.search("scanned")[0].path, source)
+
+    def test_unsupported_format_is_not_mislabeled_as_successful_extraction(self):
+        source = self.root / "legacy.xls"
+        source.write_bytes(b"legacy")
+
+        indexed = self.index.index_file(source)
+
+        self.assertEqual(indexed.extraction_status, "unsupported_format")
+        self.assertEqual(self.index.search("legacy")[0].path, source)
+
     def test_empty_or_punctuation_only_query_is_safe(self):
         self.assertEqual(self.index.search(""), ())
         self.assertEqual(self.index.search("!!! ---"), ())
