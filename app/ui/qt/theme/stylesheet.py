@@ -144,7 +144,7 @@ def build_stylesheet() -> str:
             border-color: {c.border};
         }}
         QPushButton[navItem="true"] {{
-            min-height: 40px;
+            min-height: 38px;
             padding: 0 12px;
             text-align: left;
             border: 1px solid transparent;
