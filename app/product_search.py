@@ -25,6 +25,18 @@ class SearchRefreshResult:
 
 
 @dataclass(frozen=True)
+class HybridSearchResult:
+    path: Path
+    filename: str
+    extension: str
+    category: str | None
+    score: float
+    semantic_score: float | None
+    lexical_rank: int | None
+    snippet: str = ""
+
+
+@dataclass(frozen=True)
 class SemanticRefreshResult:
     scanned: int
     embedded: int
@@ -103,6 +115,91 @@ class ProductSearch:
             failed=failed,
             errors=tuple(errors),
         )
+
+    def hybrid_search(
+        self,
+        query: str,
+        *,
+        limit: int = 25,
+        timeout: float = 30.0,
+    ) -> tuple[HybridSearchResult, ...]:
+        """Fuse semantic and lexical evidence with reciprocal-rank fusion."""
+        if not isinstance(query, str) or not query.strip():
+            return ()
+
+        candidate_limit = max(10, min(100, int(limit) * 4))
+        semantic = self.semantic_search(
+            query,
+            limit=candidate_limit,
+            timeout=timeout,
+        )
+        lexical = self._index.search_relaxed(
+            query,
+            limit=candidate_limit,
+        )
+
+        # RRF is deliberately rank-based so BM25 and cosine remain on their
+        # native scales. Semantic gets a modest lead because concept search is
+        # the primary intent; lexical evidence breaks generic semantic ties.
+        rrf_k = 60.0
+        semantic_weight = 1.15
+        lexical_weight = 1.0
+        combined: dict[Path, dict] = {}
+
+        for rank, item in enumerate(semantic, start=1):
+            entry = combined.setdefault(
+                item.path,
+                {
+                    "filename": item.filename,
+                    "extension": item.extension,
+                    "category": item.category,
+                    "score": 0.0,
+                    "semantic_score": None,
+                    "lexical_rank": None,
+                    "snippet": "",
+                },
+            )
+            entry["score"] += semantic_weight / (rrf_k + rank)
+            entry["semantic_score"] = item.score
+
+        for rank, item in enumerate(lexical, start=1):
+            entry = combined.setdefault(
+                item.path,
+                {
+                    "filename": item.filename,
+                    "extension": item.extension,
+                    "category": item.category,
+                    "score": 0.0,
+                    "semantic_score": None,
+                    "lexical_rank": None,
+                    "snippet": "",
+                },
+            )
+            entry["score"] += lexical_weight / (rrf_k + rank)
+            entry["lexical_rank"] = rank
+            entry["snippet"] = item.snippet
+
+        results = [
+            HybridSearchResult(
+                path=path,
+                filename=entry["filename"],
+                extension=entry["extension"],
+                category=entry["category"],
+                score=float(entry["score"]),
+                semantic_score=entry["semantic_score"],
+                lexical_rank=entry["lexical_rank"],
+                snippet=entry["snippet"],
+            )
+            for path, entry in combined.items()
+        ]
+        results.sort(
+            key=lambda item: (
+                -item.score,
+                -(item.semantic_score if item.semantic_score is not None else -1.0),
+                item.filename.casefold(),
+            )
+        )
+        return tuple(results[: max(1, min(int(limit), 100))])
 
     def semantic_search(
         self,
