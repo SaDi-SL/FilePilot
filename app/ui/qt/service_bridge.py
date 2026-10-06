@@ -49,6 +49,7 @@ class _ServiceWorker(QObject):
     product_read_finished = Signal(int, object, int, int)
     product_read_failed = Signal(int, str, int, int)
     preview_finished = Signal(int, object, int)
+    organize_finished = Signal(int, object, int)
     undo_availability_finished = Signal(int, object, int)
     undo_finished = Signal(int, object, int)
     recovery_finished = Signal(int, object, int)
@@ -132,6 +133,15 @@ class _ServiceWorker(QObject):
             request_id,
             lambda: self._service.preview_file(source),
             self.preview_finished,
+        )
+
+    @Slot(int, str)
+    def organize_file(self, request_id: int, source: str) -> None:
+        self._run_safety_request(
+            "organize",
+            request_id,
+            lambda: self._service.organize_file(source),
+            self.organize_finished,
         )
 
     @Slot(int, str)
@@ -370,6 +380,8 @@ class QtServiceBridge(QObject):
     product_snapshot_changed = Signal(object)
     product_read_failed = Signal(str)
     preview_changed = Signal(object)
+    organize_started = Signal(str)
+    organize_completed = Signal(object)
     undo_availability_changed = Signal(object)
     undo_started = Signal(str)
     undo_completed = Signal(object)
@@ -399,6 +411,7 @@ class QtServiceBridge(QObject):
     _shutdown_worker = Signal()
     _product_read_worker = Signal(int, int, int)
     _preview_worker = Signal(int, str)
+    _organize_worker = Signal(int, str)
     _undo_availability_worker = Signal(int, str)
     _undo_worker = Signal(int, str)
     _recovery_worker = Signal(int, int, int)
@@ -443,6 +456,10 @@ class QtServiceBridge(QObject):
         self._preview_active = False
         self._active_preview_id: int | None = None
         self._pending_preview_source: str | None = None
+        self._organize_sequence = 0
+        self._organize_active = False
+        self._active_organize_id: int | None = None
+        self._active_organize_source: str | None = None
         self._undo_availability_sequence = 0
         self._undo_availability_active = False
         self._active_undo_availability_id: int | None = None
@@ -519,6 +536,10 @@ class QtServiceBridge(QObject):
             self._worker.preview_file,
             Qt.ConnectionType.QueuedConnection,
         )
+        self._organize_worker.connect(
+            self._worker.organize_file,
+            Qt.ConnectionType.QueuedConnection,
+        )
         self._undo_availability_worker.connect(
             self._worker.evaluate_undo,
             Qt.ConnectionType.QueuedConnection,
@@ -579,6 +600,7 @@ class QtServiceBridge(QObject):
         self._worker.product_read_finished.connect(self._on_product_read_finished)
         self._worker.product_read_failed.connect(self._on_product_read_failed)
         self._worker.preview_finished.connect(self._on_preview_finished)
+        self._worker.organize_finished.connect(self._on_organize_finished)
         self._worker.undo_availability_finished.connect(
             self._on_undo_availability_finished
         )
@@ -685,6 +707,17 @@ class QtServiceBridge(QObject):
         if self._preview_active:
             return
         self._dispatch_preview()
+
+    @Slot(str)
+    def request_organize(self, source: str) -> None:
+        if self._closing or self._organize_active or not source:
+            return
+        self._organize_sequence += 1
+        self._active_organize_id = self._organize_sequence
+        self._active_organize_source = source
+        self._organize_active = True
+        self.organize_started.emit(source)
+        self._organize_worker.emit(self._organize_sequence, source)
 
     @Slot(str)
     def request_undo_availability(self, operation_id: str) -> None:
@@ -1079,6 +1112,25 @@ class QtServiceBridge(QObject):
             self._dispatch_preview()
 
     @Slot(int, object, int)
+    def _on_organize_finished(
+        self,
+        request_id: int,
+        result: object,
+        worker_thread_id: int,
+    ) -> None:
+        if request_id != self._active_organize_id:
+            return
+        self._organize_active = False
+        self._active_organize_id = None
+        self._active_organize_source = None
+        if self._closing:
+            return
+        self.operation_thread_observed.emit("organize", worker_thread_id)
+        self.organize_completed.emit(result)
+        self.request_product_refresh(self._product_limit)
+        self.request_recovery_refresh(self._pending_recovery_limit, 0)
+
+    @Slot(int, object, int)
     def _on_undo_availability_finished(
         self,
         request_id: int,
@@ -1368,6 +1420,11 @@ class QtServiceBridge(QObject):
             self._dispatch_recovery_read()
 
     def _accept_safety_failure(self, name: str, request_id: int) -> bool:
+        if name == "organize" and request_id == self._active_organize_id:
+            self._organize_active = False
+            self._active_organize_id = None
+            self._active_organize_source = None
+            return True
         if name == "preview" and request_id == self._active_preview_id:
             self._preview_active = False
             self._active_preview_id = None
