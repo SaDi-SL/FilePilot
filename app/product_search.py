@@ -69,7 +69,7 @@ class ProductSearch:
                     skipped += 1
                     continue
 
-                response = provider.embed(document, timeout=timeout)
+                response = provider.embed(document, timeout=timeout, task="document")
                 fingerprint = embedding_fingerprint(
                     provider=response.provider,
                     model=response.model,
@@ -113,7 +113,7 @@ class ProductSearch:
         if not isinstance(query, str) or not query.strip():
             return ()
 
-        response = provider.embed(query, timeout=timeout)
+        response = provider.embed(query, timeout=timeout, task="query")
         fingerprint = embedding_fingerprint(
             provider=response.provider,
             model=response.model,
