@@ -20,8 +20,8 @@ class FakeEmbeddingProvider:
         self.ready_calls.append(timeout)
         return self.ready
 
-    def embed(self, text, *, timeout=30.0):
-        self.embed_calls.append((text, timeout))
+    def embed(self, text, *, timeout=30.0, task="document"):
+        self.embed_calls.append((text, timeout, task))
         vector = self.vectors[text]
         return EmbeddingResponse(tuple(vector), "ollama", self.model)
 
