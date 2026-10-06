@@ -7,6 +7,8 @@ from pathlib import Path
 from docx import Document
 from pypdf import PdfReader
 
+from app.ocr_engine import run_image_ocr
+
 logger = logging.getLogger(__name__)
 
 TEXT_BASED_EXTENSIONS = {
@@ -153,48 +155,21 @@ def extract_image_ocr_result(
     *,
     lowercase: bool = False,
 ) -> ContentExtractionResult:
-    try:
-        import pytesseract
-        from PIL import Image
-    except ImportError as error:
-        logger.debug("OCR Python dependency unavailable for %s: %s", file_path.name, error)
-        return ContentExtractionResult(
-            text="",
-            status="ocr_unavailable",
-            method="image_ocr",
-            detail="OCR Python dependency is unavailable",
-        )
-
-    try:
-        pytesseract.get_tesseract_version()
-    except Exception as error:
-        logger.debug("Tesseract runtime unavailable for %s: %s", file_path.name, error)
-        return ContentExtractionResult(
-            text="",
-            status="ocr_unavailable",
-            method="image_ocr",
-            detail="Tesseract OCR runtime is unavailable",
-        )
-
-    try:
-        with Image.open(str(file_path)) as image:
-            text = pytesseract.image_to_string(image)
-        trimmed = trim_text(text, max_chars=max_chars, lowercase=lowercase)
-        return ContentExtractionResult(
-            text=trimmed,
-            status="extracted" if trimmed else "empty",
-            method="image_ocr",
-            detail=None if trimmed else "OCR found no searchable text",
-        )
-    except Exception as error:
-        logger.debug("OCR extraction failed for %s: %s", file_path.name, error)
-        return ContentExtractionResult(
-            text="",
-            status="extraction_failed",
-            method="image_ocr",
-            detail=type(error).__name__,
-        )
-
+    result = run_image_ocr(
+        file_path,
+        max_output_chars=max_chars,
+    )
+    text = trim_text(
+        result.text,
+        max_chars=max_chars,
+        lowercase=lowercase,
+    )
+    return ContentExtractionResult(
+        text=text,
+        status=result.status,
+        method="image_ocr",
+        detail=result.detail,
+    )
 
 def read_image_ocr(
     file_path: Path,
