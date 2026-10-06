@@ -184,6 +184,17 @@ class PackagingInputTests(unittest.TestCase):
         self.assertEqual(self.defaults["ai"]["claude_api_key"], "")
         self.assertNotIn("sk-ant-", json.dumps(self.defaults).lower())
 
+    def test_runtime_requirements_include_supported_document_extractors(self):
+        requirements = {
+            line.strip().split(";", 1)[0]
+            for line in (ROOT / "requirements.txt").read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        }
+        self.assertTrue(any(item.startswith("python-docx") for item in requirements))
+        self.assertTrue(any(item.startswith("pypdf") for item in requirements))
+        self.assertTrue(any(item.startswith("pypdfium2") for item in requirements))
+        self.assertTrue(any(item.startswith("openpyxl") for item in requirements))
+
     def test_spec_packages_only_sanitized_config_and_icon_data(self):
         self.assertIn('"default_config.json"', self.spec_source)
         self.assertIn('"icon.ico"', self.spec_source)
