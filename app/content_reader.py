@@ -34,6 +34,17 @@ class ContentExtractionResult:
         return bool(self.text)
 
 
+@dataclass(frozen=True)
+class _ReaderResult:
+    text: str
+    failed: bool = False
+    detail: str | None = None
+
+
+def _failure_detail(error: Exception) -> str:
+    return type(error).__name__
+
+
 def trim_text(
     text: str,
     *,
@@ -49,26 +60,42 @@ def safe_trim(text: str, max_chars: int = 4000) -> str:
     return trim_text(text, max_chars=max_chars, lowercase=True)
 
 
+def _read_plain_text_result(
+    file_path: Path,
+    max_chars: int = 4000,
+    *,
+    lowercase: bool = True,
+) -> _ReaderResult:
+    try:
+        content = file_path.read_text(encoding="utf-8", errors="ignore")
+        return _ReaderResult(
+            text=trim_text(content, max_chars=max_chars, lowercase=lowercase),
+        )
+    except Exception as error:
+        return _ReaderResult(text="", failed=True, detail=_failure_detail(error))
+
+
 def read_plain_text(
     file_path: Path,
     max_chars: int = 4000,
     *,
     lowercase: bool = True,
 ) -> str:
-    try:
-        content = file_path.read_text(encoding="utf-8", errors="ignore")
-        return trim_text(content, max_chars=max_chars, lowercase=lowercase)
-    except Exception:
-        return ""
+    """Compatibility API: preserve the legacy empty-string-on-failure contract."""
+    return _read_plain_text_result(
+        file_path,
+        max_chars=max_chars,
+        lowercase=lowercase,
+    ).text
 
 
-def read_pdf_text(
+def _read_pdf_text_result(
     file_path: Path,
     max_pages: int = 2,
     max_chars: int = 4000,
     *,
     lowercase: bool = True,
-) -> str:
+) -> _ReaderResult:
     try:
         reader = PdfReader(str(file_path))
         texts = []
@@ -78,22 +105,40 @@ def read_pdf_text(
             texts.append(page_text)
             if sum(len(text) for text in texts) >= max_chars:
                 break
-        return trim_text(
-            "\n".join(texts),
-            max_chars=max_chars,
-            lowercase=lowercase,
+        return _ReaderResult(
+            text=trim_text(
+                "\n".join(texts),
+                max_chars=max_chars,
+                lowercase=lowercase,
+            )
         )
-    except Exception:
-        return ""
+    except Exception as error:
+        return _ReaderResult(text="", failed=True, detail=_failure_detail(error))
 
 
-def read_docx_text(
+def read_pdf_text(
+    file_path: Path,
+    max_pages: int = 2,
+    max_chars: int = 4000,
+    *,
+    lowercase: bool = True,
+) -> str:
+    """Compatibility API: preserve the legacy empty-string-on-failure contract."""
+    return _read_pdf_text_result(
+        file_path,
+        max_pages=max_pages,
+        max_chars=max_chars,
+        lowercase=lowercase,
+    ).text
+
+
+def _read_docx_text_result(
     file_path: Path,
     max_paragraphs: int | None = 30,
     max_chars: int = 4000,
     *,
     lowercase: bool = True,
-) -> str:
+) -> _ReaderResult:
     try:
         document = Document(str(file_path))
         texts = []
@@ -104,22 +149,40 @@ def read_docx_text(
                 texts.append(paragraph.text)
             if sum(len(text) for text in texts) >= max_chars:
                 break
-        return trim_text(
-            "\n".join(texts),
-            max_chars=max_chars,
-            lowercase=lowercase,
+        return _ReaderResult(
+            text=trim_text(
+                "\n".join(texts),
+                max_chars=max_chars,
+                lowercase=lowercase,
+            )
         )
-    except Exception:
-        return ""
+    except Exception as error:
+        return _ReaderResult(text="", failed=True, detail=_failure_detail(error))
 
 
-def read_excel_text(
+def read_docx_text(
+    file_path: Path,
+    max_paragraphs: int | None = 30,
+    max_chars: int = 4000,
+    *,
+    lowercase: bool = True,
+) -> str:
+    """Compatibility API: preserve the legacy empty-string-on-failure contract."""
+    return _read_docx_text_result(
+        file_path,
+        max_paragraphs=max_paragraphs,
+        max_chars=max_chars,
+        lowercase=lowercase,
+    ).text
+
+
+def _read_excel_text_result(
     file_path: Path,
     max_rows: int = 51,
     max_chars: int = 4000,
     *,
     lowercase: bool = False,
-) -> str:
+) -> _ReaderResult:
     try:
         import openpyxl
 
@@ -139,15 +202,33 @@ def read_excel_text(
                     rows.append(row_text)
                 if sum(len(text) for text in rows) >= max_chars:
                     break
-            return trim_text(
-                "\n".join(rows),
-                max_chars=max_chars,
-                lowercase=lowercase,
+            return _ReaderResult(
+                text=trim_text(
+                    "\n".join(rows),
+                    max_chars=max_chars,
+                    lowercase=lowercase,
+                )
             )
         finally:
             workbook.close()
-    except Exception:
-        return ""
+    except Exception as error:
+        return _ReaderResult(text="", failed=True, detail=_failure_detail(error))
+
+
+def read_excel_text(
+    file_path: Path,
+    max_rows: int = 51,
+    max_chars: int = 4000,
+    *,
+    lowercase: bool = False,
+) -> str:
+    """Compatibility API: preserve the legacy empty-string-on-failure contract."""
+    return _read_excel_text_result(
+        file_path,
+        max_rows=max_rows,
+        max_chars=max_chars,
+        lowercase=lowercase,
+    ).text
 
 
 def extract_image_ocr_result(
@@ -200,27 +281,35 @@ def extract_file_content_result(
 
     try:
         if suffix in TEXT_BASED_EXTENSIONS:
-            text = read_plain_text(
+            read = _read_plain_text_result(
                 file_path,
                 max_chars=max_chars,
                 lowercase=lowercase,
             )
             return ContentExtractionResult(
-                text=text,
-                status="extracted" if text else "empty",
+                text=read.text,
+                status="extraction_failed" if read.failed else ("extracted" if read.text else "empty"),
                 method="plain_text",
+                detail=read.detail,
             )
 
         if suffix == ".pdf":
-            text = read_pdf_text(
+            read = _read_pdf_text_result(
                 file_path,
                 max_pages=max_pdf_pages,
                 max_chars=max_chars,
                 lowercase=lowercase,
             )
-            if text:
+            if read.failed:
                 return ContentExtractionResult(
-                    text=text,
+                    text="",
+                    status="extraction_failed",
+                    method="pdf_text",
+                    detail=read.detail,
+                )
+            if read.text:
+                return ContentExtractionResult(
+                    text=read.text,
                     status="extracted",
                     method="pdf_text",
                 )
@@ -243,28 +332,30 @@ def extract_file_content_result(
             )
 
         if suffix == ".docx":
-            text = read_docx_text(
+            read = _read_docx_text_result(
                 file_path,
                 max_paragraphs=max_docx_paragraphs,
                 max_chars=max_chars,
                 lowercase=lowercase,
             )
             return ContentExtractionResult(
-                text=text,
-                status="extracted" if text else "empty",
+                text=read.text,
+                status="extraction_failed" if read.failed else ("extracted" if read.text else "empty"),
                 method="docx",
+                detail=read.detail,
             )
 
         if suffix in EXCEL_EXTENSIONS:
-            text = read_excel_text(
+            read = _read_excel_text_result(
                 file_path,
                 max_chars=max_chars,
                 lowercase=lowercase,
             )
             return ContentExtractionResult(
-                text=text,
-                status="extracted" if text else "empty",
+                text=read.text,
+                status="extraction_failed" if read.failed else ("extracted" if read.text else "empty"),
                 method="xlsx",
+                detail=read.detail,
             )
 
         if suffix in LEGACY_EXCEL_EXTENSIONS:
