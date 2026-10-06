@@ -26,7 +26,7 @@
     "custom:fontconfig": "licenses/fontconfig.txt",
     "bzip2-1.0.6": "licenses/bzip2-1.0.6.txt",
     "custom:libdatrie": "licenses/libdatrie-COPYING.txt",
-    "custom:libjpeg-turbo": "licenses/libjpeg-turbo-LICENSE.md",
+    "custom:libjpeg-turbo": "licenses/libjpeg-turbo.txt",
     "Libpng": "licenses/Libpng.txt"
   }
 }
