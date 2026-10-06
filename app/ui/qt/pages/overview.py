@@ -47,7 +47,7 @@ class OverviewPage(QWidget):
         eyebrow.setProperty("role", "eyebrow")
         self.page_title = QLabel("Your files, under control")
         self.page_title.setProperty("role", "pageTitle")
-        subtitle = QLabel("Monitor organization, safety, and recent file activity from one place.")
+        subtitle = QLabel("See what FilePilot organized, what needs attention, and what is happening now.")
         subtitle.setProperty("role", "secondary")
         subtitle.setWordWrap(True)
         copy.addWidget(eyebrow)
@@ -156,15 +156,6 @@ class OverviewPage(QWidget):
 
     def render_state(self, snapshot: ServiceSnapshot) -> None:
         self.state_panel.render(snapshot)
-        monitor_text = snapshot.monitor_state.value.replace("_", " ").title()
-        startup_text = snapshot.startup_status.value.replace("_", " ").title() if snapshot.startup_status is not None else "Checking"
-        if snapshot.startup_status is StartupStatus.BLOCKED:
-            recovery_text = "Action required"
-        elif snapshot.startup_status is StartupStatus.READY:
-            recovery_text = "Ready"
-        else:
-            recovery_text = "Not checked"
-
         if snapshot.startup_status is StartupStatus.BLOCKED:
             header_text, tone = "Action required", "error"
         elif snapshot.startup_status is StartupStatus.SETUP_REQUIRED:
@@ -230,11 +221,6 @@ class OverviewPage(QWidget):
         self.recent_table.hide()
         self.recent_state_label.setText(message)
         self.recent_state_label.show()
-
-    @staticmethod
-    def _set_status_value(label: QLabel, name: str, value: str) -> None:
-        label.setText(value)
-        label.setAccessibleName(f"{name}: {value}")
 
     def resizeEvent(self, event) -> None:
         width = event.size().width()
