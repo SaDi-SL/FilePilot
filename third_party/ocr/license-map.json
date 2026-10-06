@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "reviewed_against": "MSYS2 UCRT64 package metadata and upstream project licensing; metadata mapping only, redistribution license texts still required",
+  "reviewed_against": "MSYS2 UCRT64 package metadata plus upstream project license files; FilePilot selects a permitted license path for dual-licensed runtime libraries.",
   "files": {
     "tesseract.exe": {
       "component": "Tesseract OCR",
@@ -114,7 +114,7 @@
     },
     "libjpeg-8.dll": {
       "component": "libjpeg-turbo",
-      "license": "custom:BSD-like",
+      "license": "custom:libjpeg-turbo",
       "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-libjpeg-turbo"
     },
     "libLerc.dll": {
@@ -189,7 +189,7 @@
     },
     "libbz2-1.dll": {
       "component": "bzip2",
-      "license": "custom:bzip2",
+      "license": "bzip2-1.0.6",
       "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-bzip2"
     },
     "libcairo-2.dll": {
@@ -199,7 +199,7 @@
     },
     "libdatrie-1.dll": {
       "component": "libdatrie",
-      "license": "LGPL",
+      "license": "custom:libdatrie",
       "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-libdatrie"
     },
     "libffi-8.dll": {
@@ -214,7 +214,7 @@
     },
     "libfreetype-6.dll": {
       "component": "FreeType",
-      "license": "GPL-2.0-or-later OR FTL",
+      "license": "FTL",
       "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-freetype"
     },
     "libgif-7.dll": {
@@ -229,17 +229,17 @@
     },
     "liblz4.dll": {
       "component": "LZ4",
-      "license": "BSD OR GPL-2.0",
+      "license": "BSD-2-Clause",
       "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-lz4"
     },
     "liblzma-5.dll": {
       "component": "XZ Utils / liblzma",
-      "license": "0BSD AND LGPL-2.1-or-later AND GPL-2.0-or-later",
+      "license": "0BSD",
       "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-xz"
     },
     "libpng16-16.dll": {
       "component": "libpng",
-      "license": "custom:libpng",
+      "license": "Libpng",
       "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-libpng"
     },
     "libsharpyuv-0.dll": {
@@ -264,7 +264,7 @@
     },
     "libunistring-5.dll": {
       "component": "GNU libunistring",
-      "license": "LGPL-3.0-or-later OR GPL-3.0-or-later",
+      "license": "LGPL-3.0-or-later",
       "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-libunistring"
     },
     "libwebp-7.dll": {
@@ -284,7 +284,7 @@
     },
     "libzstd.dll": {
       "component": "Zstandard",
-      "license": "BSD-3-Clause OR GPL-2.0-or-later",
+      "license": "BSD-3-Clause",
       "source": "https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-zstd"
     },
     "zlib1.dll": {
