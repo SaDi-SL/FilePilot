@@ -39,10 +39,19 @@ class OllamaEmbeddingProvider:
         if not self.model.strip():
             raise ValueError("Embedding model name is required")
 
-    def embed(self, text: str, *, timeout: float = 30.0) -> EmbeddingResponse:
+    def embed(
+        self,
+        text: str,
+        *,
+        timeout: float = 30.0,
+        task: str = "document",
+    ) -> EmbeddingResponse:
         if not isinstance(text, str) or not text.strip():
             raise ValueError("Embedding input must contain text")
-        bounded = text[:MAX_EMBED_INPUT_CHARS]
+        if task not in {"document", "query"}:
+            raise ValueError("Embedding task must be document or query")
+        prefix = "search_document: " if task == "document" else "search_query: "
+        bounded = (prefix + text)[:MAX_EMBED_INPUT_CHARS]
         payload: dict[str, Any] = {
             "model": self.model,
             "input": bounded,
