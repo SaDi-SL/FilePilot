@@ -39,6 +39,10 @@ class ApplicationPaths:
         return self.data_dir / "operations.sqlite3"
 
     @property
+    def search_index_file(self) -> Path:
+        return self.data_dir / "search.sqlite3"
+
+    @property
     def logs_dir(self) -> Path:
         return self.user_data_root / "logs"
 
