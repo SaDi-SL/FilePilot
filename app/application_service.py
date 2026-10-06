@@ -12,7 +12,7 @@ from typing import Callable
 
 from app.config_loader import get_external_config_path
 from app.classifier import build_extension_lookup
-from app.mover import MoveResult, PreviewStatus, preview_move
+from app.mover import MoveResult, MoveStatus, PreviewStatus, move_file_with_retries, preview_move
 from app.operation_journal import (
     MAX_RECENT_OPERATIONS,
     JournalError,
@@ -592,6 +592,95 @@ class FilePilotService:
             result,
             classification_method=classification_method,
         )
+
+    def organize_file(self, source_file: str | Path) -> MoveResult:
+        """Safely organize one user-selected file after full execution-time revalidation."""
+        source = Path(source_file)
+        with self._lifecycle_lock:
+            if self.startup_status is not StartupStatus.READY:
+                return MoveResult(
+                    MoveStatus.MOVE_FAILED,
+                    source,
+                    error="FilePilot configuration is not ready. Nothing changed.",
+                )
+            if self.monitor_state is not MonitorState.STOPPED:
+                return MoveResult(
+                    MoveStatus.MOVE_FAILED,
+                    source,
+                    error="Stop automatic organization before organizing a selected file. Nothing changed.",
+                )
+
+            config = dict(self.config or {})
+            preview = self.preview_file(source)
+            if (
+                preview.state is not SafetyDataState.AVAILABLE
+                or preview.status is not PreviewStatus.READY
+                or not preview.execution_possible
+                or not preview.category
+            ):
+                return MoveResult(
+                    MoveStatus.MOVE_FAILED,
+                    source,
+                    error=preview.message or "The current file evidence is not safe to execute. Nothing changed.",
+                )
+
+            try:
+                organized_root = Path(config["organized_base_folder"])
+                if source.resolve(strict=False).is_relative_to(
+                    organized_root.resolve(strict=False)
+                ):
+                    return MoveResult(
+                        MoveStatus.MOVE_FAILED,
+                        source,
+                        error="Files already inside the organized output cannot be organized again.",
+                    )
+                rules = dict(config["rules"])
+                destinations = dict(config["destination_folders"])
+                extension_lookup = build_extension_lookup(rules)
+                suffix = source.suffix.lower().strip()
+                classification_method = (
+                    "extension" if suffix in extension_lookup else "fallback"
+                )
+                journal = OperationJournal(self._journal_path)
+                result = move_file_with_retries(
+                    source_file=source,
+                    destination_folders=destinations,
+                    extension_lookup=extension_lookup,
+                    stats_file=str(config["stats_file"]),
+                    history_file=str(config["history_file"]),
+                    hash_db_file=str(config["hash_db_file"]),
+                    archive_by_date=bool(config.get("archive_by_date", False)),
+                    rules=rules,
+                    organized_root=organized_root,
+                    classification_method=classification_method,
+                    smart_source="manual_preview",
+                    category_override=preview.category,
+                    journal=journal,
+                )
+            except (KeyError, OSError, TypeError, ValueError, JournalError) as error:
+                logger.warning("Manual organization was refused: %s", error)
+                return MoveResult(
+                    MoveStatus.MOVE_FAILED,
+                    source,
+                    error=f"FilePilot could not safely organize this file: {error}",
+                )
+
+            status = {
+                MoveStatus.MOVED: "moved",
+                MoveStatus.DUPLICATE: "duplicate",
+                MoveStatus.HASH_CHECK_FAILED: "hash_check_failed",
+                MoveStatus.MOVE_FAILED: "failed",
+            }[result.status]
+            self._publish_activity(
+                ActivityEvent(
+                    source=source,
+                    category=preview.category,
+                    status=status,
+                    move_result=result,
+                    occurred_at_utc=datetime.now(timezone.utc),
+                )
+            )
+            return result
 
     def get_undo_availability(self, operation_id: str) -> UndoAvailability:
         """Evaluate undo from current journal and filesystem evidence."""
