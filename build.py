@@ -41,6 +41,8 @@ BUILD_IDENTITY_FILE = DIST_DIR / f"{APP_NAME}.version"
 OCR_MANIFEST_FILE = ROOT / "third_party" / "ocr" / "runtime-manifest.json"
 OCR_NOTICES_FILE = ROOT / "third_party" / "ocr" / "THIRD-PARTY-NOTICES.md"
 OCR_LICENSE_MAP_FILE = ROOT / "third_party" / "ocr" / "license-map.json"
+OCR_LICENSE_BUNDLE_FILE = ROOT / "third_party" / "ocr" / "license-bundle.json"
+OCR_LICENSES_DIR = ROOT / "third_party" / "ocr" / "licenses"
 OCR_SOURCE_DIR = ROOT / "third_party" / "ocr" / "runtime"
 OCR_DIST_DIR = DIST_DIR / "ocr"
 
@@ -92,6 +94,7 @@ def release_source_files() -> tuple[Path, ...]:
         OCR_MANIFEST_FILE,
         OCR_NOTICES_FILE,
         OCR_LICENSE_MAP_FILE,
+        OCR_LICENSE_BUNDLE_FILE,
     }
     files.update((ROOT / "app").rglob("*.py"))
     return tuple(sorted((path for path in files if path.is_file()), key=str))
@@ -132,6 +135,66 @@ def _load_ocr_manifest() -> tuple[dict | None, str | None]:
     if not isinstance(manifest.get("files"), list):
         return None, "OCR runtime manifest must declare files"
     return manifest, None
+
+
+def _license_identifiers(expression: str) -> set[str]:
+    """Extract the license identifiers used by FilePilot's limited SPDX-like expressions."""
+    cleaned = expression.replace("(", " ").replace(")", " ")
+    return {
+        part.strip()
+        for part in re.split(r"\s+(?:AND|OR|WITH)\s+", cleaned)
+        if part.strip()
+    }
+
+
+def validate_ocr_license_bundle(manifest: dict) -> list[str]:
+    """Require a local redistribution text for every license used by bundled OCR files."""
+    if not manifest.get("bundled"):
+        return []
+
+    try:
+        bundle = json.loads(OCR_LICENSE_BUNDLE_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        return [f"OCR license bundle metadata is invalid: {error}"]
+
+    if not isinstance(bundle, dict) or bundle.get("schema_version") != 1:
+        return ["OCR license bundle schema is unsupported"]
+    mapping = bundle.get("licenses")
+    if not isinstance(mapping, dict):
+        return ["OCR license bundle must declare licenses"]
+
+    required_ids: set[str] = set()
+    for item in manifest.get("files", []):
+        if not isinstance(item, dict):
+            continue
+        expression = item.get("license")
+        if isinstance(expression, str):
+            required_ids.update(_license_identifiers(expression))
+
+    errors: list[str] = []
+    ocr_root = OCR_LICENSE_BUNDLE_FILE.parent.resolve()
+    for identifier in sorted(required_ids):
+        relative = mapping.get(identifier)
+        if not isinstance(relative, str) or not relative.strip():
+            errors.append(f"OCR license text is not mapped: {identifier}")
+            continue
+
+        candidate = OCR_LICENSE_BUNDLE_FILE.parent / relative
+        try:
+            candidate.resolve().relative_to(ocr_root)
+        except ValueError:
+            errors.append(f"OCR license text path is unsafe: {identifier}")
+            continue
+
+        if not candidate.is_file():
+            errors.append(f"OCR license text is missing: {identifier} -> {relative}")
+            continue
+        try:
+            if not candidate.read_text(encoding="utf-8").strip():
+                errors.append(f"OCR license text is empty: {identifier} -> {relative}")
+        except OSError:
+            errors.append(f"OCR license text could not be read: {identifier} -> {relative}")
+    return errors
 
 
 def validate_ocr_runtime_inputs() -> list[str]:
@@ -225,6 +288,7 @@ def validate_ocr_runtime_inputs() -> list[str]:
     }
     for relative in sorted(required - declared):
         errors.append(f"OCR manifest is missing required file: {relative}")
+    errors.extend(validate_ocr_license_bundle(manifest))
     return errors
 
 
@@ -255,6 +319,9 @@ def stage_verified_ocr_runtime() -> bool:
         shutil.copy2(source, destination)
     shutil.copy2(OCR_MANIFEST_FILE, OCR_DIST_DIR / "runtime-manifest.json")
     shutil.copy2(OCR_NOTICES_FILE, OCR_DIST_DIR / "THIRD-PARTY-NOTICES.md")
+    shutil.copy2(OCR_LICENSE_BUNDLE_FILE, OCR_DIST_DIR / "license-bundle.json")
+    if OCR_LICENSES_DIR.is_dir():
+        shutil.copytree(OCR_LICENSES_DIR, OCR_DIST_DIR / "licenses")
     log(f"OCR sidecar: verified and staged -> {OCR_DIST_DIR}")
     return True
 
@@ -278,7 +345,18 @@ def validate_staged_ocr_runtime() -> list[str]:
         for item in manifest["files"]
         if isinstance(item, dict) and isinstance(item.get("path"), str)
     }
-    expected_paths.update({"runtime-manifest.json", "THIRD-PARTY-NOTICES.md"})
+    expected_paths.update({
+        "runtime-manifest.json",
+        "THIRD-PARTY-NOTICES.md",
+        "license-bundle.json",
+    })
+    try:
+        license_bundle = json.loads(OCR_LICENSE_BUNDLE_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        license_bundle = {}
+    for relative in (license_bundle.get("licenses") or {}).values():
+        if isinstance(relative, str):
+            expected_paths.add(relative)
 
     actual_paths = {
         path.relative_to(OCR_DIST_DIR).as_posix()
@@ -290,6 +368,14 @@ def validate_staged_ocr_runtime() -> list[str]:
         errors.append(f"Staged OCR runtime file is missing: {relative}")
     for relative in sorted(actual_paths - expected_paths):
         errors.append(f"Staged OCR runtime contains undeclared file: {relative}")
+
+    staged_bundle = OCR_DIST_DIR / "license-bundle.json"
+    if staged_bundle.is_file():
+        try:
+            if staged_bundle.read_bytes() != OCR_LICENSE_BUNDLE_FILE.read_bytes():
+                errors.append("Staged OCR license bundle does not match release metadata")
+        except OSError:
+            errors.append("Staged OCR license bundle could not be verified")
 
     staged_notices = OCR_DIST_DIR / "THIRD-PARTY-NOTICES.md"
     if staged_notices.is_file():
@@ -337,6 +423,7 @@ def validate_release_inputs() -> list[str]:
         OCR_MANIFEST_FILE,
         OCR_NOTICES_FILE,
         OCR_LICENSE_MAP_FILE,
+        OCR_LICENSE_BUNDLE_FILE,
     )
     for path in required:
         if not path.is_file():
