@@ -17,6 +17,7 @@ class NavigationItem:
 
 NAVIGATION_ITEMS = (
     NavigationItem("overview", "Overview", "overview"),
+    NavigationItem("my_files", "My Files", "folders"),
     NavigationItem("activity", "Activity", "activity"),
     NavigationItem("recovery", "Recovery", "recovery"),
     NavigationItem("rules", "Rules", "rules"),
