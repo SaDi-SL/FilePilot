@@ -102,8 +102,20 @@ class ContentReaderTests(unittest.TestCase):
                 "detail": None,
             },
         )
+        reader_result_type = type(
+            "ReaderResult",
+            (),
+            {
+                "text": "",
+                "failed": False,
+                "detail": None,
+            },
+        )
         with (
-            patch("app.content_reader.read_pdf_text", return_value=""),
+            patch(
+                "app.content_reader._read_pdf_text_result",
+                return_value=reader_result_type(),
+            ),
             patch("app.content_reader.run_pdf_ocr", return_value=result_type()) as ocr,
         ):
             result = extract_file_content_result(
