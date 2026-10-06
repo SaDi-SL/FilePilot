@@ -41,6 +41,41 @@ class OCRPackagingContractTests(unittest.TestCase):
         with patch.object(self.build, "_load_ocr_manifest", return_value=(manifest, None)):
             self.assertEqual(self.build.validate_ocr_runtime_inputs(), [])
 
+    def test_bundled_manifest_rejects_placeholder_dependency_license(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runtime = Path(temp_dir).resolve()
+            (runtime / "tessdata").mkdir(parents=True)
+            payloads = {
+                "tesseract.exe": b"exe",
+                "dependency.dll": b"dll",
+                "tessdata/eng.traineddata": b"eng",
+                "tessdata/ara.traineddata": b"ara",
+            }
+            entries = []
+            for relative, payload in payloads.items():
+                path = runtime / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(payload)
+                entries.append({
+                    "path": relative,
+                    "sha256": hashlib.sha256(payload).hexdigest(),
+                    "license": "REVIEW_REQUIRED" if relative == "dependency.dll" else "Apache-2.0",
+                })
+            manifest = {
+                "schema_version": 1,
+                "bundled": True,
+                "engine": {"name": "Tesseract OCR", "version": "test", "license": "Apache-2.0"},
+                "languages": [{"code": "eng"}, {"code": "ara"}],
+                "files": entries,
+            }
+            with (
+                patch.object(self.build, "OCR_SOURCE_DIR", runtime),
+                patch.object(self.build, "_load_ocr_manifest", return_value=(manifest, None)),
+            ):
+                errors = self.build.validate_ocr_runtime_inputs()
+
+        self.assertTrue(any("license review is incomplete: dependency.dll" in error for error in errors))
+
     def test_bundled_manifest_requires_verified_required_files(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir).resolve()
@@ -126,13 +161,17 @@ class OCRPackagingContractTests(unittest.TestCase):
             }
             manifest_bytes = (json.dumps(manifest, indent=2) + "\n").encode("utf-8")
             manifest_path = root / "runtime-manifest.json"
+            notices_path = root / "THIRD-PARTY-NOTICES.md"
             manifest_path.write_bytes(manifest_bytes)
+            notices_path.write_text("notices", encoding="utf-8")
             (staged_runtime / "runtime-manifest.json").write_bytes(manifest_bytes)
+            (staged_runtime / "THIRD-PARTY-NOTICES.md").write_text("notices", encoding="utf-8")
 
             with (
                 patch.object(self.build, "OCR_SOURCE_DIR", source_runtime),
                 patch.object(self.build, "OCR_DIST_DIR", staged_runtime),
                 patch.object(self.build, "OCR_MANIFEST_FILE", manifest_path),
+                patch.object(self.build, "OCR_NOTICES_FILE", notices_path),
                 patch.object(self.build, "_load_ocr_manifest", return_value=(manifest, None)),
             ):
                 self.assertEqual(self.build.validate_staged_ocr_runtime(), [])
@@ -159,11 +198,15 @@ class OCRPackagingContractTests(unittest.TestCase):
             staged.mkdir()
             (staged / "extra.dll").write_bytes(b"extra")
             manifest_path = root / "runtime-manifest.json"
+            notices_path = root / "THIRD-PARTY-NOTICES.md"
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            notices_path.write_text("notices", encoding="utf-8")
             (staged / "runtime-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+            (staged / "THIRD-PARTY-NOTICES.md").write_text("notices", encoding="utf-8")
             with (
                 patch.object(self.build, "OCR_DIST_DIR", staged),
                 patch.object(self.build, "OCR_MANIFEST_FILE", manifest_path),
+                patch.object(self.build, "OCR_NOTICES_FILE", notices_path),
                 patch.object(self.build, "_load_ocr_manifest", return_value=(manifest, None)),
             ):
                 errors = self.build.validate_staged_ocr_runtime()
