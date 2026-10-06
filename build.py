@@ -354,7 +354,13 @@ def validate_staged_ocr_runtime() -> list[str]:
         license_bundle = json.loads(OCR_LICENSE_BUNDLE_FILE.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         license_bundle = {}
-    for relative in (license_bundle.get("licenses") or {}).values():
+    license_mapping = license_bundle.get("licenses") or {}
+    required_license_ids: set[str] = set()
+    for item in manifest.get("files", []):
+        if isinstance(item, dict) and isinstance(item.get("license"), str):
+            required_license_ids.update(_license_identifiers(item["license"]))
+    for identifier in required_license_ids:
+        relative = license_mapping.get(identifier)
         if isinstance(relative, str):
             expected_paths.add(relative)
 
