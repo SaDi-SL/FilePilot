@@ -101,6 +101,27 @@ class SearchIndexTests(unittest.TestCase):
             (),
         )
 
+    def test_reindex_removes_stale_semantic_embedding(self):
+        source = self.root / "reindex-vector.txt"
+        source.write_text("first searchable content", encoding="utf-8")
+        self.index.index_file(source)
+        self.index.upsert_embedding(
+            source,
+            [1.0, 0.0],
+            provider="test",
+            model="tiny",
+            embedding_fingerprint="fingerprint-a",
+        )
+        self.assertEqual(
+            self.index.embedding_fingerprint_for_file(source),
+            "fingerprint-a",
+        )
+
+        source.write_text("changed searchable content", encoding="utf-8")
+        self.index.index_file(source)
+
+        self.assertIsNone(self.index.embedding_fingerprint_for_file(source))
+
     def test_remove_file_cascades_semantic_embedding(self):
         source = self.root / "remove-vector.txt"
         source.write_text("semantic content", encoding="utf-8")
