@@ -32,6 +32,7 @@ class ProductSearch:
             raise SearchIndexError("Organized folder is unavailable for indexing")
 
         current_paths: set[Path] = set()
+        extraction_fingerprint = self._index.extraction_fingerprint()
         scanned = indexed = unchanged = failed = 0
         errors: list[str] = []
 
@@ -45,6 +46,7 @@ class ProductSearch:
                     existing is not None
                     and existing.size_bytes == stat.st_size
                     and existing.modified_ns == stat.st_mtime_ns
+                    and existing.extraction_fingerprint == extraction_fingerprint
                 ):
                     unchanged += 1
                     continue
