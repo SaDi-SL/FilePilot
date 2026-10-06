@@ -97,6 +97,8 @@ def release_source_files() -> tuple[Path, ...]:
         OCR_LICENSE_BUNDLE_FILE,
     }
     files.update((ROOT / "app").rglob("*.py"))
+    if OCR_LICENSES_DIR.is_dir():
+        files.update(path for path in OCR_LICENSES_DIR.rglob("*") if path.is_file())
     return tuple(sorted((path for path in files if path.is_file()), key=str))
 
 
@@ -320,8 +322,21 @@ def stage_verified_ocr_runtime() -> bool:
     shutil.copy2(OCR_MANIFEST_FILE, OCR_DIST_DIR / "runtime-manifest.json")
     shutil.copy2(OCR_NOTICES_FILE, OCR_DIST_DIR / "THIRD-PARTY-NOTICES.md")
     shutil.copy2(OCR_LICENSE_BUNDLE_FILE, OCR_DIST_DIR / "license-bundle.json")
-    if OCR_LICENSES_DIR.is_dir():
-        shutil.copytree(OCR_LICENSES_DIR, OCR_DIST_DIR / "licenses")
+
+    license_bundle = json.loads(OCR_LICENSE_BUNDLE_FILE.read_text(encoding="utf-8"))
+    license_mapping = license_bundle["licenses"]
+    required_license_ids: set[str] = set()
+    for item in manifest["files"]:
+        expression = item.get("license")
+        if isinstance(expression, str):
+            required_license_ids.update(_license_identifiers(expression))
+    for identifier in sorted(required_license_ids):
+        relative = license_mapping[identifier]
+        source = OCR_LICENSE_BUNDLE_FILE.parent / relative
+        destination = OCR_DIST_DIR / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+
     log(f"OCR sidecar: verified and staged -> {OCR_DIST_DIR}")
     return True
 
