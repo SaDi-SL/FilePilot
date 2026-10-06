@@ -182,9 +182,6 @@ class OverviewPage(QWidget):
         style.unpolish(self.header_status)
         style.polish(self.header_status)
 
-        self._set_status_value(self.monitoring_status_value, "Monitoring", monitor_text)
-        self._set_status_value(self.startup_status_value, "Startup state", startup_text)
-        self._set_status_value(self.recovery_status_value, "Recovery", recovery_text)
 
     def render_product_snapshot(self, snapshot: ProductSnapshot) -> None:
         if snapshot.state is ProductDataState.AVAILABLE:
