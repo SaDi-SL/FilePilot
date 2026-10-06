@@ -67,9 +67,9 @@ class NavigationSidebar(QFrame):
         group = QButtonGroup(self)
         group.setExclusive(True)
         sections = (
-            ("WORKSPACE", NAVIGATION_ITEMS[:3]),
-            ("AUTOMATION", NAVIGATION_ITEMS[3:5]),
-            ("SYSTEM", NAVIGATION_ITEMS[5:]),
+            ("WORKSPACE", NAVIGATION_ITEMS[:4]),
+            ("AUTOMATION", NAVIGATION_ITEMS[4:6]),
+            ("SYSTEM", NAVIGATION_ITEMS[6:]),
         )
         previous_button = None
         for section_index, (section_name, items) in enumerate(sections):
