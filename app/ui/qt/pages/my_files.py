@@ -24,6 +24,9 @@ from app.ui.qt.theme.tokens import SPACING
 from app.ui.qt.widgets.section_card import SectionCard
 
 
+SMART_RESULTS_VISIBLE_LIMIT = 8
+
+
 class FileDropZone(QFrame):
     file_selected = Signal(str)
     browse_requested = Signal()
@@ -369,26 +372,57 @@ class MyFilesPage(QWidget):
             return
         self.search_button.setEnabled(True)
         self.search_results.clear()
-        for result in results:
+
+        all_results = tuple(results)
+        is_semantic = bool(all_results) and hasattr(all_results[0], "score")
+        visible_results = (
+            all_results[:SMART_RESULTS_VISIBLE_LIMIT]
+            if is_semantic
+            else all_results
+        )
+
+        for result in visible_results:
             category = result.category or "Uncategorized"
+            location = self._compact_result_location(result.path)
             item = QListWidgetItem(
-                f"{result.filename}\n{category}  •  {result.path}"
+                f"{result.filename}\n{category}  •  {location}"
             )
             detail = getattr(result, "snippet", "").strip()
+            tooltip_parts = [str(result.path)]
             if detail:
-                item.setToolTip(detail)
+                tooltip_parts.append(detail)
+            item.setToolTip("\n\n".join(tooltip_parts))
             item.setData(Qt.ItemDataRole.UserRole, str(result.path))
             self.search_results.addItem(item)
+
         count = self.search_results.count()
         self.search_results.setVisible(count > 0)
-        if count:
+        if count and is_semantic:
+            total = len(all_results)
+            if total > count:
+                self.search_status.setText(
+                    f"Showing the {count} best matches for “{query}” "
+                    f"from {total} semantic candidates."
+                )
+            else:
+                self.search_status.setText(
+                    f"{count} best match{'es' if count != 1 else ''} for “{query}”."
+                )
+        elif count:
             self.search_status.setText(
-                f"{count} smart result{'s' if count != 1 else ''} found for “{query}”."
+                f"{count} exact result{'s' if count != 1 else ''} found for “{query}”."
             )
         else:
             self.search_status.setText(
                 f"No indexed files matched “{query}”. Update the index if files changed."
             )
+
+    @staticmethod
+    def _compact_result_location(path: Path) -> str:
+        parts = path.parts
+        if len(parts) <= 3:
+            return str(path)
+        return str(Path(*parts[-3:-1]))
 
     def _search_refresh_completed(self, result) -> None:
         self.refresh_search_button.setEnabled(True)
