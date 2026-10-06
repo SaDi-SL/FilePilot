@@ -118,7 +118,7 @@ class QtMyFilesTests(unittest.TestCase):
         self.assertTrue(self.page.search_button.isEnabled())
         self.assertEqual(self.page.search_results.count(), 1)
         self.assertTrue(self.page.search_results.isVisibleTo(self.page))
-        self.assertIn("1 smart result", self.page.search_status.text())
+        self.assertIn("1 best match", self.page.search_status.text())
 
     def test_semantic_failure_falls_back_to_exact_local_search(self):
         self.page.search_input.setText("traction")
@@ -146,6 +146,33 @@ class QtMyFilesTests(unittest.TestCase):
 
         self.assertTrue(self.page.search_button.isEnabled())
         self.assertEqual(self.page.search_results.count(), 1)
+
+    def test_semantic_results_show_only_best_matches_with_compact_location(self):
+        self.page.search_input.setText("train testing")
+        results = tuple(
+            SemanticSearchResult(
+                path=self.root / "organized" / "reports" / f"result-{index}.pdf",
+                filename=f"result-{index}.pdf",
+                extension=".pdf",
+                category="reports",
+                score=1.0 - (index * 0.01),
+            )
+            for index in range(10)
+        )
+
+        self.bridge.semantic_search_results_changed.emit(
+            "train testing",
+            results,
+        )
+        self.app.processEvents()
+
+        self.assertEqual(self.page.search_results.count(), 8)
+        self.assertIn("8 best matches", self.page.search_status.text())
+        self.assertIn("10 semantic candidates", self.page.search_status.text())
+        first = self.page.search_results.item(0)
+        self.assertNotIn(str(self.root), first.text())
+        self.assertIn("organized", first.text())
+        self.assertIn(str(results[0].path), first.toolTip())
 
     def test_stale_search_result_does_not_replace_current_query(self):
         self.page.search_input.setText("new query")
