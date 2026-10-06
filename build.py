@@ -40,6 +40,7 @@ VERSION_INFO_FILE = BUILD_DIR / "metadata" / "FilePilot-version-info.txt"
 BUILD_IDENTITY_FILE = DIST_DIR / f"{APP_NAME}.version"
 OCR_MANIFEST_FILE = ROOT / "third_party" / "ocr" / "runtime-manifest.json"
 OCR_NOTICES_FILE = ROOT / "third_party" / "ocr" / "THIRD-PARTY-NOTICES.md"
+OCR_LICENSE_MAP_FILE = ROOT / "third_party" / "ocr" / "license-map.json"
 OCR_SOURCE_DIR = ROOT / "third_party" / "ocr" / "runtime"
 OCR_DIST_DIR = DIST_DIR / "ocr"
 
@@ -90,6 +91,7 @@ def release_source_files() -> tuple[Path, ...]:
         ROOT / "requirements-build.txt",
         OCR_MANIFEST_FILE,
         OCR_NOTICES_FILE,
+        OCR_LICENSE_MAP_FILE,
     }
     files.update((ROOT / "app").rglob("*.py"))
     return tuple(sorted((path for path in files if path.is_file()), key=str))
@@ -168,6 +170,8 @@ def validate_ocr_runtime_inputs() -> list[str]:
         relative = item.get("path")
         expected_hash = item.get("sha256")
         license_name = item.get("license")
+        component_name = item.get("component")
+        source_url = item.get("source")
         if not isinstance(relative, str) or not relative:
             errors.append("OCR manifest contains an invalid file path")
             continue
@@ -197,6 +201,10 @@ def validate_ocr_runtime_inputs() -> list[str]:
             "tbd",
         }:
             errors.append(f"OCR manifest license review is incomplete: {relative}")
+        if not isinstance(component_name, str) or not component_name.strip() or component_name == "REVIEW_REQUIRED":
+            errors.append(f"OCR manifest component provenance is incomplete: {relative}")
+        if not isinstance(source_url, str) or not source_url.strip() or source_url == "REVIEW_REQUIRED":
+            errors.append(f"OCR manifest source provenance is incomplete: {relative}")
 
         source = OCR_SOURCE_DIR / path
         try:
@@ -328,6 +336,7 @@ def validate_release_inputs() -> list[str]:
         INSTALLER_FILE,
         OCR_MANIFEST_FILE,
         OCR_NOTICES_FILE,
+        OCR_LICENSE_MAP_FILE,
     )
     for path in required:
         if not path.is_file():
