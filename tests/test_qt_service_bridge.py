@@ -95,6 +95,8 @@ class FakeService:
         )
         self.search_calls = []
         self.search_thread_ids = []
+        self.semantic_search_calls = []
+        self.semantic_search_thread_ids = []
         self.search_refresh_calls = 0
         self.search_refresh_thread_ids = []
         self.preview_calls = []
@@ -211,6 +213,12 @@ class FakeService:
         with self._operation():
             self.search_calls.append((query, limit))
             self.search_thread_ids.append(threading.get_ident())
+            return (query, limit)
+
+    def semantic_search_files(self, query, limit=25):
+        with self._operation():
+            self.semantic_search_calls.append((query, limit))
+            self.semantic_search_thread_ids.append(threading.get_ident())
             return (query, limit)
 
     def refresh_search_index(self):
@@ -832,6 +840,37 @@ class QtServiceBridgeTests(unittest.TestCase):
             observed.at(index)[1]
             for index in range(observed.count())
             if observed.at(index)[0] == "search"
+        ]
+        self.assertEqual(len(worker_ids), 1)
+        self.assertNotEqual(worker_ids[0], threading.get_ident())
+
+    def test_semantic_search_runs_off_gui_thread_and_preserves_query(self):
+        service = FakeService()
+        bridge = self._bridge(service)
+        results = QSignalSpy(bridge.semantic_search_results_changed)
+        observed = QSignalSpy(bridge.operation_thread_observed)
+
+        bridge.request_semantic_search("documents about train testing", 25)
+
+        self._wait_until(lambda: results.count() == 1)
+
+        self.assertEqual(
+            service.semantic_search_calls,
+            [("documents about train testing", 25)],
+        )
+        self.assertEqual(results.at(0)[0], "documents about train testing")
+        self.assertEqual(
+            results.at(0)[1],
+            ("documents about train testing", 25),
+        )
+        self.assertNotEqual(
+            service.semantic_search_thread_ids[0],
+            threading.get_ident(),
+        )
+        worker_ids = [
+            observed.at(index)[1]
+            for index in range(observed.count())
+            if observed.at(index)[0] == "semantic_search"
         ]
         self.assertEqual(len(worker_ids), 1)
         self.assertNotEqual(worker_ids[0], threading.get_ident())
