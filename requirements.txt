@@ -6,3 +6,4 @@ pywin32
 python-docx
 pypdf
 pypdfium2>=5.13,<6
+openpyxl>=3.1,<4
