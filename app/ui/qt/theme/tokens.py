@@ -3,24 +3,27 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class ColorTokens:
-    background: str = "#0C1016"
-    sidebar: str = "#101722"
-    surface: str = "#151C27"
-    surface_elevated: str = "#1B2431"
-    surface_hover: str = "#202B3A"
-    border: str = "#2A3545"
-    border_strong: str = "#3A4B61"
-    primary: str = "#4C8DFF"
-    primary_hover: str = "#66A0FF"
-    primary_pressed: str = "#3978E5"
-    text_primary: str = "#F4F7FB"
-    text_secondary: str = "#A8B3C2"
-    text_muted: str = "#7F8A99"
+    background: str = "#17161B"
+    sidebar: str = "#111014"
+    surface: str = "#222126"
+    surface_elevated: str = "#2A2830"
+    surface_hover: str = "#343039"
+    border: str = "#38343F"
+    border_strong: str = "#514A5D"
+    primary: str = "#8854EB"
+    primary_hover: str = "#A477FF"
+    primary_pressed: str = "#7040CD"
+    text_primary: str = "#F6F3FB"
+    text_secondary: str = "#C0B9CC"
+    text_muted: str = "#A099AD"
     success: str = "#42C58A"
     warning: str = "#E3AA52"
     error: str = "#E26974"
-    info: str = "#72A7FF"
-    focus: str = "#8BB6FF"
+    info: str = "#B494F6"
+    accent_warm: str = "#FFA752"
+    accent_cool: str = "#65CFC8"
+    primary_deep: str = "#6035BB"
+    focus: str = "#C7A8FF"
 
 
 @dataclass(frozen=True)
@@ -35,9 +38,9 @@ class SpacingTokens:
 
 @dataclass(frozen=True)
 class RadiusTokens:
-    control: int = 6
-    card: int = 8
-    panel: int = 10
+    control: int = 8
+    card: int = 12
+    panel: int = 14
 
 
 COLORS = ColorTokens()

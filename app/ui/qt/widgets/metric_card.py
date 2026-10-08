@@ -9,6 +9,9 @@ class MetricCard(SectionCard):
     def __init__(self, title: str, value: str = "Not available", detail: str = "", parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setAccessibleName(f"{title} status summary")
+        accent = {"Processed": "cool", "Duplicates": "purple", "Needs review": "warm"}.get(title)
+        if accent:
+            self.setProperty("cardAccent", accent)
         self.setMinimumHeight(94)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.content_layout.setSpacing(SPACING.xs)
@@ -25,6 +28,8 @@ class MetricCard(SectionCard):
         title_row.addStretch(1)
         self.value_label = QLabel(value)
         self.value_label.setProperty("role", "metric")
+        if accent:
+            self.value_label.setProperty("metricAccent", accent)
         self.value_label.setAccessibleName(f"{title} status: {value}")
         self.detail_label = QLabel(detail)
         self.detail_label.setProperty("role", "caption")

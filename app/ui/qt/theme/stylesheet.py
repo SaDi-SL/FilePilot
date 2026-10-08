@@ -27,8 +27,8 @@ def build_stylesheet() -> str:
             border-right: 1px solid {c.border};
         }}
         QLabel[brandMark="true"] {{
-            background-color: {c.surface_elevated};
-            border: 1px solid {c.border_strong};
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {c.primary_hover}, stop:1 {c.primary_deep});
+            border: 1px solid {c.primary_hover};
             border-radius: {r.card}px;
         }}
         QLabel[role="brand"] {{
@@ -89,13 +89,37 @@ def build_stylesheet() -> str:
             border-left: 3px solid {c.primary};
             border-radius: {r.panel}px;
         }}
+        QFrame[cardAccent="purple"] {{
+            border-top: 2px solid {c.primary};
+        }}
+        QFrame[cardAccent="warm"] {{
+            border-top: 2px solid {c.accent_warm};
+        }}
+        QFrame[cardAccent="cool"] {{
+            border-top: 2px solid {c.accent_cool};
+        }}
+        QLabel[metricAccent="purple"] {{ color: {c.primary_hover}; }}
+        QLabel[metricAccent="warm"] {{ color: {c.accent_warm}; }}
+        QLabel[metricAccent="cool"] {{ color: {c.accent_cool}; }}
+        QPlainTextEdit, QListWidget, QTreeWidget {{
+            background-color: {c.background};
+            border: 1px solid {c.border};
+            border-radius: {r.control}px;
+            padding: 6px;
+            selection-background-color: #493564;
+            selection-color: {c.text_primary};
+        }}
+        QListWidget::item {{ padding: 6px; border-radius: 5px; }}
+        QListWidget::item:selected {{ background-color: #493564; }}
+        QListWidget::item:hover {{ background-color: {c.surface_hover}; }}
+        QScrollArea > QWidget > QWidget {{ background-color: {c.background}; }}
         QFrame[divider="true"] {{
             background-color: {c.border};
             min-height: 1px;
             max-height: 1px;
         }}
         QFrame[dropZone="true"] {{
-            background-color: {c.background};
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #2B223A, stop:1 {c.background});
             border: 1px dashed {c.border_strong};
             border-radius: {r.panel}px;
         }}
@@ -122,8 +146,8 @@ def build_stylesheet() -> str:
         }}
         QPushButton[variant="primary"] {{
             color: #FFFFFF;
-            background-color: {c.primary};
-            border-color: {c.primary};
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {c.primary}, stop:1 {c.primary_deep});
+            border-color: {c.primary_hover};
         }}
         QPushButton[variant="primary"]:hover {{
             background-color: {c.primary_hover};
@@ -168,9 +192,9 @@ def build_stylesheet() -> str:
             color: {c.text_primary};
         }}
         QPushButton[navItem="true"]:checked {{
-            background-color: {c.surface_elevated};
-            color: {c.primary_hover};
-            border: 1px solid {c.border};
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #3B2A58, stop:1 {c.surface_elevated});
+            color: #E8DBFF;
+            border: 1px solid #574274;
             border-left: 3px solid {c.primary};
         }}
         QPushButton[navItem="true"][compactNav="true"] {{
@@ -248,6 +272,21 @@ def build_stylesheet() -> str:
         QScrollArea {{
             border: none;
         }}
+        QTabWidget::pane {{ border: none; background: transparent; }}
+        QTabBar::tab {{
+            color: {c.text_secondary};
+            background: {c.surface};
+            border: 1px solid {c.border};
+            border-radius: {r.control}px;
+            padding: 10px 18px;
+            margin-right: 8px;
+        }}
+        QTabBar::tab:selected {{
+            color: #F5EDFF;
+            background: #3B2A58;
+            border-color: {c.primary};
+        }}
+        QTabBar::tab:hover {{ border-color: {c.primary_hover}; }}
         QScrollArea#OverviewScrollArea > QWidget > QWidget {{
             background-color: {c.background};
         }}

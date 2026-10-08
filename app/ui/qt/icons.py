@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap, QLinearGradient
 
 from app.ui.qt.theme.tokens import COLORS
 
@@ -25,7 +25,33 @@ def navigation_icon(name: str) -> QIcon:
 
 
 def brand_icon() -> QIcon:
-    return navigation_icon("brand")
+    return QIcon(_draw_icon("brand", 32, "#FFFFFF"))
+
+
+def folder_art(size: int = 72) -> QPixmap:
+    """Paint a warm folder illustration without external image dependencies."""
+    pixmap = QPixmap(size * 2, size * 2)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.scale(size * 2 / 80, size * 2 / 80)
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QColor("#C57029"))
+    painter.drawRoundedRect(QRectF(9, 20, 28, 20), 5, 5)
+    painter.setBrush(QColor("#E8923C"))
+    painter.drawRoundedRect(QRectF(9, 26, 62, 40), 6, 6)
+    painter.setBrush(QColor("#DED7EE"))
+    painter.drawRoundedRect(QRectF(16, 23, 47, 34), 3, 3)
+    painter.setBrush(QColor("#F8F4FF"))
+    painter.drawRoundedRect(QRectF(20, 28, 45, 30), 3, 3)
+    gradient = QLinearGradient(0, 36, 0, 68)
+    gradient.setColorAt(0, QColor("#FFBA70"))
+    gradient.setColorAt(1, QColor("#F28B32"))
+    painter.setBrush(gradient)
+    painter.drawRoundedRect(QRectF(9, 35, 62, 33), 6, 6)
+    painter.end()
+    pixmap.setDevicePixelRatio(2)
+    return pixmap
 
 
 def status_icon(color: str, size: int = 12) -> QIcon:

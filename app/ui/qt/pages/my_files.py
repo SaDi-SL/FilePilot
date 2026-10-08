@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QLayout,
     QScrollArea,
+    QTabWidget,
     QListWidget,
     QListView,
     QListWidgetItem,
@@ -25,6 +26,7 @@ from PySide6.QtWidgets import (
 
 from app.application_service import MoveStatus, OperationPreview, SafetyDataState
 from app.ui.qt.service_bridge import QtServiceBridge
+from app.ui.qt.icons import folder_art
 from app.ui.qt.theme.tokens import SPACING
 from app.ui.qt.widgets.section_card import SectionCard
 
@@ -53,8 +55,9 @@ class FileDropZone(QFrame):
         layout.setSpacing(SPACING.sm)
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        icon = QLabel("FILE")
-        icon.setProperty("role", "eyebrow")
+        icon = QLabel()
+        icon.setPixmap(folder_art())
+        icon.setAccessibleName("Folder illustration")
         icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         title = QLabel("Drop a file here")
@@ -154,6 +157,7 @@ class MyFilesPage(QWidget):
         layout.addLayout(header)
 
         self.search_card = SectionCard()
+        self.search_card.setProperty("cardAccent", "cool")
         search_header = QHBoxLayout()
         search_copy = QVBoxLayout()
         search_copy.setSpacing(2)
@@ -210,6 +214,7 @@ class MyFilesPage(QWidget):
         layout.addWidget(self.search_card)
 
         self.answer_card = SectionCard()
+        self.answer_card.setProperty("cardAccent", "purple")
         answer_title = QLabel("Ask your files")
         answer_title.setProperty("role", "sectionTitle")
         self.answer_card.content_layout.addWidget(answer_title)
@@ -282,6 +287,7 @@ class MyFilesPage(QWidget):
         self.workspace_layout.setVerticalSpacing(SPACING.md)
 
         self.source_card = SectionCard()
+        self.source_card.setProperty("cardAccent", "warm")
         source_title = QLabel("Choose a file")
         source_title.setProperty("role", "sectionTitle")
         source_caption = QLabel(
@@ -381,6 +387,21 @@ class MyFilesPage(QWidget):
         self.workspace_layout.setColumnStretch(0, 2)
         self.workspace_layout.setColumnStretch(1, 3)
         layout.addWidget(self.workspace, 0, Qt.AlignmentFlag.AlignTop)
+        self.workspace_tabs = QTabWidget()
+        self.workspace_tabs.setAccessibleName("My Files tools")
+        for title, widget in (
+            ("Organize a file", self.workspace),
+            ("Search files", self.search_card),
+            ("Ask your files", self.answer_card),
+        ):
+            layout.removeWidget(widget)
+            panel = QWidget()
+            panel_layout = QVBoxLayout(panel)
+            panel_layout.setContentsMargins(0, SPACING.lg, 0, 0)
+            panel_layout.addWidget(widget)
+            panel_layout.addStretch(1)
+            self.workspace_tabs.addTab(panel, title)
+        layout.addWidget(self.workspace_tabs)
         layout.addStretch(1)
 
         answer_signal = getattr(self.bridge, "answer_changed", None)
@@ -424,6 +445,7 @@ class MyFilesPage(QWidget):
             safety_failed_signal.connect(self._request_failed)
 
     def _request_answer(self) -> None:
+        self.workspace_tabs.setCurrentIndex(2)
         if self._pending_question is not None:
             return
         question = self.question_input.text().strip()
@@ -514,6 +536,7 @@ class MyFilesPage(QWidget):
         self.answer_status.setText(message or "Local answer generation failed. Check Ollama and the index.")
 
     def _request_search(self) -> None:
+        self.workspace_tabs.setCurrentIndex(1)
         query = self.search_input.text().strip()
         if not query:
             self.search_results.clear()
