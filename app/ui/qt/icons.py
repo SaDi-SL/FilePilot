@@ -6,6 +6,7 @@ from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap, QLinearGradient
 
 from app.ui.qt.theme.tokens import COLORS
+from app.application_paths import get_application_paths
 
 
 def navigation_icon(name: str) -> QIcon:
@@ -25,7 +26,10 @@ def navigation_icon(name: str) -> QIcon:
 
 
 def brand_icon() -> QIcon:
-    return QIcon(_draw_icon("brand", 32, "#FFFFFF"))
+    """Use the same multi-resolution mark as the Windows app and installer."""
+    path = get_application_paths().resource("icon.ico")
+    icon = QIcon(str(path)) if path.is_file() else QIcon()
+    return icon if not icon.isNull() else QIcon(_draw_icon("brand", 32, "#FFFFFF"))
 
 
 def folder_art(size: int = 72) -> QPixmap:

@@ -27,9 +27,8 @@ def build_stylesheet() -> str:
             border-right: 1px solid {c.border};
         }}
         QLabel[brandMark="true"] {{
-            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {c.primary_hover}, stop:1 {c.primary_deep});
-            border: 1px solid {c.primary_hover};
-            border-radius: {r.card}px;
+            background: transparent;
+            border: none;
         }}
         QLabel[role="brand"] {{
             color: {c.text_primary};

@@ -49,7 +49,7 @@ class NavigationSidebar(QFrame):
         self.brand_mark.setProperty("brandMark", True)
         self.brand_mark.setFixedSize(36, 36)
         self.brand_mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.brand_mark.setPixmap(brand_icon().pixmap(21, 21))
+        self.brand_mark.setPixmap(brand_icon().pixmap(36, 36))
         self.brand_mark.setAccessibleName("FilePilot application mark")
         brand_copy = QVBoxLayout()
         brand_copy.setSpacing(0)
