@@ -138,6 +138,7 @@ class ProductSearch:
                 self._index.upsert_embedding_chunks(
                     path,
                     [response.vector for response in responses],
+                    chunk_texts=chunks,
                     provider=first.provider,
                     model=first.model,
                     embedding_fingerprint=fingerprint,
