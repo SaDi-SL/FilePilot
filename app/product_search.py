@@ -10,12 +10,23 @@ from app.search_index import (
     SearchIndex,
     SearchIndexError,
     SearchResult,
+    SemanticChunkResult,
     SemanticSearchResult,
 )
 from app.semantic_search import embedding_fingerprint
 
 
 BGE_M3_MIN_RELEVANCE_SCORE = 0.40
+
+
+@dataclass(frozen=True)
+class RetrievedContext:
+    path: Path
+    filename: str
+    category: str | None
+    chunk_index: int
+    text: str
+    score: float
 
 
 @dataclass(frozen=True)
@@ -230,6 +241,75 @@ class ProductSearch:
             )
         )
         return tuple(results[: max(1, min(int(limit), 100))])
+
+    def retrieve_context(
+        self,
+        query: str,
+        *,
+        limit: int = 6,
+        max_chars: int = 8_000,
+        max_chunks_per_file: int = 2,
+        timeout: float = 30.0,
+    ) -> tuple[RetrievedContext, ...]:
+        """Retrieve bounded source chunks suitable for grounded local answers."""
+        provider = self._embedding_provider
+        if provider is None:
+            raise SearchIndexError("Semantic search provider is not configured")
+        if not isinstance(query, str) or not query.strip():
+            return ()
+
+        bounded_limit = max(1, min(int(limit), 12))
+        bounded_chars = max(512, min(int(max_chars), 24_000))
+        per_file_limit = max(1, min(int(max_chunks_per_file), 4))
+        semantic_query = self._semantic_query_text(query)
+        response = provider.embed(semantic_query, timeout=timeout, task="query")
+        fingerprint = embedding_fingerprint(
+            provider=response.provider,
+            model=response.model,
+            dimensions=len(response.vector),
+        )
+        candidates = self._index.semantic_chunk_search(
+            response.vector,
+            embedding_fingerprint=fingerprint,
+            limit=min(32, bounded_limit * 4),
+        )
+
+        model_family = response.model.casefold().split(":", 1)[0]
+        if model_family == "bge-m3":
+            candidates = tuple(
+                item
+                for item in candidates
+                if item.score >= BGE_M3_MIN_RELEVANCE_SCORE
+            )
+
+        selected: list[RetrievedContext] = []
+        per_file: dict[Path, int] = {}
+        used_chars = 0
+        for item in candidates:
+            current_count = per_file.get(item.path, 0)
+            if current_count >= per_file_limit:
+                continue
+            remaining = bounded_chars - used_chars
+            if remaining <= 0:
+                break
+            text = item.text[:remaining].strip()
+            if not text:
+                continue
+            selected.append(
+                RetrievedContext(
+                    path=item.path,
+                    filename=item.filename,
+                    category=item.category,
+                    chunk_index=item.chunk_index,
+                    text=text,
+                    score=item.score,
+                )
+            )
+            per_file[item.path] = current_count + 1
+            used_chars += len(text)
+            if len(selected) >= bounded_limit:
+                break
+        return tuple(selected)
 
     def semantic_search(
         self,
