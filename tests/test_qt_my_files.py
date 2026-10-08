@@ -117,6 +117,21 @@ class QtMyFilesTests(unittest.TestCase):
         self.assertEqual(self.page.answer_sources.count(), 0)
         self.assertIn("No supporting excerpts", self.page.answer_status.text())
 
+    def test_answer_and_sources_remain_readable_at_small_window_height(self):
+        self.page.resize(900, 520)
+        self.page.show()
+        self.page.question_input.setText("Question")
+        self.page.ask_button.click()
+        source = RAGSource("S1", self.source, "report.txt", None, 0, 0.9, "Evidence " * 500)
+        result = RAGAnswer("Question", "Answer [S1] " * 200, (source,), "ollama", "answered")
+        self.bridge.answer_changed.emit("Question", result)
+        self.app.processEvents()
+        self.assertEqual(self.page.answer_text.height(), 180)
+        self.assertEqual(self.page.answer_sources.height(), 140)
+        self.assertGreater(self.page.scroll_area.verticalScrollBar().maximum(), 0)
+        self.assertLess(self.page.answer_text.geometry().bottom(), self.page.answer_sources.geometry().top())
+        self.assertTrue(self.page.ask_button.isEnabled())
+
     def _ready_preview(self):
         return OperationPreview(
             state=SafetyDataState.AVAILABLE,

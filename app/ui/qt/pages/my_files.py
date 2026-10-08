@@ -10,7 +10,10 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QLayout,
+    QScrollArea,
     QListWidget,
+    QListView,
     QListWidgetItem,
     QPushButton,
     QPlainTextEdit,
@@ -106,7 +109,18 @@ class MyFilesPage(QWidget):
         self.setProperty("pageSurface", True)
         self.setAccessibleName("My Files")
 
-        layout = QVBoxLayout(self)
+        page_layout = QVBoxLayout(self)
+        page_layout.setContentsMargins(0, 0, 0, 0)
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll_area.setAccessibleName("My Files scrollable workspace")
+        content = QWidget()
+        self.scroll_area.setWidget(content)
+        page_layout.addWidget(self.scroll_area)
+        layout = QVBoxLayout(content)
+        layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
         layout.setContentsMargins(
             SPACING.xl,
             SPACING.xl,
@@ -217,12 +231,14 @@ class MyFilesPage(QWidget):
         self.answer_text = QPlainTextEdit()
         self.answer_text.setReadOnly(True)
         self.answer_text.setAccessibleName("Answer from indexed files")
-        self.answer_text.setMinimumHeight(140)
+        self.answer_text.setFixedHeight(180)
         self.answer_text.hide()
         self.answer_card.content_layout.addWidget(self.answer_text)
         self.answer_sources = QListWidget()
         self.answer_sources.setAccessibleName("Answer sources and excerpts")
-        self.answer_sources.setMinimumHeight(100)
+        self.answer_sources.setWordWrap(True)
+        self.answer_sources.setResizeMode(QListView.ResizeMode.Adjust)
+        self.answer_sources.setFixedHeight(140)
         self.answer_sources.hide()
         self.answer_card.content_layout.addWidget(self.answer_sources)
         layout.addWidget(self.answer_card)
