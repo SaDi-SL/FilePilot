@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Iterable
 
 
-SEMANTIC_PIPELINE_REVISION = "9c-semantic-search-v4-chunked-documents"
+SEMANTIC_PIPELINE_REVISION = "9d-local-rag-v1-persisted-chunk-text"
 MAX_EMBEDDING_DIMENSIONS = 4096
 
 
