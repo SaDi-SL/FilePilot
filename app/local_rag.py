@@ -126,7 +126,7 @@ class LocalRAGService:
         if not answer:
             raise LocalRAGError("Local answer model returned an empty response")
 
-        citation_groups = re.findall(r"\[(S\d+(?:\s*,\s*S\d+)*)\]", answer)
+        citation_groups = re.findall(r"\[\s*(S\d+(?:\s*[,،;؛]\s*S\d+)*)\s*\]", answer)
         cited_ids = tuple(dict.fromkeys(
             source_id
             for group in citation_groups

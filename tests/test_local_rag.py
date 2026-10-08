@@ -123,16 +123,20 @@ class LocalRAGServiceTests(unittest.TestCase):
         self.assertEqual(result.sources[0].excerpt, excerpt)
 
     def test_grouped_citations_include_every_source_in_answer_order(self):
-        provider = FakeLocalProvider(text="Combined evidence [S1, S2]. Again [S2].")
-        result = LocalRAGService(
-            FakeSearch((context("first.txt"), context("second.txt"))), provider
-        ).ask("Question")
-        self.assertEqual([source.source_id for source in result.sources], ["S1", "S2"])
+        for citation in ("[S1, S2]", "[S1، S2]", "[S1; S2]", "[ S1؛ S2 ]"):
+            with self.subTest(citation=citation):
+                provider = FakeLocalProvider(text=f"Combined evidence {citation}. Again [S2].")
+                result = LocalRAGService(
+                    FakeSearch((context("first.txt"), context("second.txt"))), provider
+                ).ask("Question")
+                self.assertEqual([source.source_id for source in result.sources], ["S1", "S2"])
 
     def test_grouped_unknown_source_is_rejected_even_with_valid_single_citation(self):
-        provider = FakeLocalProvider(text="Evidence [S1, S99] and [S1].")
-        with self.assertRaisesRegex(LocalRAGError, "not grounded"):
-            LocalRAGService(FakeSearch((context(),)), provider).ask("Question")
+        for citation in ("[S1, S99]", "[S1، S99]", "[S1; S99]", "[ S1؛ S99 ]"):
+            with self.subTest(citation=citation):
+                provider = FakeLocalProvider(text=f"Evidence {citation} and [S1].")
+                with self.assertRaisesRegex(LocalRAGError, "not grounded"):
+                    LocalRAGService(FakeSearch((context(),)), provider).ask("Question")
 
     def test_cloud_provider_is_refused_before_any_chat(self):
         provider = FakeCloudProvider()
