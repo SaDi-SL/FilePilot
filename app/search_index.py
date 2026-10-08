@@ -21,7 +21,7 @@ from app.semantic_search import (
 
 
 SEARCH_APPLICATION_ID = 0x46505349  # "FPSI"
-SEARCH_SCHEMA_VERSION = 4
+SEARCH_SCHEMA_VERSION = 5
 SEARCH_EXTRACTION_PIPELINE_REVISION = "9b-richer-extraction-ocr-v1"
 MAX_SEARCH_RESULTS = 100
 
@@ -171,6 +171,7 @@ class SearchIndex:
                         provider TEXT NOT NULL,
                         model TEXT NOT NULL,
                         embedding_fingerprint TEXT NOT NULL,
+                        chunk_text TEXT NOT NULL DEFAULT '',
                         embedded_at_utc TEXT NOT NULL,
                         PRIMARY KEY(path, chunk_index),
                         FOREIGN KEY(path) REFERENCES files(path) ON DELETE CASCADE
@@ -206,6 +207,19 @@ class SearchIndex:
                         connection.execute(
                             "ALTER TABLE files ADD COLUMN "
                             "extraction_fingerprint TEXT NOT NULL DEFAULT ''"
+                        )
+
+                if user_version < 5:
+                    chunk_columns = {
+                        row["name"]
+                        for row in connection.execute(
+                            "PRAGMA table_info(file_embedding_chunks)"
+                        ).fetchall()
+                    }
+                    if "chunk_text" not in chunk_columns:
+                        connection.execute(
+                            "ALTER TABLE file_embedding_chunks ADD COLUMN "
+                            "chunk_text TEXT NOT NULL DEFAULT ''"
                         )
 
                 connection.execute(f"PRAGMA application_id = {SEARCH_APPLICATION_ID}")
@@ -475,6 +489,7 @@ class SearchIndex:
         file_path: str | Path,
         vectors,
         *,
+        chunk_texts=None,
         provider: str,
         model: str,
         embedding_fingerprint: str,
@@ -485,10 +500,19 @@ class SearchIndex:
         model_name = model.strip()
         fingerprint = embedding_fingerprint.strip()
         vector_list = list(vectors)
+        text_list = (
+            [str(text) for text in chunk_texts]
+            if chunk_texts is not None
+            else ["" for _ in vector_list]
+        )
         if not provider_name or not model_name or not fingerprint:
             raise SearchIndexError("Embedding metadata is incomplete")
         if not vector_list:
             raise SearchIndexError("At least one embedding chunk is required")
+        if len(text_list) != len(vector_list):
+            raise SearchIndexError(
+                "Embedding chunk text count must match vector count"
+            )
 
         encoded: list[tuple[bytes, int]] = []
         expected_dimensions: int | None = None
@@ -524,9 +548,9 @@ class SearchIndex:
                     """
                     INSERT INTO file_embedding_chunks (
                         path, chunk_index, vector, dimensions, provider, model,
-                        embedding_fingerprint, embedded_at_utc
+                        embedding_fingerprint, chunk_text, embedded_at_utc
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     [
                         (
@@ -537,6 +561,7 @@ class SearchIndex:
                             provider_name,
                             model_name,
                             fingerprint,
+                            text_list[index],
                             embedded_at,
                         )
                         for index, (payload, dimensions) in enumerate(encoded)
@@ -634,7 +659,8 @@ class SearchIndex:
                         files.category,
                         file_embedding_chunks.chunk_index,
                         file_embedding_chunks.vector,
-                        file_embedding_chunks.dimensions
+                        file_embedding_chunks.dimensions,
+                        file_embedding_chunks.chunk_text
                     FROM file_embedding_chunks
                     JOIN files ON files.path = file_embedding_chunks.path
                     WHERE file_embedding_chunks.embedding_fingerprint = ?
@@ -666,17 +692,13 @@ class SearchIndex:
             )
         )
 
-        chunk_cache: dict[str, tuple[str, ...]] = {}
         results: list[SemanticChunkResult] = []
         for score, row in scored:
-            path_text = str(row["path"])
-            chunks = chunk_cache.get(path_text)
-            if chunks is None:
-                chunks = self.semantic_document_chunks(Path(path_text))
-                chunk_cache[path_text] = chunks
-            chunk_index = int(row["chunk_index"])
-            if chunk_index < 0 or chunk_index >= len(chunks):
+            chunk_text = str(row["chunk_text"] or "").strip()
+            if not chunk_text:
                 continue
+            path_text = str(row["path"])
+            chunk_index = int(row["chunk_index"])
             results.append(
                 SemanticChunkResult(
                     path=Path(path_text),
@@ -684,7 +706,7 @@ class SearchIndex:
                     extension=row["extension"],
                     category=row["category"],
                     chunk_index=chunk_index,
-                    text=chunks[chunk_index],
+                    text=chunk_text,
                     score=score,
                 )
             )
