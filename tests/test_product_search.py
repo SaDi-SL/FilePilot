@@ -342,6 +342,61 @@ class ProductSearchTests(unittest.TestCase):
         self.assertEqual(len(results), 1)
         self.assertLess(results[0].score, 0.40)
 
+    def test_retrieve_context_is_bounded_and_source_grounded(self):
+        first = self.organized / "reports" / "train.txt"
+        second = self.organized / "notes" / "other.txt"
+        first.parent.mkdir(parents=True)
+        second.parent.mkdir(parents=True)
+        first.write_text("traction verification " * 220, encoding="utf-8")
+        second.write_text("unrelated notes " * 220, encoding="utf-8")
+        self.search.refresh(self.organized)
+
+        first_chunks = self.index.semantic_document_chunks(first)
+        second_chunks = self.index.semantic_document_chunks(second)
+        vectors = {}
+        for index, chunk in enumerate(first_chunks):
+            vectors[chunk] = (1.0, 0.0) if index < 3 else (0.9, 0.1)
+        for chunk in second_chunks:
+            vectors[chunk] = (0.2, 0.98)
+        vectors["train testing"] = (1.0, 0.0)
+
+        provider = FakeEmbeddingProvider(vectors, model="bge-m3")
+        semantic = ProductSearch(self.index, provider)
+        semantic.refresh_semantic_embeddings()
+
+        contexts = semantic.retrieve_context(
+            "documents about train testing",
+            limit=6,
+            max_chars=2500,
+            max_chunks_per_file=2,
+        )
+
+        self.assertGreaterEqual(len(contexts), 1)
+        self.assertTrue(all(item.path == first for item in contexts))
+        self.assertLessEqual(len(contexts), 2)
+        self.assertLessEqual(sum(len(item.text) for item in contexts), 2500)
+        self.assertTrue(all(item.score >= 0.40 for item in contexts))
+        self.assertIn("traction verification", contexts[0].text)
+
+    def test_retrieve_context_returns_empty_when_no_strong_bge_match(self):
+        source = self.organized / "notes.txt"
+        source.write_text("generic notes", encoding="utf-8")
+        self.search.refresh(self.organized)
+        chunk = self.index.semantic_document_chunks(source)[0]
+        provider = FakeEmbeddingProvider(
+            {
+                chunk: (0.3, 0.953939),
+                "banana cake cooking recipe": (1.0, 0.0),
+            },
+            model="bge-m3",
+        )
+        semantic = ProductSearch(self.index, provider)
+        semantic.refresh_semantic_embeddings()
+
+        contexts = semantic.retrieve_context("banana cake cooking recipe")
+
+        self.assertEqual(contexts, ())
+
     def test_semantic_search_empty_query_does_not_call_provider(self):
         provider = FakeEmbeddingProvider({})
         semantic = ProductSearch(self.index, provider)
