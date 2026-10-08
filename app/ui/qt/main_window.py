@@ -1,3 +1,4 @@
+from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QHBoxLayout,
@@ -18,6 +19,9 @@ from app.ui.qt.pages.recovery import RecoveryPage
 from app.ui.qt.pages.rules import RulesPage
 from app.ui.qt.pages.settings import SettingsPage
 from app.ui.qt.service_bridge import QtServiceBridge
+from app.ui.qt.setup_dialog import SetupDialog
+from app.application_service import StartupStatus
+from app.product_configuration import ConfigurationDataState
 
 
 PLACEHOLDER_COPY = {
@@ -40,6 +44,8 @@ class MainWindow(QMainWindow):
         self.bridge = bridge
         self._allow_close = False
         self._shutdown_requested = False
+        self._setup_dialog = None
+        self._setup_auto_opened = False
         self.setWindowTitle(
             f"{PRODUCT_IDENTITY.product_name} {PRODUCT_IDENTITY.display_version}"
         )
@@ -109,9 +115,44 @@ class MainWindow(QMainWindow):
         self.overview_page.recovery_requested.connect(
             lambda: self.show_page("recovery")
         )
+        self.overview_page.setup_requested.connect(self.open_setup)
+        self.bridge.state_changed.connect(self._offer_setup)
+        configuration_signal = getattr(self.bridge, "configuration_snapshot_changed", None)
+        if configuration_signal is not None:
+            configuration_signal.connect(self._offer_setup)
         self.bridge.closed.connect(self._finish_close)
         self.bridge.command_failed.connect(self._handle_command_failure)
         self.show_page("overview")
+
+    def open_setup(self):
+        if self._shutdown_requested or self._allow_close:
+            return
+        if self._setup_dialog is not None:
+            self._setup_dialog.raise_()
+            self._setup_dialog.activateWindow()
+            return
+        if not hasattr(self.bridge, "configuration_snapshot_changed"):
+            return
+        self._setup_dialog = SetupDialog(self.bridge, self)
+        self._setup_dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self._setup_dialog.finished.connect(self._setup_closed)
+        self._setup_dialog.index_requested.connect(self._open_index)
+        self._setup_dialog.open()
+
+    def _setup_closed(self, _result):
+        self._setup_dialog = None
+
+    def _open_index(self):
+        self.show_page("my_files")
+        self.my_files_page.workspace_tabs.setCurrentIndex(1)
+
+    def _offer_setup(self, *_args):
+        config = getattr(self.bridge, "configuration_snapshot", None)
+        if (not self._setup_auto_opened and not self._shutdown_requested
+                and self.bridge.snapshot.startup_status is StartupStatus.SETUP_REQUIRED
+                and config is not None and config.state is ConfigurationDataState.AVAILABLE):
+            self._setup_auto_opened = True
+            QTimer.singleShot(0, self.open_setup)
 
     def center_on_primary_screen(self) -> None:
         screen = self.screen()

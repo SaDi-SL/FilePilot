@@ -40,6 +40,10 @@ def create_application(
 
 def run_qt(service: FilePilotService | None = None) -> int:
     """Launch the independent Qt development UI."""
+    if service is None:
+        from app.config_loader import ensure_external_config_exists
+
+        ensure_external_config_exists()
     application = create_application()
     bridge = QtServiceBridge(service=service)
     window = MainWindow(bridge)

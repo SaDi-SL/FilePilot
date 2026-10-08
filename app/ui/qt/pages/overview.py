@@ -13,6 +13,7 @@ from app.ui.qt.widgets.state_panel import StatePanel
 class OverviewPage(QWidget):
     view_all_requested = Signal()
     recovery_requested = Signal()
+    setup_requested = Signal()
 
     def __init__(self, bridge: QtServiceBridge, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -59,6 +60,25 @@ class OverviewPage(QWidget):
         self.header_status.setAccessibleName("FilePilot status: Checking status")
         header_layout.addWidget(self.header_status, 0, Qt.AlignmentFlag.AlignTop)
         self.page_layout.addWidget(header)
+
+        setup_card = SectionCard()
+        setup_card.setProperty("cardAccent", "purple")
+        setup_row = QHBoxLayout()
+        setup_copy = QVBoxLayout()
+        setup_title = QLabel("Set up your workspace")
+        setup_title.setProperty("role", "sectionTitle")
+        setup_hint = QLabel("Choose folders, check local AI and review what is ready.")
+        setup_hint.setProperty("role", "secondary")
+        setup_hint.setWordWrap(True)
+        setup_copy.addWidget(setup_title)
+        setup_copy.addWidget(setup_hint)
+        setup_row.addLayout(setup_copy, 1)
+        self.setup_button = QPushButton("Guided setup")
+        self.setup_button.setProperty("variant", "primary")
+        self.setup_button.clicked.connect(self.setup_requested)
+        setup_row.addWidget(self.setup_button)
+        setup_card.content_layout.addLayout(setup_row)
+        self.page_layout.addWidget(setup_card)
 
         self.metrics_widget = QWidget()
         self.metrics_layout = QGridLayout(self.metrics_widget)

@@ -526,6 +526,8 @@ class FoldersPage(QWidget):
         self.feedback_label.style().polish(self.feedback_label)
 
     def resizeEvent(self, event) -> None:
-        margin = SPACING.md if event.size().width() < 760 else SPACING.xl
+        margin = SPACING.sm if self.property("guidedSetup") else (
+            SPACING.md if event.size().width() < 760 else SPACING.xl
+        )
         self.page_layout.setContentsMargins(margin, margin, margin, margin)
         super().resizeEvent(event)
