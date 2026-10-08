@@ -4,15 +4,16 @@ from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QRunnable, QSize, Qt, QThreadPool, Signal, Slot, QUrl
-from PySide6.QtGui import QDesktopServices, QIcon, QTextOption
+from PySide6.QtGui import QDesktopServices, QIcon, QTextOption, QPixmap
 from PySide6.QtWidgets import (
     QComboBox, QHBoxLayout, QLabel, QLineEdit, QListView, QListWidget,
-    QListWidgetItem, QPlainTextEdit, QPushButton, QVBoxLayout, QWidget,
+    QListWidgetItem, QPlainTextEdit, QPushButton, QVBoxLayout, QWidget, QScrollArea,
 )
 
 from app.file_browser import browse_directory, format_size
 from app.ui.qt.icons import folder_art, navigation_icon
 from app.ui.qt.widgets.section_card import SectionCard
+from app.ui.qt.document_preview import render_preview
 
 
 class _Signals(QObject):
@@ -42,6 +43,10 @@ class FileBrowser(QWidget):
         self._generation = self._preview_generation = 0
         self._entries = ()
         self._partial = False
+        self._visual_path = None
+        self._visual_page = 0
+        self._visual_count = 0
+        self._rendered_image = None
         self._pool = QThreadPool.globalInstance()
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 16, 0, 0)
@@ -107,12 +112,43 @@ class FileBrowser(QWidget):
         self.preview.setAccessibleName("Selected text file preview")
         self.preview.setMinimumHeight(120)
         self.preview.hide()
+        self.visual_panel = QWidget()
+        visual_layout = QVBoxLayout(self.visual_panel)
+        visual_layout.setContentsMargins(0, 0, 0, 0)
+        self.visual_status = QLabel()
+        self.visual_status.setWordWrap(True)
+        self.visual_status.setTextFormat(Qt.TextFormat.PlainText)
+        visual_layout.addWidget(self.visual_status)
+        self.visual_zoom = QComboBox()
+        self.visual_zoom.addItems(("Fit width", "100%", "150%"))
+        self.visual_zoom.setAccessibleName("Preview zoom")
+        self.visual_zoom.currentIndexChanged.connect(self._scale_visual)
+        visual_layout.addWidget(self.visual_zoom)
+        self.visual_scroll = QScrollArea()
+        self.visual_scroll.setWidgetResizable(True)
+        self.visual_scroll.setFixedHeight(280)
+        self.visual_image = QLabel()
+        self.visual_image.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.visual_image.setAccessibleName("Selected PDF page or image preview")
+        self.visual_scroll.setWidget(self.visual_image)
+        visual_layout.addWidget(self.visual_scroll)
+        self.visual_previous = QPushButton("Previous")
+        self.visual_next = QPushButton("Next")
+        self.visual_previous.clicked.connect(lambda: self._load_visual(self._visual_page - 1))
+        self.visual_next.clicked.connect(lambda: self._load_visual(self._visual_page + 1))
+        self.visual_navigation = QWidget()
+        nav = QHBoxLayout(self.visual_navigation)
+        nav.setContentsMargins(0, 0, 0, 0)
+        nav.addWidget(self.visual_previous)
+        nav.addWidget(self.visual_next)
+        visual_layout.addWidget(self.visual_navigation)
+        self.visual_panel.hide()
         self.open_button = QPushButton("Open")
         self.open_button.setProperty("variant", "primary")
         self.open_button.clicked.connect(lambda: self._activate(self.items.currentItem()))
         self.open_folder_button = QPushButton("Open containing folder")
         self.open_folder_button.clicked.connect(self._open_parent)
-        for widget in (self.detail_title, self.detail_info, self.preview, self.open_button, self.open_folder_button):
+        for widget in (self.detail_title, self.detail_info, self.preview, self.visual_panel, self.open_button, self.open_folder_button):
             self.details.content_layout.addWidget(widget)
         self.details.content_layout.addStretch(1)
         body.addWidget(self.details)
@@ -217,6 +253,13 @@ class FileBrowser(QWidget):
         self._preview_generation += 1
         self.preview.clear()
         self.preview.hide()
+        self._visual_path = None
+        self._visual_count = 0
+        self._rendered_image = None
+        self.details.setFixedWidth(260)
+        self.visual_image.clear()
+        self.visual_image.setMinimumSize(0, 0)
+        self.visual_panel.hide()
         self.open_button.setEnabled(item is not None)
         self.open_folder_button.setEnabled(item is not None)
         if item is None:
@@ -231,6 +274,11 @@ class FileBrowser(QWidget):
         self.detail_title.setToolTip(entry.path.name)
         date = datetime.fromtimestamp(entry.modified).strftime("%Y-%m-%d %H:%M")
         self.detail_info.setPlainText(f"{entry.path}\n\nModified: {date}\nSize: {format_size(entry.size)}" + (" (direct files; partial)" if entry.partial else " (direct files)" if entry.is_directory else ""))
+        if not entry.is_directory and entry.path.suffix.lower() in {".pdf", ".png", ".jpg", ".jpeg", ".bmp", ".webp", ".gif"}:
+            self._visual_path = entry.path
+            self.details.setFixedWidth(360)
+            self.visual_zoom.setCurrentIndex(0)
+            self._load_visual(0)
         if not entry.is_directory and entry.path.suffix.lower() in {".txt", ".md", ".csv", ".json", ".log", ".py"}:
             path = entry.path
             def read_text():
@@ -247,6 +295,52 @@ class FileBrowser(QWidget):
             return
         self.preview.setPlainText("Could not read the text preview." if error else text + "\n\n[Preview: up to the first 16 KB]")
         self.preview.show()
+
+    def _load_visual(self, page):
+        if self._visual_path is None or page < 0:
+            return
+        if self._visual_count and page >= self._visual_count:
+            return
+        self._preview_generation += 1
+        self.visual_panel.show()
+        self._rendered_image = None
+        self.visual_image.clear()
+        self.visual_image.setMinimumSize(0, 0)
+        self.visual_zoom.setEnabled(False)
+        self.visual_status.setText("Loading preview…")
+        self.visual_previous.setEnabled(False)
+        self.visual_next.setEnabled(False)
+        path = self._visual_path
+        self.visual_navigation.setVisible(path.suffix.lower() == ".pdf")
+        task = _ReadTask(self._preview_generation, lambda: render_preview(path, page))
+        task.signals.finished.connect(self._visual_loaded)
+        self._pool.start(task)
+
+    @Slot(object)
+    def _visual_loaded(self, result):
+        generation, rendered, error = result
+        if generation != self._preview_generation:
+            return
+        self.visual_zoom.setEnabled(True)
+        if error:
+            self.visual_status.setText(error)
+            return
+        image, page, count = rendered
+        self._visual_page, self._visual_count = page, count
+        self._rendered_image = image
+        self._scale_visual()
+        self.visual_status.setText(f"Page {page + 1} of {count} · Scroll to read" if self._visual_path.suffix.lower() == ".pdf" else "Image preview · Scroll to view")
+        self.visual_previous.setEnabled(page > 0)
+        self.visual_next.setEnabled(page + 1 < count)
+
+    def _scale_visual(self, *args):
+        if self._rendered_image is None:
+            return
+        image = self._rendered_image
+        width = self.details.width() - 56 if self.visual_zoom.currentIndex() == 0 else int(image.width() * (1 if self.visual_zoom.currentIndex() == 1 else 1.5))
+        pixmap = QPixmap.fromImage(image).scaledToWidth(width, Qt.TransformationMode.SmoothTransformation)
+        self.visual_image.setPixmap(pixmap)
+        self.visual_image.setMinimumSize(pixmap.size())
 
     def _activate(self, item):
         if item is None:

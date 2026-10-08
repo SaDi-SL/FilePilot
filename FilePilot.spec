@@ -31,7 +31,6 @@ a = Analysis(
         "PySide6.QtLocation",
         "PySide6.QtMultimedia",
         "PySide6.QtNetworkAuth",
-        "PySide6.QtPdf",
         "PySide6.QtPositioning",
         "PySide6.QtQml",
         "PySide6.QtQuick",
@@ -60,6 +59,9 @@ def keep_qt_binary(entry):
     return plugin_path in {
         "platforms/qwindows.dll",
         "imageformats/qico.dll",
+        "imageformats/qjpeg.dll",
+        "imageformats/qwebp.dll",
+        "imageformats/qgif.dll",
     }
 
 

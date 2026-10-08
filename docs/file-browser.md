@@ -7,6 +7,8 @@ Open **My Files → Browse files**. The browser reads the organized destination 
 - Filter names in the current folder and sort by name, modification time, or size. Folders stay before files.
 - Select an item for its full path, size, and modification time. **Open** opens files in the default application; **Open containing folder** opens their parent folder.
 - Plain text formats (TXT, MD, CSV, JSON, LOG, PY) show up to the first 16 KB, decoded as UTF-8. Other formats open externally.
+- PDF files show a page preview with **Previous**, **Next**, and zoom controls. PNG, JPEG, BMP, WebP, and GIF show a static image preview (the first frame for animated images). **Fit width** fits the side panel; zoom in and scroll to read details.
+- Visual previews run in background tasks and are limited to 50 MB per file; images are limited to 40 million source pixels. Password-protected, damaged, or unsupported files show an error while **Open** remains available.
 - **Refresh** rereads the current directory after files change.
 
 Folder counts include direct files and direct subfolders; folder sizes include only direct files. Nested files are excluded. Partial folder counts are labeled “At least.” Directory enumeration and text preview run in background tasks, and stale results are ignored.
