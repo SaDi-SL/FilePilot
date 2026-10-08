@@ -352,6 +352,13 @@ def build_stylesheet() -> str:
             border: 1px solid {c.border_strong};
             selection-background-color: {c.surface_hover};
         }}
+        QLabel[footerMessage="true"] {{
+            border: none; background: transparent; padding: 2px 0;
+        }}
+        QWidget#EditorFooter {{
+            background-color: {c.sidebar};
+            border-top: 1px solid {c.border};
+        }}
         QDialog {{
             background-color: {c.background};
         }}

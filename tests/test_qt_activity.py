@@ -136,11 +136,29 @@ class QtActivityTests(unittest.TestCase):
         self.assertEqual(table.topLevelItemCount(), 6)
         self.assertEqual(table.topLevelItem(0).text(table.FILE_COLUMN), "0.txt")
 
+    def test_search_combines_with_result_filter_and_clears_selection(self):
+        bridge = ActivityBridgeStub(available_snapshot(
+            activity_record("a", filename="Invoice.pdf"),
+            activity_record("b", filename="Photo.png", status=ActivityStatus.DUPLICATE),
+        ))
+        page = ActivityPage(bridge)
+        page.table.setCurrentItem(page.table.topLevelItem(0))
+        page.search_input.setText("PHOTO")
+        self.assertEqual(page.table.topLevelItemCount(), 1)
+        self.assertEqual(page.table.topLevelItem(0).text(1), "Photo.png")
+        self.assertFalse(page.details_button.isEnabled())
+        page.filter_combo.setCurrentIndex(1)  # Completed
+        self.assertTrue(page.table.isHidden())
+        self.assertIn("No operations match", page.state_label.text())
+        page.search_input.clear()
+        self.assertEqual(page.table.topLevelItemCount(), 1)
+        self.assertEqual(page.table.topLevelItem(0).text(1), "Invoice.pdf")
+
     def test_empty_and_error_states_are_useful(self):
         empty_bridge = ActivityBridgeStub(available_snapshot())
         empty_page = ActivityPage(empty_bridge)
         self.assertFalse(empty_page.state_label.isHidden())
-        self.assertIn("No durable", empty_page.state_label.text())
+        self.assertIn("No activity yet", empty_page.state_label.text())
 
         empty_bridge.publish(ProductSnapshot.unavailable("Journal unavailable"))
         self.assertIn("Journal unavailable", empty_page.state_label.text())

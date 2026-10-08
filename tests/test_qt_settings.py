@@ -355,6 +355,26 @@ class QtSettingsTests(unittest.TestCase):
         self.assertNotIn("latest version", visible_text)
         self.assertNotIn("connected", visible_text)
 
+    def test_section_switch_preserves_edits_and_save_controls_stay_visible(self):
+        page = SettingsPage(SettingsBridgeStub(available_snapshot()))
+        page.resize(650, 500)
+        page.show()
+        page.processing_wait.setValue(7.5)
+        page.settings_tabs.setCurrentIndex(1)
+        page.ollama_model.setText("gemma4:e4b-it-qat")
+        page.settings_tabs.setCurrentIndex(2)
+        self.app.processEvents()
+        page.scroll_area.verticalScrollBar().setValue(
+            page.scroll_area.verticalScrollBar().maximum()
+        )
+        self.app.processEvents()
+        self.assertTrue(page.save_button.isVisible())
+        self.assertTrue(page.rect().contains(page.save_button.mapTo(page, page.save_button.rect().bottomRight())))
+        self.assertEqual(page._candidate().processing_wait_seconds, 7.5)
+        self.assertEqual(page._candidate().ollama_model, "gemma4:e4b-it-qat")
+        self.assertIn("7.5", page.processing_wait.text())
+        self.assertNotIn("7.500000", page.processing_wait.text())
+
     def test_compact_workspace_has_no_horizontal_scroll_and_visible_focus(self):
         page = SettingsPage(SettingsBridgeStub(available_snapshot()))
         page.resize(650, 500)

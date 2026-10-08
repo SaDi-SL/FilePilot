@@ -97,6 +97,7 @@ class ActivityTable(QTreeWidget):
                 Qt.ItemDataRole.UserRole + 1,
                 record,
             )
+            item.setToolTip(self.TIME_COLUMN, timestamp)
             item.setToolTip(self.FILE_COLUMN, str(record.source_path))
             item.setToolTip(self.CATEGORY_COLUMN, record.category or "Category unavailable")
             item.setToolTip(self.RESULT_COLUMN, self._result_tooltip(record))
@@ -131,8 +132,8 @@ class ActivityTable(QTreeWidget):
         width = max(0, self.viewport().width())
         hide_category = width < 760
         self.setColumnHidden(self.CATEGORY_COLUMN, hide_category)
-        time_width = 112 if width >= 760 else 94
-        result_width = 126 if width >= 760 else 112
+        time_width = 112
+        result_width = 144 if width >= 760 else 132
         category_width = 128 if not hide_category else 0
         remaining = max(240, width - time_width - result_width - category_width - 8)
         file_width = max(110, int(remaining * 0.38))

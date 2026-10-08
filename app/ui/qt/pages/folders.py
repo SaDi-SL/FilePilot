@@ -31,6 +31,7 @@ from app.application_service import (
 from app.ui.qt.service_bridge import QtServiceBridge, ServiceSnapshot
 from app.ui.qt.theme.tokens import SPACING
 from app.ui.qt.widgets.section_card import SectionCard
+from app.ui.qt.widgets.editor_footer import install_editor_footer
 
 
 class FoldersPage(QWidget):
@@ -82,8 +83,7 @@ class FoldersPage(QWidget):
         title = QLabel("Folders")
         title.setProperty("role", "pageTitle")
         description = QLabel(
-            "Choose which folders FilePilot watches and where organized files go. "
-            "Paths are checked together to prevent recursive or overlapping routes."
+            "Choose where new files arrive and where FilePilot organizes them."
         )
         description.setProperty("role", "secondary")
         description.setWordWrap(True)
@@ -92,7 +92,8 @@ class FoldersPage(QWidget):
         self.page_layout.addWidget(description)
 
         watch_card = SectionCard(elevated=True)
-        watch_header = QVBoxLayout()
+        watch_card.setProperty("cardAccent", "warm")
+        watch_header = QHBoxLayout()
         watch_header.setSpacing(SPACING.sm)
         watch_heading = QLabel("Watch folders")
         watch_heading.setProperty("role", "sectionTitle")
@@ -100,6 +101,7 @@ class FoldersPage(QWidget):
         watch_actions = QHBoxLayout()
         watch_actions.addStretch(1)
         self.add_button = QPushButton("Add folder")
+        self.add_button.setProperty("variant", "primary")
         self.add_button.setAccessibleName("Add a watch folder")
         self.add_button.clicked.connect(self._browse_watch_folder)
         watch_actions.addWidget(self.add_button)
@@ -111,8 +113,7 @@ class FoldersPage(QWidget):
         watch_card.content_layout.addLayout(watch_header)
 
         watch_hint = QLabel(
-            "Uncheck a row to keep its path without actively watching it. At least "
-            "one enabled, existing folder is required."
+            "Checked folders are monitored. Double-click a path to edit it."
         )
         watch_hint.setProperty("role", "secondary")
         watch_hint.setWordWrap(True)
@@ -129,7 +130,10 @@ class FoldersPage(QWidget):
         )
         self.watch_tree.header().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.watch_tree.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.watch_tree.setMinimumHeight(190)
+        self.watch_tree.setRootIsDecorated(False)
+        self.watch_tree.setUniformRowHeights(True)
+        self.watch_tree.setMinimumHeight(150)
+        self.watch_tree.setMaximumHeight(230)
         self.watch_tree.itemChanged.connect(self._watch_item_changed)
         watch_card.content_layout.addWidget(self.watch_tree)
         self.page_layout.addWidget(watch_card)
@@ -138,8 +142,7 @@ class FoldersPage(QWidget):
         destination_heading = QLabel("Organized destination")
         destination_heading.setProperty("role", "sectionTitle")
         destination_copy = QLabel(
-            "Category folders are created beneath this existing base directory at "
-            "runtime. FilePilot will not accept a watch folder inside this path."
+            "Organized files go into category folders here. Choose a location outside your watch folders."
         )
         destination_copy.setProperty("role", "secondary")
         destination_copy.setWordWrap(True)
@@ -153,7 +156,7 @@ class FoldersPage(QWidget):
         self.destination_button.setAccessibleName("Browse for organized base folder")
         self.destination_button.clicked.connect(self._browse_destination)
         destination_row.addWidget(self.destination_button)
-        self.archive_checkbox = QCheckBox("Archive into monthly YYYY-MM folders")
+        self.archive_checkbox = QCheckBox("Group files by month (for example, 2026-10)")
         self.archive_checkbox.setAccessibleName("Archive organized files by month")
         self.archive_checkbox.stateChanged.connect(self._editor_changed)
         destination_card.content_layout.addWidget(destination_heading)
@@ -170,7 +173,6 @@ class FoldersPage(QWidget):
         self.feedback_label.setProperty("badgeTone", "info")
         self.feedback_label.setWordWrap(True)
         self.feedback_label.setAccessibleName("Folders validation status")
-        self.page_layout.addWidget(self.feedback_label)
 
         actions = QHBoxLayout()
         self.unsaved_label = QLabel("All changes saved")
@@ -189,7 +191,9 @@ class FoldersPage(QWidget):
         self.save_button.setProperty("variant", "primary")
         self.save_button.clicked.connect(self._save)
         actions.addWidget(self.save_button)
-        self.page_layout.addLayout(actions)
+        self.footer = install_editor_footer(root, self.feedback_label, actions)
+        self.revision_label.hide()
+        self.revision_label.setToolTip("Configuration revision for diagnostics")
         self.page_layout.addStretch(1)
 
         self._validation_timer = QTimer(self)

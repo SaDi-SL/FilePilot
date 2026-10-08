@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSplitter,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -29,6 +30,7 @@ from app.application_service import (
 from app.ui.qt.service_bridge import QtServiceBridge, ServiceSnapshot
 from app.ui.qt.theme.tokens import SPACING
 from app.ui.qt.widgets.section_card import SectionCard
+from app.ui.qt.widgets.editor_footer import install_editor_footer
 
 
 class RulesPage(QWidget):
@@ -80,8 +82,7 @@ class RulesPage(QWidget):
         title = QLabel("Rules")
         title.setProperty("role", "pageTitle")
         description = QLabel(
-            "Map file extensions to destination categories. Changes are checked "
-            "against the complete configuration before FilePilot saves them."
+            "Choose a category for each file type. Test your rules before saving."
         )
         description.setProperty("role", "secondary")
         description.setWordWrap(True)
@@ -90,7 +91,8 @@ class RulesPage(QWidget):
         self.page_layout.addWidget(description)
 
         editor_card = SectionCard(elevated=True)
-        header = QVBoxLayout()
+        editor_card.setProperty("cardAccent", "purple")
+        header = QHBoxLayout()
         header.setSpacing(SPACING.sm)
         heading = QLabel("Classification map")
         heading.setProperty("role", "sectionTitle")
@@ -98,6 +100,7 @@ class RulesPage(QWidget):
         editor_actions = QHBoxLayout()
         editor_actions.addStretch(1)
         self.add_button = QPushButton("Add category")
+        self.add_button.setProperty("variant", "primary")
         self.add_button.setAccessibleName("Add a classification category")
         self.add_button.clicked.connect(self._add_rule)
         editor_actions.addWidget(self.add_button)
@@ -109,9 +112,7 @@ class RulesPage(QWidget):
         editor_card.content_layout.addLayout(header)
 
         hint = QLabel(
-            "Enter extensions separated by commas, for example: .pdf, PDF, *.docx. "
-            "FilePilot normalizes them to lowercase dot-prefixed values. Unmatched "
-            "files always use the Others fallback."
+            "Select a category to edit its file types. Unmatched files go to Others."
         )
         hint.setProperty("role", "secondary")
         hint.setWordWrap(True)
@@ -128,50 +129,57 @@ class RulesPage(QWidget):
         )
         self.rule_tree.header().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.rule_tree.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.rule_tree.setMinimumHeight(150)
-        self.rule_tree.setMaximumHeight(170)
+        self.rule_tree.setMinimumHeight(200)
+        self.rule_tree.setRootIsDecorated(False)
+        self.rule_tree.setUniformRowHeights(True)
         self.rule_tree.itemChanged.connect(self._editor_changed)
         self.rule_tree.currentItemChanged.connect(self._load_selected_rule)
-        editor_card.content_layout.addWidget(self.rule_tree)
+        self.editor_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.editor_splitter.setChildrenCollapsible(False)
+        self.editor_splitter.setMaximumHeight(240)
+        self.editor_splitter.addWidget(self.rule_tree)
+        detail_panel = QWidget()
+        detail_layout = QVBoxLayout(detail_panel)
+        detail_layout.setContentsMargins(SPACING.md, 0, 0, 0)
+        self.editor_splitter.addWidget(detail_panel)
+        self.editor_splitter.setStretchFactor(0, 3)
+        self.editor_splitter.setStretchFactor(1, 2)
+        editor_card.content_layout.addWidget(self.editor_splitter)
 
         detail_heading = QLabel("Selected category")
         detail_heading.setProperty("role", "sectionTitle")
-        editor_card.content_layout.addWidget(detail_heading)
+        detail_layout.addWidget(detail_heading)
         self.category_input = QLineEdit()
         self.category_input.setAccessibleName("Selected category name")
         self.category_input.setPlaceholderText("Category name")
         self.category_input.textChanged.connect(self._category_changed)
-        editor_card.content_layout.addWidget(self.category_input)
+        detail_layout.addWidget(self.category_input)
 
         self.extension_list = QListWidget()
         self.extension_list.setAccessibleName("Extensions in selected category")
-        self.extension_list.setMinimumHeight(70)
-        self.extension_list.setMaximumHeight(80)
-        editor_card.content_layout.addWidget(self.extension_list)
-        extension_actions = QHBoxLayout()
+        self.extension_list.setMinimumHeight(80)
+        self.extension_list.setMaximumHeight(110)
+        detail_layout.addWidget(self.extension_list)
+        extension_actions = QVBoxLayout()
         self.extension_input = QLineEdit()
         self.extension_input.setAccessibleName("Extension to add")
         self.extension_input.setPlaceholderText(".pdf, PDF, or *.pdf")
         self.extension_input.returnPressed.connect(self._add_extension)
-        extension_actions.addWidget(self.extension_input, 1)
+        extension_actions.addWidget(self.extension_input)
         self.add_extension_button = QPushButton("Add extension")
         self.add_extension_button.clicked.connect(self._add_extension)
-        extension_actions.addWidget(self.add_extension_button)
+        extension_button_row = QHBoxLayout()
+        extension_button_row.addWidget(self.add_extension_button)
         self.remove_extension_button = QPushButton("Remove extension")
         self.remove_extension_button.clicked.connect(self._remove_extension)
-        extension_actions.addWidget(self.remove_extension_button)
-        editor_card.content_layout.addLayout(extension_actions)
+        extension_button_row.addWidget(self.remove_extension_button)
+        extension_actions.addLayout(extension_button_row)
+        detail_layout.addLayout(extension_actions)
         self.page_layout.addWidget(editor_card)
 
         preview_card = SectionCard()
-        preview_heading = QLabel("Try an unsaved rule")
+        preview_heading = QLabel("Test a filename")
         preview_heading.setProperty("role", "sectionTitle")
-        preview_copy = QLabel(
-            "Check the extension-rule outcome for a filename. No file is moved and "
-            "the current configuration is not changed."
-        )
-        preview_copy.setProperty("role", "secondary")
-        preview_copy.setWordWrap(True)
         preview_row = QHBoxLayout()
         self.preview_input = QLineEdit()
         self.preview_input.setPlaceholderText("quarterly-report.PDF")
@@ -185,7 +193,7 @@ class RulesPage(QWidget):
         self.preview_result.setProperty("role", "secondary")
         self.preview_result.setWordWrap(True)
         preview_card.content_layout.addWidget(preview_heading)
-        preview_card.content_layout.addWidget(preview_copy)
+        preview_heading.setToolTip("Test a filename without moving any files or saving changes.")
         preview_card.content_layout.addLayout(preview_row)
         preview_card.content_layout.addWidget(self.preview_result)
         self.page_layout.addWidget(preview_card)
@@ -194,7 +202,6 @@ class RulesPage(QWidget):
         self.feedback_label.setProperty("badgeTone", "info")
         self.feedback_label.setWordWrap(True)
         self.feedback_label.setAccessibleName("Rules validation status")
-        self.page_layout.addWidget(self.feedback_label)
 
         actions = QHBoxLayout()
         self.unsaved_label = QLabel("All changes saved")
@@ -213,7 +220,9 @@ class RulesPage(QWidget):
         self.save_button.setProperty("variant", "primary")
         self.save_button.clicked.connect(self._save)
         actions.addWidget(self.save_button)
-        self.page_layout.addLayout(actions)
+        self.footer = install_editor_footer(root, self.feedback_label, actions)
+        self.revision_label.hide()
+        self.revision_label.setToolTip("Configuration revision for diagnostics")
         self.page_layout.addStretch(1)
 
         self._validation_timer = QTimer(self)
@@ -581,4 +590,8 @@ class RulesPage(QWidget):
     def resizeEvent(self, event) -> None:
         margin = SPACING.md if event.size().width() < 760 else SPACING.xl
         self.page_layout.setContentsMargins(margin, margin, margin, margin)
+        self.editor_splitter.setMaximumHeight(16777215 if event.size().width() < 840 else 240)
+        self.editor_splitter.setOrientation(
+            Qt.Orientation.Vertical if event.size().width() < 840 else Qt.Orientation.Horizontal
+        )
         super().resizeEvent(event)

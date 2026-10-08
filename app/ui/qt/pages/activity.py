@@ -3,6 +3,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -52,8 +53,7 @@ class ActivityPage(QWidget):
         title = QLabel("Activity")
         title.setProperty("role", "pageTitle")
         description = QLabel(
-            "Durable journal history with clearly marked live operations while "
-            "confirmation refreshes."
+            "Track organized files, duplicates and files that need your attention."
         )
         description.setProperty("role", "secondary")
         description.setWordWrap(True)
@@ -65,12 +65,21 @@ class ActivityPage(QWidget):
         toolbar.setSpacing(SPACING.sm)
         self.summary_label = QLabel("Loading activity")
         self.summary_label.setProperty("role", "secondary")
-        toolbar.addWidget(self.summary_label)
-        toolbar.addStretch(1)
+        self.summary_label.setWordWrap(True)
+        summary_row = QHBoxLayout()
+        summary_row.addWidget(self.summary_label, 1)
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("Search files or categories")
+        self.search_input.setAccessibleName("Search loaded activity")
+        self.search_input.setClearButtonEnabled(True)
+        self.search_input.setMinimumWidth(140)
+        self.search_input.textChanged.connect(self._apply_filter)
+        toolbar.addWidget(self.search_input, 1)
         self.preview_button = QPushButton("Preview a file")
         self.preview_button.setAccessibleName("Preview a file before moving it")
         self.preview_button.clicked.connect(self._open_preview)
-        toolbar.addWidget(self.preview_button)
+        summary_row.addWidget(self.preview_button)
+        layout.addLayout(summary_row)
         self.filter_combo = QComboBox()
         self.filter_combo.setAccessibleName("Filter activity by result")
         for label, status in self.FILTERS:
@@ -101,6 +110,10 @@ class ActivityPage(QWidget):
         layout.addWidget(self.table, 1)
 
         actions = QHBoxLayout()
+        selection_hint = QLabel("Select an operation to view details. Double-click to open it.")
+        selection_hint.setProperty("role", "caption")
+        selection_hint.setWordWrap(True)
+        actions.addWidget(selection_hint, 1)
         actions.addStretch(1)
         self.details_button = QPushButton("View operation details")
         self.details_button.setProperty("variant", "primary")
@@ -135,10 +148,12 @@ class ActivityPage(QWidget):
     def _apply_filter(self, _index: int | None = None) -> None:
         snapshot = self._snapshot
         selected = self.filter_combo.currentData()
+        query = self.search_input.text().strip().casefold()
         records = tuple(
             record
             for record in snapshot.activity
-            if selected is None or record.status.value == selected
+            if (selected is None or record.status.value == selected)
+            and (not query or query in f"{record.filename} {record.category or ''} {record.display_destination or ''}".casefold())
         )
         if records:
             self.state_label.hide()
@@ -154,7 +169,7 @@ class ActivityPage(QWidget):
                 self.summary_label.setText(
                     f"Showing {len(records)} live operations; {qualifier}"
                 )
-            elif snapshot.has_more and selected is not None:
+            elif snapshot.has_more and (selected is not None or query):
                 self.summary_label.setText(
                     f"Showing {len(records)} matches in the latest "
                     f"{len(snapshot.activity)}+ operations"
@@ -176,15 +191,15 @@ class ActivityPage(QWidget):
             self.summary_label.setText("Activity unavailable")
             return
         if not records:
-            if selected is None:
-                message = "No durable FilePilot operations have been recorded yet."
+            if selected is None and not query:
+                message = "No activity yet. Organized files will appear here."
             elif snapshot.has_more:
                 message = (
                     "No matching operations are present in the latest "
                     f"{len(snapshot.activity)} records. Older activity was not searched."
                 )
             else:
-                message = "No operations match this result filter."
+                message = "No operations match your search or filter."
             self._show_state(message)
             self.summary_label.setText(
                 "0 shown (bounded history)" if snapshot.has_more else "0 operations"

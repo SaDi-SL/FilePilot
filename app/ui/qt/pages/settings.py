@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QScrollArea,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -22,6 +23,14 @@ from app.product_settings import ProductSettingsCandidate, ProductSettingsSnapsh
 from app.ui.qt.service_bridge import QtServiceBridge, ServiceSnapshot
 from app.ui.qt.theme.tokens import SPACING
 from app.ui.qt.widgets.section_card import SectionCard
+from app.ui.qt.widgets.editor_footer import install_editor_footer
+
+
+class SecondsControl(QDoubleSpinBox):
+    def textFromValue(self, value: float) -> str:
+        text = super().textFromValue(value)
+        decimal = self.locale().decimalPoint()
+        return text.rstrip("0").rstrip(decimal) if decimal in text else text
 
 
 class SettingsPage(QWidget):
@@ -74,8 +83,7 @@ class SettingsPage(QWidget):
         title = QLabel("Settings")
         title.setProperty("role", "pageTitle")
         description = QLabel(
-            "Configure supported runtime behavior. FilePilot validates the complete "
-            "configuration, saves atomically, and never stops or restarts monitoring for you."
+            "Make FilePilot work your way. Choose processing preferences and your AI provider."
         )
         description.setProperty("role", "secondary")
         description.setWordWrap(True)
@@ -83,12 +91,24 @@ class SettingsPage(QWidget):
         self.page_layout.addWidget(title)
         self.page_layout.addWidget(description)
 
+        self.settings_tabs = QTabWidget()
+        self.settings_tabs.setAccessibleName("Settings sections")
+        self.page_layout.addWidget(self.settings_tabs)
+        tab_layouts = []
+        for caption in ("General", "AI classification", "About && privacy"):
+            panel = QWidget()
+            panel_layout = QVBoxLayout(panel)
+            panel_layout.setContentsMargins(0, SPACING.md, 0, 0)
+            panel_layout.setSpacing(SPACING.md)
+            self.settings_tabs.addTab(panel, caption)
+            tab_layouts.append(panel_layout)
+
         general_card = SectionCard(elevated=True)
+        general_card.setProperty("cardAccent", "purple")
         general_heading = QLabel("General processing")
         general_heading.setProperty("role", "sectionTitle")
         general_copy = QLabel(
-            "These values are used when the monitor runtime is rebuilt. Stop monitoring "
-            "before saving; it remains stopped afterward."
+            "Choose how long to wait for new files and repeated events. Stop monitoring before saving."
         )
         general_copy.setProperty("role", "secondary")
         general_copy.setWordWrap(True)
@@ -107,14 +127,13 @@ class SettingsPage(QWidget):
         self.duplicate_window.setAccessibleName("Duplicate event window seconds")
         general_form.addRow("Duplicate event window", self.duplicate_window)
         general_card.content_layout.addLayout(general_form)
-        self.page_layout.addWidget(general_card)
+        tab_layouts[0].addWidget(general_card)
 
         ai_card = SectionCard()
         ai_heading = QLabel("AI classification")
         ai_heading.setProperty("role", "sectionTitle")
         ai_copy = QLabel(
-            "Controls automatic classification only. Opening Settings never contacts a "
-            "provider and does not run inference."
+            "Use AI to classify files automatically. Local answers in Ask your files are configured separately."
         )
         ai_copy.setProperty("role", "secondary")
         ai_copy.setWordWrap(True)
@@ -132,11 +151,11 @@ class SettingsPage(QWidget):
         ai_form.addRow("Provider", self.ai_provider)
         self.ollama_model = QLineEdit()
         self.ollama_model.setAccessibleName("Ollama model name")
-        self.ollama_model.setPlaceholderText("Example: mistral")
+        self.ollama_model.setPlaceholderText("Example: gemma4:e4b-it-qat")
         self.ollama_model.setMaxLength(200)
         ai_form.addRow("Ollama model", self.ollama_model)
         self.credential_status = QLabel("Credential status unavailable")
-        self.credential_status.setProperty("role", "secondary")
+        self.credential_status.setProperty("role", "caption")
         self.credential_status.setWordWrap(True)
         ai_form.addRow("Claude credential", self.credential_status)
         ai_card.content_layout.addLayout(ai_form)
@@ -145,7 +164,7 @@ class SettingsPage(QWidget):
         self.ai_status.setWordWrap(True)
         self.ai_status.setAccessibleName("AI configuration status")
         ai_card.content_layout.addWidget(self.ai_status)
-        self.page_layout.addWidget(ai_card)
+        tab_layouts[1].addWidget(ai_card)
 
         startup_card = SectionCard()
         startup_heading = QLabel("Startup")
@@ -155,7 +174,7 @@ class SettingsPage(QWidget):
         self.startup_summary.setWordWrap(True)
         startup_card.content_layout.addWidget(startup_heading)
         startup_card.content_layout.addWidget(self.startup_summary)
-        self.page_layout.addWidget(startup_card)
+        tab_layouts[0].addWidget(startup_card)
 
         privacy_card = SectionCard()
         privacy_heading = QLabel("Privacy & data")
@@ -169,7 +188,7 @@ class SettingsPage(QWidget):
         privacy_card.content_layout.addWidget(privacy_heading)
         privacy_card.content_layout.addWidget(self.privacy_summary)
         privacy_card.content_layout.addWidget(self.cloud_summary)
-        self.page_layout.addWidget(privacy_card)
+        tab_layouts[2].addWidget(privacy_card)
 
         about_card = SectionCard()
         about_heading = QLabel("About")
@@ -187,13 +206,12 @@ class SettingsPage(QWidget):
         about_card.content_layout.addWidget(self.product_name_label)
         about_card.content_layout.addWidget(self.version_label)
         about_card.content_layout.addWidget(self.build_label)
-        self.page_layout.addWidget(about_card)
+        tab_layouts[2].addWidget(about_card)
 
         self.feedback_label = QLabel("Loading authoritative Settings...")
         self.feedback_label.setProperty("badgeTone", "info")
         self.feedback_label.setWordWrap(True)
         self.feedback_label.setAccessibleName("Settings validation status")
-        self.page_layout.addWidget(self.feedback_label)
 
         actions = QHBoxLayout()
         self.unsaved_label = QLabel("All changes saved")
@@ -213,7 +231,11 @@ class SettingsPage(QWidget):
         self.save_button.setAccessibleName("Save Settings")
         self.save_button.clicked.connect(self._save)
         actions.addWidget(self.save_button)
-        self.page_layout.addLayout(actions)
+        self.footer = install_editor_footer(root, self.feedback_label, actions)
+        self.revision_label.hide()
+        self.revision_label.setToolTip("Configuration revision for diagnostics")
+        for tab_layout in tab_layouts:
+            tab_layout.addStretch(1)
         self.page_layout.addStretch(1)
 
         self._validation_timer = QTimer(self)
@@ -243,7 +265,8 @@ class SettingsPage(QWidget):
 
     @staticmethod
     def _seconds_control(tooltip: str) -> QDoubleSpinBox:
-        control = QDoubleSpinBox()
+        control = SecondsControl()
+        control.setButtonSymbols(QDoubleSpinBox.ButtonSymbols.PlusMinus)
         control.setRange(0, 3600)
         control.setDecimals(6)
         control.setSingleStep(0.5)
@@ -323,7 +346,10 @@ class SettingsPage(QWidget):
         self.ai_status.style().unpolish(self.ai_status)
         self.ai_status.style().polish(self.ai_status)
         if snapshot.startup is not None:
-            self.startup_summary.setText(snapshot.startup.summary)
+            self.startup_summary.setText(
+                "On a normal launch, start monitoring from Overview when you are ready."
+            )
+            self.startup_summary.setToolTip(snapshot.startup.summary)
         if snapshot.privacy is not None:
             self.privacy_summary.setText(snapshot.privacy.summary)
             self.cloud_summary.setText(snapshot.privacy.cloud_summary)
