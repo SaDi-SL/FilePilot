@@ -2,6 +2,8 @@
 
 Open **Overview → Guided setup** at any time. On a standard Qt launch, a missing configuration is seeded through the existing exclusive-create default-config helper; existing configuration is preserved. A setup-required workspace with a readable configuration opens the guide once per session.
 
+The guide fits its initial size to the available screen in Qt logical pixels, including Windows display scaling. Resize it using the bottom-corner grip or window edges. Step content scrolls while Continue, Back and Finish stay outside the scrolling area.
+
 ## 1. Choose folders
 
 Use **Add folder** to select existing incoming folders, then **Browse** for the organized destination. Review monthly grouping and click **Save folders** after changing anything. The guide uses the same complete configuration validation and revision checks as Folders. Saving a valid first-run candidate marks folder setup complete and builds the runtime while leaving monitoring stopped.
@@ -24,4 +26,4 @@ Closing setup asks before discarding unsaved edits and waits for an active save.
 
 ## Validation
 
-Qt guide checks cover unsaved/invalid configuration gates, optional AI, a worker-thread inventory request, stale-result rejection, model selection, save-in-progress closing, compact dialog controls, once-per-session opening and the indexing link. Existing configuration-service tests cover first-run save without monitoring. Layout was reviewed at 980 × 760 and 680 × 540. Windows display scaling and live Ollama should be verified on the target computer.
+Qt guide checks cover unsaved/invalid configuration gates, optional AI, a worker-thread inventory request, stale-result rejection, model selection, save-in-progress closing, compact dialog controls, once-per-session opening and the indexing link. Existing configuration-service tests cover first-run save without monitoring. Layout was reviewed at 980 × 760 and 680 × 540. Short-screen regression checks also cover 1024 × 640 and 800 × 480 logical work areas with navigation buttons inside the dialog. Windows display scaling and live Ollama should be verified on the target computer.

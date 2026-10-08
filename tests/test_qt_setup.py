@@ -199,3 +199,26 @@ class SetupTests(unittest.TestCase):
         self.assertIsNone(window._setup_dialog)
         window.close()
         window.deleteLater()
+
+    def test_screen_fit_keeps_step_actions_visible_on_short_scaled_displays(self):
+        from PySide6.QtCore import QRect
+        self.dialog.show()
+        self.app.processEvents()
+        for available in (QRect(0, 0, 1024, 640), QRect(100, 40, 800, 480)):
+            self.dialog.fit_to_available_screen(available)
+            self.app.processEvents()
+            for step in range(3):
+                self.dialog.stack.setCurrentIndex(step)
+                self.dialog._refresh()
+                self.app.processEvents()
+                self.assertLessEqual(self.dialog.height(), available.height() - 72)
+                self.assertLessEqual(self.dialog.width(), available.width() - 48)
+                for button in (self.dialog.next_button, self.dialog.later_button):
+                    bottom = button.mapTo(self.dialog, button.rect().bottomRight())
+                    self.assertTrue(self.dialog.rect().contains(bottom))
+                    self.assertTrue(button.isVisible())
+                self.dialog.content_scroll.verticalScrollBar().setValue(
+                    self.dialog.content_scroll.verticalScrollBar().maximum())
+                self.app.processEvents()
+                self.assertTrue(self.dialog.next_button.isVisible())
+        self.assertTrue(self.dialog.isSizeGripEnabled())

@@ -1,6 +1,6 @@
-from PySide6.QtCore import QObject, QRunnable, QThreadPool, Qt, Signal, Slot
+from PySide6.QtCore import QObject, QRunnable, QThreadPool, Qt, Signal, Slot, QRect
 from PySide6.QtWidgets import (QComboBox, QDialog, QHBoxLayout, QLabel, QMessageBox,
-                              QPushButton, QStackedWidget, QVBoxLayout, QWidget, QPlainTextEdit)
+                              QPushButton, QStackedWidget, QVBoxLayout, QWidget, QPlainTextEdit, QScrollArea, QBoxLayout)
 
 from app.application_service import StartupStatus
 from app.local_ai_readiness import check_local_ai
@@ -40,8 +40,11 @@ class SetupDialog(QDialog):
         self.setWindowTitle("Set up FilePilot")
         self.setAccessibleName("FilePilot guided setup")
         self.setModal(True)
-        self.resize(980, 760)
-        self.setMinimumSize(680, 540)
+        self._initial_geometry_set = False
+        self.resize(900, 660)
+        self.setMinimumSize(600, 360)
+        self.setSizeGripEnabled(True)
+        self.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, True)
         root = QVBoxLayout(self)
         root.setContentsMargins(SPACING.md, SPACING.md, SPACING.md, SPACING.md)
         self.heading = QLabel("Make FilePilot yours")
@@ -51,7 +54,12 @@ class SetupDialog(QDialog):
         root.addWidget(self.heading)
         root.addWidget(self.progress)
         self.stack = QStackedWidget()
-        root.addWidget(self.stack, 1)
+        self.content_scroll = QScrollArea()
+        self.content_scroll.setWidgetResizable(True)
+        self.content_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.content_scroll.setMinimumSize(0, 0)
+        self.content_scroll.setWidget(self.stack)
+        root.addWidget(self.content_scroll, 1)
         self.folders = FoldersPage(bridge)
         self.folders.CONTEXT = "setup-folders"
         self._compact_editor(self.folders)
@@ -73,6 +81,7 @@ class SetupDialog(QDialog):
         self.check_button.setProperty("variant", "primary")
         self.check_button.clicked.connect(self._check_ai)
         inventory_row = QHBoxLayout()
+        self.inventory_row = inventory_row
         self.models = QComboBox()
         self.models.setAccessibleName("Installed Ollama models")
         self.models.setMinimumWidth(150)
@@ -150,6 +159,31 @@ class SetupDialog(QDialog):
         self.folders.destination_input.textChanged.connect(self._refresh)
         self.folders.watch_tree.itemChanged.connect(self._refresh)
         self._refresh()
+
+    def fit_to_available_screen(self, available: QRect):
+        # Qt screen geometry is in logical pixels, including Windows display scaling.
+        width = min(900, max(1, available.width() - 48))
+        height = min(660, max(1, available.height() - 72))
+        self.setMinimumSize(min(600, width), min(360, height))
+        self.resize(width, height)
+        self.move(available.x() + (available.width() - self.width()) // 2,
+                  available.y() + max(0, (available.height() - self.height() - 32) // 2))
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not self._initial_geometry_set:
+            self._initial_geometry_set = True
+            parent = self.parentWidget()
+            screen = parent.screen() if parent is not None else self.screen()
+            if screen is not None:
+                self.fit_to_available_screen(screen.availableGeometry())
+
+    def resizeEvent(self, event):
+        self.inventory_row.setDirection(
+            QBoxLayout.Direction.TopToBottom if event.size().width() < 740
+            else QBoxLayout.Direction.LeftToRight
+        )
+        super().resizeEvent(event)
 
     @staticmethod
     def _compact_editor(editor):
