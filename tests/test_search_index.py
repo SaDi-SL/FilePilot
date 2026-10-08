@@ -104,6 +104,7 @@ class SearchIndexTests(unittest.TestCase):
         self.index.upsert_embedding_chunks(
             source,
             vectors,
+            chunk_texts=chunks,
             provider="ollama",
             model="bge-m3",
             embedding_fingerprint="rag-test",
@@ -226,6 +227,68 @@ class SearchIndexTests(unittest.TestCase):
                 model="tiny",
                 embedding_fingerprint="fingerprint-a",
             )
+
+    def test_version_four_database_migrates_chunk_text_column(self):
+        legacy = self.root / "data" / "legacy-v4.sqlite3"
+        legacy.parent.mkdir(parents=True, exist_ok=True)
+        with closing(sqlite3.connect(legacy)) as connection:
+            connection.execute(f"PRAGMA application_id = {SEARCH_APPLICATION_ID}")
+            connection.execute("PRAGMA user_version = 4")
+            connection.executescript(
+                """
+                CREATE TABLE files (
+                    path TEXT PRIMARY KEY NOT NULL,
+                    filename TEXT NOT NULL,
+                    extension TEXT NOT NULL,
+                    size_bytes INTEGER NOT NULL,
+                    modified_ns INTEGER NOT NULL,
+                    category TEXT,
+                    content TEXT NOT NULL DEFAULT '',
+                    extraction_status TEXT NOT NULL,
+                    extraction_fingerprint TEXT NOT NULL DEFAULT '',
+                    indexed_at_utc TEXT NOT NULL
+                );
+                CREATE VIRTUAL TABLE files_fts USING fts5(
+                    filename, path, category, content,
+                    content='files', content_rowid='rowid'
+                );
+                CREATE TABLE file_embeddings (
+                    path TEXT PRIMARY KEY NOT NULL,
+                    vector BLOB NOT NULL,
+                    dimensions INTEGER NOT NULL,
+                    provider TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    embedding_fingerprint TEXT NOT NULL,
+                    embedded_at_utc TEXT NOT NULL,
+                    FOREIGN KEY(path) REFERENCES files(path) ON DELETE CASCADE
+                );
+                CREATE TABLE file_embedding_chunks (
+                    path TEXT NOT NULL,
+                    chunk_index INTEGER NOT NULL,
+                    vector BLOB NOT NULL,
+                    dimensions INTEGER NOT NULL,
+                    provider TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    embedding_fingerprint TEXT NOT NULL,
+                    embedded_at_utc TEXT NOT NULL,
+                    PRIMARY KEY(path, chunk_index),
+                    FOREIGN KEY(path) REFERENCES files(path) ON DELETE CASCADE
+                );
+                """
+            )
+
+        migrated = SearchIndex(legacy)
+
+        with closing(sqlite3.connect(migrated.database_path)) as connection:
+            columns = {
+                row[1]
+                for row in connection.execute(
+                    "PRAGMA table_info(file_embedding_chunks)"
+                ).fetchall()
+            }
+            version = connection.execute("PRAGMA user_version").fetchone()[0]
+        self.assertIn("chunk_text", columns)
+        self.assertEqual(version, SEARCH_SCHEMA_VERSION)
 
     def test_version_one_database_migrates_with_empty_fingerprint(self):
         legacy = self.root / "data" / "legacy-search.sqlite3"
