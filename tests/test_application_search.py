@@ -1,5 +1,7 @@
 import tempfile
 import unittest
+from unittest.mock import patch
+from app.local_rag import RAGAnswer
 from pathlib import Path
 
 from app.application_service import FilePilotService, StartupResult, StartupStatus
@@ -31,6 +33,21 @@ class ApplicationSearchServiceTests(unittest.TestCase):
             StartupStatus.READY,
             config=self.service._config,
         )
+
+    def test_answers_use_configured_local_model_even_when_cloud_is_selected(self):
+        self._ready()
+        self.service._config["ai"] = {
+            "provider": "claude", "ollama_model": "gemma4:e4b-it-qat",
+        }
+        expected = RAGAnswer("Question", "Answer", (), "ollama", "no_evidence")
+        with patch("app.application_service.LocalRAGService") as engine:
+            engine.return_value.ask.return_value = expected
+            self.assertIs(self.service.ask_files("Question"), expected)
+            search, provider = engine.call_args.args
+            self.assertIs(search, self.service._product_search)
+            self.assertEqual(provider.model, "gemma4:e4b-it-qat")
+            self.assertFalse(provider.is_cloud)
+            engine.return_value.ask.assert_called_once_with("Question")
 
     def test_refresh_requires_ready_configuration(self):
         with self.assertRaisesRegex(SearchIndexError, "ready"):

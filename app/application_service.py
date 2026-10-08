@@ -36,6 +36,8 @@ from app.product_configuration import (
     configuration_revision,
 )
 from app.embedding_service import OllamaEmbeddingProvider
+from app.local_rag import LocalRAGService, RAGAnswer
+from app.ai_service import OllamaProvider
 from app.product_search import ProductSearch, SearchRefreshResult
 from app.search_index import SearchIndexError, SearchResult, SemanticSearchResult
 from app.product_read_model import (
@@ -279,6 +281,13 @@ class FilePilotService:
     ) -> tuple[SemanticSearchResult, ...]:
         """Search the local semantic catalog without changing user files."""
         return self._product_search.semantic_search(query, limit=limit)
+
+    def ask_files(self, question: str) -> RAGAnswer:
+        """Answer from the local catalog using the configured Ollama model only."""
+        with self._state_lock:
+            ai = dict((self._config or {}).get("ai") or {})
+        provider = OllamaProvider(model=ai.get("ollama_model") or "mistral")
+        return LocalRAGService(self._product_search, provider).ask(question)
 
     def refresh_search_index(self) -> SearchRefreshResult:
         """Reconcile the local search catalog with the configured organized root."""

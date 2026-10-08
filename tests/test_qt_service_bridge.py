@@ -822,6 +822,45 @@ class QtServiceBridgeTests(unittest.TestCase):
             Path("C:/Inbox/latest.txt"),
         )
 
+    def test_answer_runs_off_gui_thread_and_returns_on_gui_thread(self):
+        service = FakeService()
+        worker_threads = []
+        def ask(question):
+            worker_threads.append(threading.get_ident())
+            return question
+        service.ask_files = ask
+        bridge = self._bridge(service)
+        received = []
+        bridge.answer_changed.connect(
+            lambda question, result: received.append((question, result, threading.get_ident()))
+        )
+        bridge.request_answer("Question")
+        self._wait_until(lambda: bool(received))
+        self.assertNotEqual(worker_threads[0], threading.get_ident())
+        self.assertEqual(received[0], ("Question", "Question", threading.get_ident()))
+
+    def test_answer_worker_failure_is_reported(self):
+        service = FakeService()
+        def ask(question):
+            raise RuntimeError("Local model unavailable")
+        service.ask_files = ask
+        bridge = self._bridge(service)
+        failed = QSignalSpy(bridge.answer_request_failed)
+        bridge.request_answer("Question")
+        self._wait_until(lambda: failed.count() == 1)
+        self.assertEqual(failed.at(0)[0], "Local model unavailable")
+
+    def test_answer_completion_ignores_superseded_requests(self):
+        service = FakeService()
+        service.ask_files = lambda question: question
+        bridge = self._bridge(service)
+        received = []
+        bridge.answer_changed.connect(lambda question, result: received.append(question))
+        bridge.request_answer("Old")
+        bridge.request_answer("New")
+        self._wait_until(lambda: bool(received))
+        self.assertEqual(received, ["New"])
+
     def test_search_runs_off_gui_thread_and_preserves_query(self):
         service = FakeService()
         bridge = self._bridge(service)

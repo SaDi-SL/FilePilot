@@ -18,6 +18,7 @@ from app.application_service import (
     SafetyDataState,
 )
 from app.mover import DuplicateStatus, MoveResult, MoveStatus, PreviewStatus
+from app.local_rag import RAGAnswer, RAGSource
 from app.product_search import SearchRefreshResult
 from app.search_index import SearchResult, SemanticSearchResult
 from app.ui.qt.application import create_application
@@ -25,6 +26,8 @@ from app.ui.qt.pages.my_files import MyFilesPage
 
 
 class MyFilesBridgeStub(QObject):
+    answer_changed = Signal(str, object)
+    answer_request_failed = Signal(str)
     preview_changed = Signal(object)
     organize_started = Signal(str)
     organize_completed = Signal(object)
@@ -36,11 +39,15 @@ class MyFilesBridgeStub(QObject):
 
     def __init__(self):
         super().__init__()
+        self.answer_requests = []
         self.preview_requests = []
         self.organize_requests = []
         self.search_requests = []
         self.semantic_search_requests = []
         self.search_refresh_requests = 0
+
+    def request_answer(self, question):
+        self.answer_requests.append(question)
 
     def request_preview(self, source):
         self.preview_requests.append(source)
@@ -75,6 +82,40 @@ class QtMyFilesTests(unittest.TestCase):
         self.page.close()
         self.app.processEvents()
         self.temp_dir.cleanup()
+
+    def test_answer_flow_shows_plain_text_and_exact_sources(self):
+        self.page.question_input.setText("What happened?")
+        self.page.ask_button.click()
+        self.assertEqual(self.bridge.answer_requests, ["What happened?"])
+        self.assertFalse(self.page.ask_button.isEnabled())
+        source = RAGSource("S1", self.source, "report.txt", None, 0, 0.9, "Exact evidence")
+        result = RAGAnswer("What happened?", "<b>Evidence</b> [S1]", (source,), "ollama", "answered")
+        self.bridge.answer_changed.emit("What happened?", result)
+        self.assertTrue(self.page.ask_button.isEnabled())
+        self.assertEqual(self.page.answer_text.toPlainText(), result.answer)
+        self.assertIn("Exact evidence", self.page.answer_sources.item(0).text())
+        self.assertEqual(self.source.read_text(), "content")
+
+    def test_failed_answer_reenables_retry_and_clears_previous_output(self):
+        self.page.answer_text.setPlainText("Previous answer")
+        self.page.question_input.setText("Question")
+        self.page.ask_button.click()
+        self.assertEqual(self.page.answer_text.toPlainText(), "")
+        self.bridge.answer_request_failed.emit("Local answer model is unavailable")
+        self.assertTrue(self.page.ask_button.isEnabled())
+        self.assertTrue(self.page.question_input.isEnabled())
+        self.assertIn("unavailable", self.page.answer_status.text())
+
+    def test_stale_answer_is_ignored_and_no_evidence_has_no_sources(self):
+        self.page.question_input.setText("Question")
+        self.page.ask_button.click()
+        result = RAGAnswer("Question", "Insufficient evidence", (), "none", "no_evidence")
+        self.bridge.answer_changed.emit("Old question", result)
+        self.assertFalse(self.page.ask_button.isEnabled())
+        self.bridge.answer_changed.emit("Question", result)
+        self.assertTrue(self.page.ask_button.isEnabled())
+        self.assertEqual(self.page.answer_sources.count(), 0)
+        self.assertIn("No supporting excerpts", self.page.answer_status.text())
 
     def _ready_preview(self):
         return OperationPreview(

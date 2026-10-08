@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QPushButton,
+    QPlainTextEdit,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
@@ -193,6 +194,40 @@ class MyFilesPage(QWidget):
 
         layout.addWidget(self.search_card)
 
+        self.answer_card = SectionCard()
+        answer_title = QLabel("Ask your files")
+        answer_title.setProperty("role", "sectionTitle")
+        self.answer_card.content_layout.addWidget(answer_title)
+        self.answer_status = QLabel("Answers use your indexed files and Ollama on this device. Update the index first.")
+        self.answer_status.setWordWrap(True)
+        self.answer_status.setProperty("role", "caption")
+        self.answer_card.content_layout.addWidget(self.answer_status)
+        answer_row = QHBoxLayout()
+        self.question_input = QLineEdit()
+        self.question_input.setMaxLength(2000)
+        self.question_input.setPlaceholderText("What does the report say about traction testing?")
+        self.question_input.setAccessibleName("Question about indexed files")
+        self.question_input.returnPressed.connect(self._request_answer)
+        self.ask_button = QPushButton("Ask")
+        self.ask_button.setProperty("variant", "primary")
+        self.ask_button.clicked.connect(self._request_answer)
+        answer_row.addWidget(self.question_input, 1)
+        answer_row.addWidget(self.ask_button)
+        self.answer_card.content_layout.addLayout(answer_row)
+        self.answer_text = QPlainTextEdit()
+        self.answer_text.setReadOnly(True)
+        self.answer_text.setAccessibleName("Answer from indexed files")
+        self.answer_text.setMinimumHeight(140)
+        self.answer_text.hide()
+        self.answer_card.content_layout.addWidget(self.answer_text)
+        self.answer_sources = QListWidget()
+        self.answer_sources.setAccessibleName("Answer sources and excerpts")
+        self.answer_sources.setMinimumHeight(100)
+        self.answer_sources.hide()
+        self.answer_card.content_layout.addWidget(self.answer_sources)
+        layout.addWidget(self.answer_card)
+        self._pending_question = None
+
         self.workspace = QWidget()
         self.workspace_layout = QGridLayout(self.workspace)
         self.workspace_layout.setContentsMargins(0, 0, 0, 0)
@@ -301,6 +336,12 @@ class MyFilesPage(QWidget):
         layout.addWidget(self.workspace, 0, Qt.AlignmentFlag.AlignTop)
         layout.addStretch(1)
 
+        answer_signal = getattr(self.bridge, "answer_changed", None)
+        if answer_signal is not None:
+            answer_signal.connect(self._render_answer)
+        answer_failed = getattr(self.bridge, "answer_request_failed", None)
+        if answer_failed is not None:
+            answer_failed.connect(self._answer_failed)
         search_signal = getattr(self.bridge, "search_results_changed", None)
         if search_signal is not None:
             search_signal.connect(self._render_search_results)
@@ -334,6 +375,58 @@ class MyFilesPage(QWidget):
         safety_failed_signal = getattr(self.bridge, "safety_request_failed", None)
         if safety_failed_signal is not None:
             safety_failed_signal.connect(self._request_failed)
+
+    def _request_answer(self) -> None:
+        if self._pending_question is not None:
+            return
+        question = self.question_input.text().strip()
+        if not question:
+            self.answer_status.setText("Enter a question about your indexed files.")
+            return
+        request = getattr(self.bridge, "request_answer", None)
+        if request is None:
+            self.answer_status.setText("Local answers are unavailable in this runtime.")
+            return
+        self._pending_question = question
+        self.ask_button.setEnabled(False)
+        self.question_input.setEnabled(False)
+        self.answer_text.clear()
+        self.answer_text.hide()
+        self.answer_sources.clear()
+        self.answer_sources.hide()
+        self.answer_status.setText("Reading relevant excerpts and answering on this device…")
+        request(question)
+
+    def _render_answer(self, question: str, result) -> None:
+        if question != self._pending_question:
+            return
+        self._pending_question = None
+        self.ask_button.setEnabled(True)
+        self.question_input.setEnabled(True)
+        self.answer_text.setPlainText(result.answer)
+        self.answer_text.show()
+        self.answer_sources.clear()
+        for source in result.sources:
+            item = QListWidgetItem(
+                f"[{source.source_id}] {source.filename} · Chunk {source.chunk_index + 1}\n{source.excerpt}"
+            )
+            item.setToolTip(str(source.path))
+            item.setData(Qt.ItemDataRole.UserRole, str(source.path))
+            self.answer_sources.addItem(item)
+        self.answer_sources.setVisible(bool(result.sources))
+        self.answer_status.setText(
+            "No supporting excerpts found. Update the index or try a more specific question."
+            if result.status == "no_evidence"
+            else f"Answered locally · {len(result.sources)} cited source excerpts"
+        )
+
+    def _answer_failed(self, message: str) -> None:
+        if self._pending_question is None:
+            return
+        self._pending_question = None
+        self.ask_button.setEnabled(True)
+        self.question_input.setEnabled(True)
+        self.answer_status.setText(message or "Local answer generation failed. Check Ollama and the index.")
 
     def _request_search(self) -> None:
         query = self.search_input.text().strip()

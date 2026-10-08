@@ -110,6 +110,18 @@ class LocalRAGServiceTests(unittest.TestCase):
                 with self.assertRaisesRegex(LocalRAGError, "not grounded"):
                     service.ask("Question")
 
+    def test_mixed_valid_and_invented_citations_are_rejected(self):
+        provider = FakeLocalProvider(text="Evidence [S1] and invented source [S99].")
+        with self.assertRaisesRegex(LocalRAGError, "not grounded"):
+            LocalRAGService(FakeSearch((context(),)), provider).ask("Question")
+
+    def test_source_preserves_exact_excerpt_sent_to_model(self):
+        excerpt = "Original case: IR50 traction result 42."
+        result = LocalRAGService(
+            FakeSearch((context(text=excerpt),)), FakeLocalProvider()
+        ).ask("Question")
+        self.assertEqual(result.sources[0].excerpt, excerpt)
+
     def test_cloud_provider_is_refused_before_any_chat(self):
         provider = FakeCloudProvider()
         service = LocalRAGService(FakeSearch((context(),)), provider)

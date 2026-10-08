@@ -42,32 +42,34 @@ class ServiceSnapshot:
 
 
 class _ServiceWorker(QObject):
-    bootstrap_finished = Signal(object, int)
-    command_finished = Signal(str, object, int)
-    command_failed = Signal(str, str, int)
-    shutdown_finished = Signal(int)
-    product_read_finished = Signal(int, object, int, int)
-    product_read_failed = Signal(int, str, int, int)
-    search_finished = Signal(int, str, object, int)
-    semantic_search_finished = Signal(int, str, object, int)
-    search_refresh_finished = Signal(int, object, int)
-    search_failed = Signal(str, int, str, int)
-    preview_finished = Signal(int, object, int)
-    organize_finished = Signal(int, object, int)
-    undo_availability_finished = Signal(int, object, int)
-    undo_finished = Signal(int, object, int)
-    recovery_finished = Signal(int, object, int)
-    recovery_action_finished = Signal(int, object, int)
-    safety_failed = Signal(str, int, str, int)
-    configuration_read_finished = Signal(int, object, int)
-    configuration_validation_finished = Signal(int, str, object, int)
-    candidate_classification_finished = Signal(int, str, object, int)
-    configuration_save_finished = Signal(int, str, object, int)
-    configuration_failed = Signal(str, int, str, str, int)
-    settings_read_finished = Signal(int, object, int)
-    settings_validation_finished = Signal(int, str, object, int)
-    settings_save_finished = Signal(int, str, object, int)
-    settings_failed = Signal(str, int, str, str, int)
+    bootstrap_finished = Signal(object, object)
+    command_finished = Signal(str, object, object)
+    command_failed = Signal(str, str, object)
+    shutdown_finished = Signal(object)
+    product_read_finished = Signal(int, object, int, object)
+    product_read_failed = Signal(int, str, int, object)
+    answer_finished = Signal(int, str, object, object)
+    answer_failed = Signal(int, str, object)
+    search_finished = Signal(int, str, object, object)
+    semantic_search_finished = Signal(int, str, object, object)
+    search_refresh_finished = Signal(int, object, object)
+    search_failed = Signal(str, int, str, object)
+    preview_finished = Signal(int, object, object)
+    organize_finished = Signal(int, object, object)
+    undo_availability_finished = Signal(int, object, object)
+    undo_finished = Signal(int, object, object)
+    recovery_finished = Signal(int, object, object)
+    recovery_action_finished = Signal(int, object, object)
+    safety_failed = Signal(str, int, str, object)
+    configuration_read_finished = Signal(int, object, object)
+    configuration_validation_finished = Signal(int, str, object, object)
+    candidate_classification_finished = Signal(int, str, object, object)
+    configuration_save_finished = Signal(int, str, object, object)
+    configuration_failed = Signal(str, int, str, str, object)
+    settings_read_finished = Signal(int, object, object)
+    settings_validation_finished = Signal(int, str, object, object)
+    settings_save_finished = Signal(int, str, object, object)
+    settings_failed = Signal(str, int, str, str, object)
 
     def __init__(self, service: FilePilotService) -> None:
         super().__init__()
@@ -129,6 +131,15 @@ class _ServiceWorker(QObject):
             activity_revision,
             threading.get_ident(),
         )
+
+    @Slot(int, str)
+    def ask_files(self, request_id: int, question: str) -> None:
+        try:
+            result = self._service.ask_files(question)
+        except Exception as error:
+            self.answer_failed.emit(request_id, str(error), threading.get_ident())
+            return
+        self.answer_finished.emit(request_id, question, result, threading.get_ident())
 
     @Slot(int, str, int)
     def search_files(self, request_id: int, query: str, limit: int) -> None:
@@ -434,6 +445,8 @@ class QtServiceBridge(QObject):
     activity_received = Signal(object)
     product_snapshot_changed = Signal(object)
     product_read_failed = Signal(str)
+    answer_changed = Signal(str, object)
+    answer_request_failed = Signal(str)
     search_results_changed = Signal(str, object)
     semantic_search_results_changed = Signal(str, object)
     search_refresh_completed = Signal(object)
@@ -461,7 +474,7 @@ class QtServiceBridge(QObject):
     settings_request_failed = Signal(str, str, str)
     command_completed = Signal(str, object)
     command_failed = Signal(str, str)
-    operation_thread_observed = Signal(str, int)
+    operation_thread_observed = Signal(str, object)
     closed = Signal()
 
     _bootstrap_worker = Signal()
@@ -469,6 +482,7 @@ class QtServiceBridge(QObject):
     _stop_worker = Signal()
     _shutdown_worker = Signal()
     _product_read_worker = Signal(int, int, int)
+    _answer_worker = Signal(int, str)
     _search_worker = Signal(int, str, int)
     _semantic_search_worker = Signal(int, str, int)
     _search_refresh_worker = Signal(int)
@@ -514,6 +528,8 @@ class QtServiceBridge(QObject):
         self._product_refresh_pending = False
         self._pending_product_limit = 100
         self._product_retry_revision: int | None = None
+        self._answer_sequence = 0
+        self._active_answer_id: int | None = None
         self._search_sequence = 0
         self._active_search_id: int | None = None
         self._semantic_search_sequence = 0
@@ -601,6 +617,11 @@ class QtServiceBridge(QObject):
             self._worker.read_product_data,
             Qt.ConnectionType.QueuedConnection,
         )
+        self._answer_worker.connect(
+            self._worker.ask_files, Qt.ConnectionType.QueuedConnection,
+        )
+        self._worker.answer_finished.connect(self._on_answer_finished)
+        self._worker.answer_failed.connect(self._on_answer_failed)
         self._search_worker.connect(
             self._worker.search_files,
             Qt.ConnectionType.QueuedConnection,
@@ -787,6 +808,14 @@ class QtServiceBridge(QObject):
             self._product_refresh_pending = True
             return
         self._dispatch_product_read(self._pending_product_limit)
+
+    @Slot(str)
+    def request_answer(self, question: str) -> None:
+        if self._closing:
+            return
+        self._answer_sequence += 1
+        self._active_answer_id = self._answer_sequence
+        self._answer_worker.emit(self._answer_sequence, question)
 
     @Slot(str, int)
     def request_search(self, query: str, limit: int = 25) -> None:
@@ -1134,7 +1163,7 @@ class QtServiceBridge(QObject):
         self.product_snapshot_changed.emit(self._merged_product_snapshot())
         self.request_product_refresh(self._product_limit)
 
-    @Slot(object, int)
+    @Slot(object, object)
     def _on_bootstrap_finished(
         self,
         result: StartupResult,
@@ -1152,7 +1181,7 @@ class QtServiceBridge(QObject):
         self.request_configuration_refresh()
         self.request_settings_refresh()
 
-    @Slot(int, object, int, int)
+    @Slot(int, object, int, object)
     def _on_product_read_finished(
         self,
         request_id: int,
@@ -1181,7 +1210,7 @@ class QtServiceBridge(QObject):
             self._product_refresh_pending = True
         self._dispatch_pending_product_read()
 
-    @Slot(int, str, int, int)
+    @Slot(int, str, int, object)
     def _on_product_read_failed(
         self,
         request_id: int,
@@ -1212,7 +1241,23 @@ class QtServiceBridge(QObject):
             self._product_refresh_pending = True
         self._dispatch_pending_product_read()
 
-    @Slot(int, str, object, int)
+    @Slot(int, str, object, object)
+    def _on_answer_finished(self, request_id, question, result, worker_thread_id):
+        if request_id != self._active_answer_id or self._closing:
+            return
+        self._active_answer_id = None
+        self.operation_thread_observed.emit("answer", worker_thread_id)
+        self.answer_changed.emit(question, result)
+
+    @Slot(int, str, object)
+    def _on_answer_failed(self, request_id, message, worker_thread_id):
+        if request_id != self._active_answer_id or self._closing:
+            return
+        self._active_answer_id = None
+        self.operation_thread_observed.emit("answer", worker_thread_id)
+        self.answer_request_failed.emit(message)
+
+    @Slot(int, str, object, object)
     def _on_search_finished(
         self,
         request_id: int,
@@ -1226,7 +1271,7 @@ class QtServiceBridge(QObject):
         self.operation_thread_observed.emit("search", worker_thread_id)
         self.search_results_changed.emit(query, results)
 
-    @Slot(int, str, object, int)
+    @Slot(int, str, object, object)
     def _on_semantic_search_finished(
         self,
         request_id: int,
@@ -1240,7 +1285,7 @@ class QtServiceBridge(QObject):
         self.operation_thread_observed.emit("semantic_search", worker_thread_id)
         self.semantic_search_results_changed.emit(query, results)
 
-    @Slot(int, object, int)
+    @Slot(int, object, object)
     def _on_search_refresh_finished(
         self,
         request_id: int,
@@ -1256,7 +1301,7 @@ class QtServiceBridge(QObject):
         self.operation_thread_observed.emit("search_refresh", worker_thread_id)
         self.search_refresh_completed.emit(result)
 
-    @Slot(str, int, str, int)
+    @Slot(str, int, str, object)
     def _on_search_failed(
         self,
         name: str,
@@ -1287,7 +1332,7 @@ class QtServiceBridge(QObject):
         self.operation_thread_observed.emit(name, worker_thread_id)
         self.search_request_failed.emit(name, message)
 
-    @Slot(int, object, int)
+    @Slot(int, object, object)
     def _on_preview_finished(
         self,
         request_id: int,
@@ -1306,7 +1351,7 @@ class QtServiceBridge(QObject):
         else:
             self._dispatch_preview()
 
-    @Slot(int, object, int)
+    @Slot(int, object, object)
     def _on_organize_finished(
         self,
         request_id: int,
@@ -1325,7 +1370,7 @@ class QtServiceBridge(QObject):
         self.request_product_refresh(self._product_limit)
         self.request_recovery_refresh(self._pending_recovery_limit, 0)
 
-    @Slot(int, object, int)
+    @Slot(int, object, object)
     def _on_undo_availability_finished(
         self,
         request_id: int,
@@ -1347,7 +1392,7 @@ class QtServiceBridge(QObject):
         else:
             self._dispatch_undo_availability()
 
-    @Slot(int, object, int)
+    @Slot(int, object, object)
     def _on_undo_finished(
         self,
         request_id: int,
@@ -1369,7 +1414,7 @@ class QtServiceBridge(QObject):
         self.request_product_refresh(self._product_limit)
         self.request_recovery_refresh(self._pending_recovery_limit, 0)
 
-    @Slot(int, object, int)
+    @Slot(int, object, object)
     def _on_recovery_finished(
         self,
         request_id: int,
@@ -1389,7 +1434,7 @@ class QtServiceBridge(QObject):
         self._recovery_snapshot = snapshot
         self.recovery_snapshot_changed.emit(snapshot)
 
-    @Slot(int, object, int)
+    @Slot(int, object, object)
     def _on_recovery_action_finished(
         self,
         request_id: int,
@@ -1408,7 +1453,7 @@ class QtServiceBridge(QObject):
         self.request_recovery_refresh(self._pending_recovery_limit, 0)
         self.request_product_refresh(self._product_limit)
 
-    @Slot(int, object, int)
+    @Slot(int, object, object)
     def _on_configuration_read_finished(
         self,
         request_id: int,
@@ -1421,7 +1466,7 @@ class QtServiceBridge(QObject):
         self._configuration_snapshot = snapshot
         self.configuration_snapshot_changed.emit(snapshot)
 
-    @Slot(int, str, object, int)
+    @Slot(int, str, object, object)
     def _on_configuration_validation_finished(
         self,
         request_id: int,
@@ -1441,7 +1486,7 @@ class QtServiceBridge(QObject):
         )
         self.configuration_validation_changed.emit(context, result)
 
-    @Slot(int, str, object, int)
+    @Slot(int, str, object, object)
     def _on_candidate_classification_finished(
         self,
         request_id: int,
@@ -1460,7 +1505,7 @@ class QtServiceBridge(QObject):
         )
         self.candidate_classification_changed.emit(context, result)
 
-    @Slot(int, str, object, int)
+    @Slot(int, str, object, object)
     def _on_configuration_save_finished(
         self,
         request_id: int,
@@ -1482,7 +1527,7 @@ class QtServiceBridge(QObject):
         self.configuration_save_completed.emit(context, result)
         self.request_settings_refresh()
 
-    @Slot(int, object, int)
+    @Slot(int, object, object)
     def _on_settings_read_finished(
         self,
         request_id: int,
@@ -1495,7 +1540,7 @@ class QtServiceBridge(QObject):
         self._settings_snapshot = snapshot
         self.settings_snapshot_changed.emit(snapshot)
 
-    @Slot(int, str, object, int)
+    @Slot(int, str, object, object)
     def _on_settings_validation_finished(
         self,
         request_id: int,
@@ -1512,7 +1557,7 @@ class QtServiceBridge(QObject):
         self.operation_thread_observed.emit("settings_validation", worker_thread_id)
         self.settings_validation_changed.emit(context, result)
 
-    @Slot(int, str, object, int)
+    @Slot(int, str, object, object)
     def _on_settings_save_finished(
         self,
         request_id: int,
@@ -1534,7 +1579,7 @@ class QtServiceBridge(QObject):
         self.settings_save_completed.emit(context, result)
         self.request_configuration_refresh()
 
-    @Slot(str, int, str, str, int)
+    @Slot(str, int, str, str, object)
     def _on_settings_failed(
         self,
         name: str,
@@ -1561,7 +1606,7 @@ class QtServiceBridge(QObject):
         self.operation_thread_observed.emit(name, worker_thread_id)
         self.settings_request_failed.emit(name, context, message)
 
-    @Slot(str, int, str, str, int)
+    @Slot(str, int, str, str, object)
     def _on_configuration_failed(
         self,
         name: str,
@@ -1590,7 +1635,7 @@ class QtServiceBridge(QObject):
         self.operation_thread_observed.emit(name, worker_thread_id)
         self.configuration_request_failed.emit(name, context, message)
 
-    @Slot(str, int, str, int)
+    @Slot(str, int, str, object)
     def _on_safety_failed(
         self,
         name: str,
@@ -1711,7 +1756,7 @@ class QtServiceBridge(QObject):
             activity=tuple(records[: self._product_limit]),
         )
 
-    @Slot(str, object, int)
+    @Slot(str, object, object)
     def _on_command_finished(
         self,
         command: str,
@@ -1732,7 +1777,7 @@ class QtServiceBridge(QObject):
         else:
             self.request_recovery_refresh(self._pending_recovery_limit, 0)
 
-    @Slot(str, str, int)
+    @Slot(str, str, object)
     def _on_command_failed(
         self,
         command: str,
@@ -1780,7 +1825,7 @@ class QtServiceBridge(QObject):
                 )
             self._publish_snapshot(failed)
 
-    @Slot(int)
+    @Slot(object)
     def _on_worker_shutdown(self, worker_thread_id: int) -> None:
         self._unsubscribe()
         self.operation_thread_observed.emit("shutdown", worker_thread_id)

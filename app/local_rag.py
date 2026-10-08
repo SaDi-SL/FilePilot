@@ -45,6 +45,7 @@ class RAGSource:
     category: str | None
     chunk_index: int
     score: float
+    excerpt: str = ""
 
 
 @dataclass(frozen=True)
@@ -123,7 +124,7 @@ class LocalRAGService:
 
         cited_ids = tuple(dict.fromkeys(re.findall(r"\[(S\d+)\]", answer)))
         valid_ids = tuple(source_id for source_id in cited_ids if source_id in source_map)
-        if not valid_ids:
+        if not valid_ids or len(valid_ids) != len(cited_ids):
             raise LocalRAGError(
                 "Local answer was not grounded in the retrieved sources"
             )
@@ -153,6 +154,7 @@ class LocalRAGService:
                 category=context.category,
                 chunk_index=context.chunk_index,
                 score=context.score,
+                excerpt=context.text,
             )
             blocks.append(
                 f"[{source_id}] File: {context.filename}\n"
