@@ -54,6 +54,17 @@ class SearchResult:
 
 
 @dataclass(frozen=True)
+class SemanticChunkResult:
+    path: Path
+    filename: str
+    extension: str
+    category: str | None
+    chunk_index: int
+    text: str
+    score: float
+
+
+@dataclass(frozen=True)
 class SemanticSearchResult:
     path: Path
     filename: str
@@ -594,6 +605,92 @@ class SearchIndex:
             raise
         except sqlite3.Error as error:
             raise SearchIndexError(f"Embedding persistence failed: {error}") from error
+
+    def semantic_chunk_search(
+        self,
+        query_vector,
+        *,
+        embedding_fingerprint: str,
+        limit: int = 8,
+    ) -> tuple[SemanticChunkResult, ...]:
+        """Return the best indexed semantic chunks with their bounded source text."""
+        fingerprint = embedding_fingerprint.strip()
+        if not fingerprint:
+            return ()
+        bounded_limit = max(1, min(int(limit), 32))
+        try:
+            normalized_query = normalize_vector(query_vector)
+        except SemanticSearchError as error:
+            raise SearchIndexError(f"Semantic query is invalid: {error}") from error
+
+        try:
+            with closing(self._connect()) as connection, connection:
+                rows = connection.execute(
+                    """
+                    SELECT
+                        files.path,
+                        files.filename,
+                        files.extension,
+                        files.category,
+                        file_embedding_chunks.chunk_index,
+                        file_embedding_chunks.vector,
+                        file_embedding_chunks.dimensions
+                    FROM file_embedding_chunks
+                    JOIN files ON files.path = file_embedding_chunks.path
+                    WHERE file_embedding_chunks.embedding_fingerprint = ?
+                    """,
+                    (fingerprint,),
+                ).fetchall()
+        except sqlite3.Error as error:
+            raise SearchIndexError(f"Semantic chunk search failed: {error}") from error
+
+        scored: list[tuple[float, sqlite3.Row]] = []
+        for row in rows:
+            try:
+                candidate = decode_vector(row["vector"], row["dimensions"])
+            except SemanticSearchError:
+                continue
+            if len(candidate) != len(normalized_query):
+                continue
+            score = sum(
+                left * right
+                for left, right in zip(normalized_query, candidate, strict=True)
+            )
+            scored.append((max(-1.0, min(1.0, float(score))), row))
+
+        scored.sort(
+            key=lambda item: (
+                -item[0],
+                str(item[1]["filename"]).casefold(),
+                int(item[1]["chunk_index"]),
+            )
+        )
+
+        chunk_cache: dict[str, tuple[str, ...]] = {}
+        results: list[SemanticChunkResult] = []
+        for score, row in scored:
+            path_text = str(row["path"])
+            chunks = chunk_cache.get(path_text)
+            if chunks is None:
+                chunks = self.semantic_document_chunks(Path(path_text))
+                chunk_cache[path_text] = chunks
+            chunk_index = int(row["chunk_index"])
+            if chunk_index < 0 or chunk_index >= len(chunks):
+                continue
+            results.append(
+                SemanticChunkResult(
+                    path=Path(path_text),
+                    filename=row["filename"],
+                    extension=row["extension"],
+                    category=row["category"],
+                    chunk_index=chunk_index,
+                    text=chunks[chunk_index],
+                    score=score,
+                )
+            )
+            if len(results) >= bounded_limit:
+                break
+        return tuple(results)
 
     def semantic_search(
         self,
