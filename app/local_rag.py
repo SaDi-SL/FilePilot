@@ -126,7 +126,12 @@ class LocalRAGService:
         if not answer:
             raise LocalRAGError("Local answer model returned an empty response")
 
-        cited_ids = tuple(dict.fromkeys(re.findall(r"\[(S\d+)\]", answer)))
+        citation_groups = re.findall(r"\[(S\d+(?:\s*,\s*S\d+)*)\]", answer)
+        cited_ids = tuple(dict.fromkeys(
+            source_id
+            for group in citation_groups
+            for source_id in re.findall(r"S\d+", group)
+        ))
         valid_ids = tuple(source_id for source_id in cited_ids if source_id in source_map)
         if not valid_ids or len(valid_ids) != len(cited_ids):
             raise LocalRAGError(
