@@ -81,6 +81,46 @@ class SearchIndexTests(unittest.TestCase):
         self.assertEqual([result.path for result in results], [first, second])
         self.assertGreater(results[0].score, results[1].score)
 
+    def test_semantic_chunk_search_returns_ranked_source_text(self):
+        source = self.root / "report.txt"
+        source.write_text(
+            ("general notes " * 120)
+            + ("traction converter verification " * 80),
+            encoding="utf-8",
+        )
+        self.index.index_file(source, category="reports")
+        chunks = self.index.semantic_document_chunks(
+            source,
+            max_chunk_chars=800,
+            overlap_chars=100,
+        )
+        self.assertGreater(len(chunks), 1)
+
+        vectors = [
+            [0.0, 1.0]
+            for _ in chunks
+        ]
+        vectors[-1] = [1.0, 0.0]
+        self.index.upsert_embedding_chunks(
+            source,
+            vectors,
+            provider="ollama",
+            model="bge-m3",
+            embedding_fingerprint="rag-test",
+        )
+
+        results = self.index.semantic_chunk_search(
+            [1.0, 0.0],
+            embedding_fingerprint="rag-test",
+            limit=3,
+        )
+
+        self.assertGreaterEqual(len(results), 1)
+        self.assertEqual(results[0].path, source)
+        self.assertEqual(results[0].chunk_index, len(chunks) - 1)
+        self.assertIn("traction converter verification", results[0].text)
+        self.assertGreater(results[0].score, 0.99)
+
     def test_semantic_search_uses_best_chunk_per_file(self):
         first = self.root / "long-report.txt"
         second = self.root / "short-test.txt"
