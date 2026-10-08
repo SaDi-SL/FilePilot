@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QUrl
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QFileDialog,
     QFrame,
@@ -239,8 +240,38 @@ class MyFilesPage(QWidget):
         self.answer_sources.setWordWrap(True)
         self.answer_sources.setResizeMode(QListView.ResizeMode.Adjust)
         self.answer_sources.setFixedHeight(140)
+        self.answer_sources.currentItemChanged.connect(self._select_answer_source)
+        self.answer_sources.itemActivated.connect(self._open_answer_source)
         self.answer_sources.hide()
         self.answer_card.content_layout.addWidget(self.answer_sources)
+        self.source_details = QWidget()
+        details_layout = QVBoxLayout(self.source_details)
+        details_layout.setContentsMargins(0, 0, 0, 0)
+        self.source_location = QLabel()
+        self.source_location.setWordWrap(True)
+        self.source_location.setTextFormat(Qt.TextFormat.PlainText)
+        self.source_location.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        details_layout.addWidget(self.source_location)
+        self.source_excerpt = QPlainTextEdit()
+        self.source_excerpt.setReadOnly(True)
+        self.source_excerpt.setAccessibleName("Selected source full excerpt")
+        self.source_excerpt.setFixedHeight(160)
+        details_layout.addWidget(self.source_excerpt)
+        source_actions = QHBoxLayout()
+        self.open_source_button = QPushButton("Open source file")
+        self.open_source_button.clicked.connect(self._open_answer_source)
+        source_actions.addWidget(self.open_source_button)
+        self.copy_source_button = QPushButton("Copy excerpt")
+        self.copy_source_button.clicked.connect(self._copy_answer_source)
+        source_actions.addWidget(self.copy_source_button)
+        source_actions.addStretch(1)
+        details_layout.addLayout(source_actions)
+        self.source_action_status = QLabel()
+        self.source_action_status.setWordWrap(True)
+        self.source_action_status.setTextFormat(Qt.TextFormat.PlainText)
+        details_layout.addWidget(self.source_action_status)
+        self.source_details.hide()
+        self.answer_card.content_layout.addWidget(self.source_details)
         layout.addWidget(self.answer_card)
         self._pending_question = None
 
@@ -423,18 +454,56 @@ class MyFilesPage(QWidget):
         self.answer_text.show()
         self.answer_sources.clear()
         for source in result.sources:
+            preview = " ".join(source.excerpt.split())
+            if len(preview) > 160:
+                preview = preview[:160] + "…"
             item = QListWidgetItem(
-                f"[{source.source_id}] {source.filename} · Chunk {source.chunk_index + 1}\n{source.excerpt}"
+                f"[{source.source_id}] {source.filename} · Chunk {source.chunk_index + 1}\n{preview}"
             )
             item.setToolTip(str(source.path))
             item.setData(Qt.ItemDataRole.UserRole, str(source.path))
+            item.setData(Qt.ItemDataRole.UserRole + 1, source.excerpt)
             self.answer_sources.addItem(item)
         self.answer_sources.setVisible(bool(result.sources))
+        if result.sources:
+            self.answer_sources.setCurrentRow(0)
         self.answer_status.setText(
             "No supporting excerpts found. Update the index or try a more specific question."
             if result.status == "no_evidence"
             else f"Answered locally · {len(result.sources)} cited source excerpts"
         )
+
+    def _select_answer_source(self, current, previous=None) -> None:
+        self.source_action_status.clear()
+        self.source_details.setVisible(current is not None)
+        self.source_excerpt.clear()
+        self.source_location.clear()
+        if current is None:
+            return
+        path = current.data(Qt.ItemDataRole.UserRole)
+        self.source_location.setText(str(path))
+        self.source_excerpt.setPlainText(current.data(Qt.ItemDataRole.UserRole + 1) or "")
+
+    def _open_answer_source(self, *args) -> None:
+        item = self.answer_sources.currentItem()
+        if item is None:
+            return
+        path = Path(item.data(Qt.ItemDataRole.UserRole))
+        if not path.is_file():
+            self.source_action_status.setText("Source file is no longer available at this path. Update the index.")
+            return
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.resolve()))):
+            self.source_action_status.setText("Could not open this file. Check the default application for its file type.")
+            return
+        self.source_action_status.setText("Opened source file in your default application.")
+
+    def _copy_answer_source(self) -> None:
+        if self.answer_sources.currentItem() is None:
+            return
+        from PySide6.QtWidgets import QApplication
+
+        QApplication.clipboard().setText(self.source_excerpt.toPlainText())
+        self.source_action_status.setText("Excerpt copied.")
 
     def _answer_failed(self, message: str) -> None:
         if self._pending_question is None:

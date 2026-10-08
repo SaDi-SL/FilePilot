@@ -2,6 +2,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -105,6 +106,46 @@ class QtMyFilesTests(unittest.TestCase):
         self.assertTrue(self.page.ask_button.isEnabled())
         self.assertTrue(self.page.question_input.isEnabled())
         self.assertIn("unavailable", self.page.answer_status.text())
+
+    def _show_answer_sources(self):
+        self.page.question_input.setText("Question")
+        self.page.ask_button.click()
+        sources = (
+            RAGSource("S1", self.source, "report.txt", None, 0, 0.9, "First excerpt"),
+            RAGSource("S2", self.root / "missing.pdf", "missing.pdf", None, 2, 0.8, "Second excerpt\n" * 200),
+        )
+        result = RAGAnswer("Question", "Answer [S1, S2]", sources, "ollama", "answered")
+        self.bridge.answer_changed.emit("Question", result)
+        return sources
+
+    def test_selected_source_displays_and_copies_full_excerpt(self):
+        sources = self._show_answer_sources()
+        self.assertEqual(self.page.source_excerpt.toPlainText(), sources[0].excerpt)
+        self.page.answer_sources.setCurrentRow(1)
+        self.assertEqual(self.page.source_location.text(), str(sources[1].path))
+        self.assertEqual(self.page.source_excerpt.toPlainText(), sources[1].excerpt)
+        self.page.copy_source_button.click()
+        self.assertEqual(self.app.clipboard().text(), sources[1].excerpt)
+        self.page.question_input.setText("Next question")
+        self.page.ask_button.click()
+        self.assertFalse(self.page.source_details.isVisibleTo(self.page))
+        self.assertEqual(self.page.source_excerpt.toPlainText(), "")
+
+    def test_open_source_uses_local_url_and_reports_missing_or_failed_open(self):
+        self._show_answer_sources()
+        with patch("app.ui.qt.pages.my_files.QDesktopServices.openUrl", return_value=True) as opener:
+            self.page.open_source_button.click()
+            self.assertEqual(opener.call_args.args[0].toLocalFile(), str(self.source.resolve()))
+            self.assertEqual(self.source.read_text(), "content")
+            self.page.answer_sources.setCurrentRow(1)
+            self.page.open_source_button.click()
+            self.assertEqual(opener.call_count, 1)
+            self.assertIn("no longer available", self.page.source_action_status.text())
+        self.page.answer_sources.setCurrentRow(0)
+        self.assertEqual(self.page.source_action_status.text(), "")
+        with patch("app.ui.qt.pages.my_files.QDesktopServices.openUrl", return_value=False):
+            self.page.open_source_button.click()
+            self.assertIn("Could not open", self.page.source_action_status.text())
 
     def test_stale_answer_is_ignored_and_no_evidence_has_no_sources(self):
         self.page.question_input.setText("Question")
