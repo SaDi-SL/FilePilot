@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from app.ai_service import OllamaProvider
+from app.ai_service import AIProviderResponseError, AIProviderTimeoutError, OllamaProvider
 from app.product_search import ProductSearch, RetrievedContext
 from app.search_index import SearchIndexError
 
@@ -66,7 +66,7 @@ class LocalRAGService:
         provider: LocalTextProvider | None = None,
     ) -> None:
         self._search = search
-        self._provider = provider or OllamaProvider()
+        self._provider = provider or OllamaProvider(use_chat_api=True, think=False)
 
     def ask(
         self,
@@ -117,8 +117,12 @@ class LocalRAGService:
                 timeout=timeout,
                 max_output_tokens=max(64, min(int(max_output_tokens), 1_500)),
             ).strip()
+        except AIProviderTimeoutError as error:
+            raise LocalRAGError("Local answer generation timed out; try a shorter question or warm up the model") from error
+        except AIProviderResponseError as error:
+            raise LocalRAGError(str(error)) from error
         except Exception as error:
-            raise LocalRAGError("Local answer generation failed") from error
+            raise LocalRAGError("Local answer generation failed; check the configured Ollama model") from error
         if not answer:
             raise LocalRAGError("Local answer model returned an empty response")
 

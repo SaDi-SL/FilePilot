@@ -211,6 +211,38 @@ class OllamaProviderTests(unittest.TestCase):
         self.assertFalse(payload["stream"])
         self.assertEqual(payload["options"], {"num_predict": 222})
 
+    def test_answer_chat_requests_final_content_without_thinking(self):
+        provider = OllamaProvider(model="gemma4:e4b-it-qat", use_chat_api=True, think=False)
+        with patch("app.ai_service.request.urlopen", return_value=urlopen_response({
+            "message": {"content": "  Evidence [S1]  ", "thinking": "internal trace"},
+        })) as opener:
+            result = provider.chat("private prompt", timeout=45, max_output_tokens=500)
+        req = opener.call_args.args[0]
+        payload = json.loads(req.data)
+        self.assertTrue(req.full_url.endswith("/api/chat"))
+        self.assertFalse(payload["think"])
+        self.assertNotIn("prompt", payload)
+        self.assertEqual(payload["messages"], [{"role": "user", "content": "private prompt"}])
+        self.assertEqual(payload["options"]["num_predict"], 500)
+        self.assertEqual(result, "Evidence [S1]")
+
+    def test_thinking_only_chat_is_an_error_and_never_an_answer(self):
+        provider = OllamaProvider(use_chat_api=True, think=False)
+        with patch("app.ai_service.request.urlopen", return_value=urlopen_response({
+            "message": {"content": "", "thinking": "private reasoning"},
+        })):
+            with self.assertRaisesRegex(AIProviderResponseError, "without a final answer") as raised:
+                provider.chat("private prompt", timeout=45)
+        self.assertNotIn("private reasoning", str(raised.exception))
+
+    def test_malformed_chat_message_is_rejected(self):
+        for response in ({"response": "wrong endpoint"}, {"message": None}, {"message": {"content": 12}}):
+            with self.subTest(response=response), patch(
+                "app.ai_service.request.urlopen", return_value=urlopen_response(response)
+            ):
+                with self.assertRaises(AIProviderResponseError):
+                    OllamaProvider(use_chat_api=True).chat("prompt", timeout=3)
+
     def test_two_chats_do_not_store_request_controls(self):
         provider = OllamaProvider()
         responses = [

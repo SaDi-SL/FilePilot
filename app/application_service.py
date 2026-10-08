@@ -286,7 +286,10 @@ class FilePilotService:
         """Answer from the local catalog using the configured Ollama model only."""
         with self._state_lock:
             ai = dict((self._config or {}).get("ai") or {})
-        provider = OllamaProvider(model=ai.get("ollama_model") or "mistral")
+        provider = OllamaProvider(
+            model=ai.get("ollama_model") or "mistral",
+            use_chat_api=True, think=False,
+        )
         return LocalRAGService(self._product_search, provider).ask(question)
 
     def refresh_search_index(self) -> SearchRefreshResult:

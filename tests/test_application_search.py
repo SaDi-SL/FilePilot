@@ -47,6 +47,8 @@ class ApplicationSearchServiceTests(unittest.TestCase):
             self.assertIs(search, self.service._product_search)
             self.assertEqual(provider.model, "gemma4:e4b-it-qat")
             self.assertFalse(provider.is_cloud)
+            self.assertTrue(provider.use_chat_api)
+            self.assertIs(provider.think, False)
             engine.return_value.ask.assert_called_once_with("Question")
 
     def test_refresh_requires_ready_configuration(self):

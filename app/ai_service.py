@@ -108,6 +108,8 @@ class OllamaProvider:
 
     model: str = OLLAMA_MODEL
     base_url: str = OLLAMA_BASE_URL
+    use_chat_api: bool = False
+    think: bool | None = None
 
     name: ClassVar[str] = "ollama"
     is_cloud: ClassVar[bool] = False
@@ -135,22 +137,36 @@ class OllamaProvider:
             "prompt": prompt,
             "stream": False,
         }
+        endpoint = "generate"
+        if self.use_chat_api:
+            endpoint = "chat"
+            payload.pop("prompt")
+            payload["messages"] = [{"role": "user", "content": prompt}]
+        if self.think is not None:
+            payload["think"] = self.think
         if max_output_tokens is not None:
             payload["options"] = {"num_predict": max_output_tokens}
 
         req = request.Request(
-            f"{self.base_url}/api/generate",
+            f"{self.base_url}/api/{endpoint}",
             data=json.dumps(payload).encode("utf-8"),
             headers={"Content-Type": "application/json"},
             method="POST",
         )
         data = _request_json(req, timeout=timeout, provider_name=self.name)
 
-        if not isinstance(data, dict) or not isinstance(data.get("response"), str):
+        if not isinstance(data, dict):
+            raise AIProviderResponseError(f"{self.name} returned an invalid response")
+        message = data.get("message") if self.use_chat_api else data
+        field = "content" if self.use_chat_api else "response"
+        if not isinstance(message, dict) or not isinstance(message.get(field), str):
+            raise AIProviderResponseError(f"{self.name} returned an invalid response")
+        text = message[field].strip()
+        if not text and message.get("thinking"):
             raise AIProviderResponseError(
-                f"{self.name} returned an invalid response"
+                "Local model returned thinking without a final answer; check Ollama's thinking support"
             )
-        return data["response"].strip()
+        return text
 
 
 @dataclass(frozen=True)
