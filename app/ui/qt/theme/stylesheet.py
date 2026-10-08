@@ -112,6 +112,15 @@ def build_stylesheet() -> str:
         QListWidget::item {{ padding: 6px; border-radius: 5px; }}
         QListWidget::item:selected {{ background-color: #493564; }}
         QListWidget::item:hover {{ background-color: {c.surface_hover}; }}
+        QListWidget[fileGrid="true"] {{ background: transparent; border: none; padding: 0; }}
+        QListWidget[fileGrid="true"]::item {{
+            background: {c.surface};
+            border: 1px solid {c.border};
+            border-radius: {r.card}px;
+            padding: 10px;
+        }}
+        QListWidget[fileGrid="true"]::item:hover {{ border-color: {c.primary_hover}; background: {c.surface_hover}; }}
+        QListWidget[fileGrid="true"]::item:selected {{ border-color: {c.primary}; background: #352943; }}
         QScrollArea > QWidget > QWidget {{ background-color: {c.background}; }}
         QFrame[divider="true"] {{
             background-color: {c.border};

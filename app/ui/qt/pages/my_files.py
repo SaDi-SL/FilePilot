@@ -29,6 +29,7 @@ from app.ui.qt.service_bridge import QtServiceBridge
 from app.ui.qt.icons import folder_art
 from app.ui.qt.theme.tokens import SPACING
 from app.ui.qt.widgets.section_card import SectionCard
+from app.ui.qt.widgets.file_browser import FileBrowser
 
 
 SMART_RESULTS_VISIBLE_LIMIT = 8
@@ -141,7 +142,7 @@ class MyFilesPage(QWidget):
         title = QLabel("My Files")
         title.setProperty("role", "pageTitle")
         description = QLabel(
-            "Preview where a file will go, then organize it only after FilePilot revalidates safety."
+            "Browse your organized files, find what you need, or preview a file before organizing it."
         )
         description.setProperty("role", "secondary")
         description.setWordWrap(True)
@@ -401,6 +402,9 @@ class MyFilesPage(QWidget):
             panel_layout.addWidget(widget)
             panel_layout.addStretch(1)
             self.workspace_tabs.addTab(panel, title)
+        self.file_browser = FileBrowser(self.bridge)
+        self.workspace_tabs.addTab(self.file_browser, "Browse files")
+        self.workspace_tabs.setCurrentIndex(3)
         layout.addWidget(self.workspace_tabs)
         layout.addStretch(1)
 
