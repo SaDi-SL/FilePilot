@@ -66,6 +66,18 @@ class QtFileBrowserTests(unittest.TestCase):
         self.browser._preview_loaded((self.browser._preview_generation - 1, "Stale text", None))
         self.assertNotIn("Stale text", self.browser.preview.toPlainText())
 
+    def test_long_filename_and_path_are_preserved_in_selectable_details(self):
+        name = "Interview_" + "long_filename_" * 10 + ".txt"
+        path = self.root / name
+        path.write_text("content", encoding="utf-8")
+        self.browser.load(self.root)
+        self.wait_for(lambda: self.browser.items.count() == 3)
+        self.browser.filter_input.setText("Interview")
+        self.browser.items.setCurrentRow(0)
+        self.assertEqual(self.browser.detail_title.toolTip(), name)
+        self.assertTrue(self.browser.detail_info.toPlainText().startswith(str(path)))
+        self.assertTrue(self.browser.detail_info.isReadOnly())
+
     def test_file_open_and_parent_use_local_urls_and_missing_is_reported(self):
         self.browser.filter_input.setText("notes")
         self.browser.items.setCurrentRow(0)

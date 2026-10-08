@@ -4,7 +4,7 @@ from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QRunnable, QSize, Qt, QThreadPool, Signal, Slot, QUrl
-from PySide6.QtGui import QDesktopServices, QIcon
+from PySide6.QtGui import QDesktopServices, QIcon, QTextOption
 from PySide6.QtWidgets import (
     QComboBox, QHBoxLayout, QLabel, QLineEdit, QListView, QListWidget,
     QListWidgetItem, QPlainTextEdit, QPushButton, QVBoxLayout, QWidget,
@@ -97,10 +97,11 @@ class FileBrowser(QWidget):
         self.detail_title.setTextFormat(Qt.TextFormat.PlainText)
         self.detail_title.setWordWrap(True)
         self.detail_title.setProperty("role", "sectionTitle")
-        self.detail_info = QLabel("See its details here. Double-click a folder to browse inside.")
-        self.detail_info.setTextFormat(Qt.TextFormat.PlainText)
-        self.detail_info.setWordWrap(True)
-        self.detail_info.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.detail_info = QPlainTextEdit()
+        self.detail_info.setReadOnly(True)
+        self.detail_info.setAccessibleName("Selected file full path and details")
+        self.detail_info.setWordWrapMode(QTextOption.WrapMode.WrapAnywhere)
+        self.detail_info.setFixedHeight(170)
         self.preview = QPlainTextEdit()
         self.preview.setReadOnly(True)
         self.preview.setAccessibleName("Selected text file preview")
@@ -220,12 +221,16 @@ class FileBrowser(QWidget):
         self.open_folder_button.setEnabled(item is not None)
         if item is None:
             self.detail_title.setText("Select a file or folder")
-            self.detail_info.setText("See its details here. Double-click a folder to browse inside.")
+            self.detail_title.setToolTip("")
+            self.detail_info.setPlainText("See its details here. Double-click a folder to browse inside.")
             return
         entry = item.data(Qt.ItemDataRole.UserRole)
-        self.detail_title.setText(entry.path.name)
+        self.detail_title.setText(self.detail_title.fontMetrics().elidedText(
+            entry.path.name, Qt.TextElideMode.ElideMiddle, self.details.width() - 32
+        ))
+        self.detail_title.setToolTip(entry.path.name)
         date = datetime.fromtimestamp(entry.modified).strftime("%Y-%m-%d %H:%M")
-        self.detail_info.setText(f"{entry.path}\n\nModified: {date}\nSize: {format_size(entry.size)}" + (" (direct files; partial)" if entry.partial else " (direct files)" if entry.is_directory else ""))
+        self.detail_info.setPlainText(f"{entry.path}\n\nModified: {date}\nSize: {format_size(entry.size)}" + (" (direct files; partial)" if entry.partial else " (direct files)" if entry.is_directory else ""))
         if not entry.is_directory and entry.path.suffix.lower() in {".txt", ".md", ".csv", ".json", ".log", ".py"}:
             path = entry.path
             def read_text():
