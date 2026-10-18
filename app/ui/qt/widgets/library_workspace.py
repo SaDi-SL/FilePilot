@@ -51,6 +51,9 @@ class LibraryWorkspace(QWidget):
         self._document_busy = False
         self._root_busy = False
         self._ai_busy = False
+        self._pause_requested = False
+        self._stop_requested = False
+        self._index_feedback = ""
         self._source_records = ()
         self._review = None
         self._preferences = QSettings()
@@ -66,13 +69,33 @@ class LibraryWorkspace(QWidget):
         hint.setProperty("role", "secondary")
         card.content_layout.addWidget(heading)
         card.content_layout.addWidget(hint)
-        self.journey = QLabel("1  Add a folder   →   2  Prepare documents   →   3  Search or summarize")
-        self.journey.setWordWrap(True)
-        self.journey.setProperty("role", "sectionTitle")
-        card.content_layout.addWidget(self.journey)
+        self.steps = QWidget()
+        self.step_layout = _ActionGrid()
+        self.steps.setLayout(self.step_layout)
+        self.step_labels = [QLabel(text) for text in ("1 · Choose a folder", "2 · Prepare documents", "3 · Search or summarize")]
+        for label in self.step_labels:
+            label.setMinimumHeight(40)
+            label.setWordWrap(True)
+            self.step_layout.addWidget(label)
+        self.step_layout.reflow(3)
+        card.content_layout.addWidget(self.steps)
         self.next_step = QLabel("Loading your document library…")
         self.next_step.setWordWrap(True)
         card.content_layout.addWidget(self.next_step)
+        self.health = QWidget()
+        health_layout = QHBoxLayout(self.health)
+        health_layout.setContentsMargins(0, 0, 0, 0)
+        self.ready_count = QLabel()
+        self.ready_count.setProperty("badgeTone", "success")
+        self.attention_count = QLabel()
+        self.attention_count.setProperty("badgeTone", "warning")
+        self.attention_button = QPushButton("Review issues")
+        self.attention_button.clicked.connect(self._review_issues)
+        for widget in (self.ready_count, self.attention_count, self.attention_button):
+            health_layout.addWidget(widget)
+        health_layout.addStretch(1)
+        self.health.hide()
+        card.content_layout.addWidget(self.health)
         self.advanced = QWidget()
         advanced_layout = _ActionGrid()
         self.advanced.setLayout(advanced_layout)
@@ -82,6 +105,7 @@ class LibraryWorkspace(QWidget):
         self._rows = [roots]
         self.roots = QComboBox()
         self.roots.setAccessibleName("Additional read-only library folders")
+        self.roots.setPlaceholderText("No extra document folders added")
         self.roots.setMinimumWidth(100)
         self.roots.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         roots.addWidget(self.roots, 1)
@@ -163,7 +187,11 @@ class LibraryWorkspace(QWidget):
         self.type_filter.addItems(("All types", ".pdf", ".docx", ".txt", ".xlsx", ".csv", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".webp", ".bmp"))
         self.type_filter.currentIndexChanged.connect(self._render_files)
         filters.addWidget(self.type_filter)
-        card.content_layout.addLayout(filters)
+        self.filters = QWidget()
+        self.filters.setLayout(filters)
+        filters.setContentsMargins(0, 0, 0, 0)
+        self.filters.hide()
+        card.content_layout.addWidget(self.filters)
         self.files = QTreeWidget()
         self.files.setAccessibleName("Library document status")
         self.files.setProperty("activityTable", True)
@@ -181,6 +209,10 @@ class LibraryWorkspace(QWidget):
         self.empty_state.setWordWrap(True)
         self.empty_state.hide()
         card.content_layout.addWidget(self.empty_state)
+        self.clear_filters_button = QPushButton("Clear filters")
+        self.clear_filters_button.clicked.connect(self._clear_filters)
+        self.clear_filters_button.hide()
+        card.content_layout.addWidget(self.clear_filters_button)
         self.document_body = QSplitter(Qt.Orientation.Horizontal)
         self.document_body.setChildrenCollapsible(False)
         self.document_body.addWidget(self.files)
@@ -303,6 +335,7 @@ class LibraryWorkspace(QWidget):
         for row in self._rows:
             row.reflow(min(columns, len(row.widgets)))
         narrow = event.size().width() < 840
+        self.step_layout.reflow(1 if narrow else 3)
         self.document_body.setOrientation(Qt.Orientation.Vertical if narrow else Qt.Orientation.Horizontal)
         self.files.setMinimumHeight(220 if narrow else 340)
         self.files.setMaximumHeight(280 if narrow else 700)
@@ -359,16 +392,20 @@ class LibraryWorkspace(QWidget):
             self.start_index()
 
     def _pause(self, paused):
+        self._pause_requested = paused
         self.controller.pause(paused)
         self.pause_button.setText("Resume" if paused else "Pause")
-        if paused:
-            self.message.setText("Pausing after the current file or model request. Resume to continue.")
+        self._show_index_feedback()
 
     def _stop(self):
+        self._stop_requested = True
         self.controller.cancel()
-        self.message.setText("Stopping after the current file or model request. Completed work is kept; update again to resume.")
+        self.pause_button.setEnabled(False)
+        self.stop_button.setEnabled(False)
+        self._show_index_feedback()
 
     def _busy_changed(self, busy):
+        starting = busy and not self._busy
         self._busy = busy
         enabled = not self._locked()
         self.summary_button.setText("Preparing result…" if self._document_busy else "Summarize selected")
@@ -377,23 +414,41 @@ class LibraryWorkspace(QWidget):
         self.add_button.setEnabled(enabled)
         self.refresh_button.setEnabled(enabled)
         self.remove_button.setEnabled(enabled and self.roots.count() > 0)
-        self.pause_button.setEnabled(busy)
-        self.stop_button.setEnabled(busy)
+        self.pause_button.setEnabled(busy and not self._stop_requested)
+        self.stop_button.setEnabled(busy and not self._stop_requested)
         self.job_controls.setVisible(busy)
         self.progress.setVisible(busy)
-        if busy:
+        if starting:
+            self._pause_requested = self._stop_requested = False
+            self.pause_button.setEnabled(True)
+            self.stop_button.setEnabled(True)
             self._clear_review()
             self.answer.hide()
             self.sources.hide()
             self.excerpt.hide()
             self.progress.setRange(0, 0)
-            self.message.setText("Scanning local documents. You can pause or stop between files.")
-        else:
+            self._index_feedback = "Finding and reading your documents… originals stay in place."
+            self._show_index_feedback()
+        elif not busy:
+            self.pause_button.blockSignals(True)
             self.pause_button.setChecked(False)
+            self.pause_button.blockSignals(False)
+            self.pause_button.setText("Pause")
+            self._pause_requested = self._stop_requested = False
         self._selection()
         self._refresh_next_step()
 
     def _refresh_next_step(self):
+        records = self.snapshot.files if self.snapshot else ()
+        ready = len({r.path for r in records if r.status == "indexed"})
+        attention = len({r.path for r in records if r.status != "indexed" or r.issue})
+        self.health.setVisible(bool(records))
+        self.search_button.setEnabled(bool(self.snapshot and self.snapshot.searchable))
+        self.ready_count.setText(f"Shown: {ready} ready to read")
+        self.attention_count.setText(f"Needs attention: {attention}")
+        self.attention_count.setVisible(bool(attention))
+        self.attention_button.setVisible(bool(attention))
+        self.attention_button.setEnabled(not self._locked())
         if self._busy:
             text = "Preparing documents… completed work is kept if you stop."
         elif self._document_busy:
@@ -404,13 +459,46 @@ class LibraryWorkspace(QWidget):
             text = "Checking local AI…"
         elif self.snapshot is None:
             text = "Loading your document library…"
-        elif not self.snapshot.total:
-            text = "Add a folder to begin, or prepare documents from your organized destination."
+        elif not records:
+            text = ("Your folder is saved. Select Prepare documents to read its files."
+                if self.snapshot.roots and not self.snapshot.last_run else
+                "No documents found in the last preparation. Add a folder containing PDF, Office, text or image files."
+                if self.snapshot.last_run else
+                "Choose a document folder to begin. FilePilot will read its files without moving them.")
         else:
-            attention = self.snapshot.total - self.snapshot.searchable
-            text = f"{self.snapshot.searchable} documents ready" + (f" · {attention} need attention" if attention else "") + ". Select a document to preview, search or summarize."
-        self.journey.setVisible(self.snapshot is None or not self.snapshot.total)
+            text = ("Select a ready document to preview or summarize, or search across your prepared documents."
+                if ready else "Your documents need a reading check. Review issues, then prepare documents again.")
+            if self.snapshot.truncated:
+                text += " Counts describe the displayed catalog; Search documents covers the full index."
+        if self.snapshot and self.snapshot.last_run.get("cancelled") and not self._locked():
+            text = "Preparation was stopped. Completed files are kept; select Continue preparation to resume. " + text
+        self.steps.setVisible(not ready)
+        active = 0 if not self.snapshot or not (self.snapshot.roots or records) else 1 if not ready else 2
+        for index, label in enumerate(self.step_labels):
+            label.setProperty("badgeTone", "success" if index < active else "info" if index == active else "neutral")
+            label.style().unpolish(label)
+            label.style().polish(label)
+        self.add_button.setText("Add another folder" if records or self.snapshot and self.snapshot.roots else "Choose document folder")
+        self.update_button.setText("Preparing documents…" if self._busy else
+            "Continue preparation" if self.snapshot and self.snapshot.last_run.get("cancelled") else "Prepare documents")
         self.next_step.setText(text)
+        if self._busy and not records:
+            self.empty_state.setText("Your documents will appear here when preparation finishes. Completed work is kept if you stop.")
+
+    def _clear_filters(self):
+        self.filter.clear()
+        self.type_filter.setCurrentIndex(0)
+        self.status_filter.setCurrentIndex(0)
+
+    def _review_issues(self):
+        self.filter.clear()
+        self.type_filter.setCurrentIndex(0)
+        self.status_filter.setCurrentIndex(2)
+
+    def _show_index_feedback(self):
+        prefix = ("Stopping after the current file or model request. Completed work is kept. " if self._stop_requested else
+            "Pause requested; the current file or model request may finish first. Select Resume to continue. " if self._pause_requested else "")
+        self.message.setText(prefix + self._index_feedback)
 
     def _progress(self, progress):
         if progress.total is None:
@@ -420,7 +508,11 @@ class LibraryWorkspace(QWidget):
             self.progress.setRange(0, max(1, progress.total))
             self.progress.setValue(progress.completed)
             count = f"{progress.completed}/{progress.total} files"
-        self.message.setText(f"{progress.stage.title()} · {count} · {progress.filename}")
+        stage = {"extracting": "Reading documents", "semantic": "Improving smart search"}.get(progress.stage, "Preparing documents")
+        self._index_feedback = f"{stage} · {count}" + (f" · {progress.filename}" if progress.filename else "")
+        if progress.stage == "semantic":
+            self._index_feedback += ". Text search and summaries do not require smart search."
+        self._show_index_feedback()
 
     def _prepare_ai(self):
         if self._locked():
@@ -460,14 +552,14 @@ class LibraryWorkspace(QWidget):
             for path in result.roots:
                 self.roots.addItem(str(path), str(path))
             index = self.roots.findData(current)
-            if index >= 0:
-                self.roots.setCurrentIndex(index)
+            if self.roots.count():
+                self.roots.setCurrentIndex(index if index >= 0 else 0)
             last = result.last_run
             stamp = last.get("finished_at", "Not recorded by this version")
             self.stats.setText(f"{result.total} files cataloged · {result.searchable} with indexed text · {result.semantic} with stored smart vectors\nLast update: {stamp}" + (" · Stopped before completion" if last.get("cancelled") else ""))
             self._render_files()
-            self.document_controls.setVisible(bool(result.total))
-            self.scope.setVisible(bool(result.total))
+            self.document_controls.setVisible(bool(result.files))
+            self.scope.setVisible(bool(result.files))
             self._busy_changed(self._busy)
             if key == "add":
                 self.start_index()
@@ -534,6 +626,7 @@ class LibraryWorkspace(QWidget):
         if self.snapshot is None:
             return
         selected = set(self._selected_paths())
+        self.filters.setVisible(bool(self.snapshot.files))
         self.files.clear()
         query = self.filter.text().casefold().strip()
         for record in self.snapshot.files:
@@ -559,7 +652,10 @@ class LibraryWorkspace(QWidget):
         self.files.setVisible(visible)
         self.document_body.setVisible(visible)
         self.empty_state.setVisible(not visible)
-        self.empty_state.setText("No documents match these filters. Clear or change the filters to see your files." if self.snapshot.total else
+        self.clear_filters_button.setVisible(not visible and bool(self.filter.text() or self.status_filter.currentIndex() or self.type_filter.currentIndex()))
+        self.empty_state.setText("No documents match these filters. Clear or change the filters to see your files." if self.snapshot.files else
+            "No documents found. Add a folder containing PDF, Office, text or image files." if self.snapshot.last_run else
+            "Select Prepare documents to read the saved library folders." if self.snapshot.roots else
             "Add a folder to start. FilePilot will prepare its documents automatically without moving them.")
         self._selection()
         if self.snapshot.truncated:
@@ -622,6 +718,8 @@ class LibraryWorkspace(QWidget):
     def _clear_review(self):
         self._review = None
         self.result_heading.hide()
+        self.document_status.hide()
+        self.document_progress.hide()
         self._source_records = ()
         self.result_tools.hide()
         self.answer.clear()

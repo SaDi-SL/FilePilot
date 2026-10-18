@@ -103,3 +103,25 @@ requested file names above the answer. The outer My Files page scrolls to that
 heading after layout updates, including at narrow window sizes; completion does
 not switch tabs or scroll an unrelated workspace. An unsupported/no-evidence
 response is also revealed so users can read the outcome.
+
+## Guided document preparation
+
+An empty library shows the three steps and a **Choose document folder** action.
+Once a folder is saved, guidance points to preparation; a completed scan with no
+documents explains which file types to add. Filters stay hidden until there are
+catalog entries. A stopped scan offers **Continue preparation** without discarding
+completed work.
+
+Health badges count distinct paths in the current catalog snapshot, before filename,
+type and status filtering. Ready-to-read means the displayed record is indexed;
+attention includes unreadable/stale records and recorded issues, so the badges can
+overlap when readable text has a smart-search issue. The view is bounded; truncated
+catalogs explain that these counts cover the displayed catalog while Search documents
+uses the full index. **Review issues** clears other filters and shows the attention
+rows. **Clear filters** restores the catalog after a filter has no matches.
+
+Reading and smart-search preparation use separate progress descriptions. Status
+refreshes preserve the active progress range/value and any pause or stop request.
+Pause/Stop explain that the current file or model request may finish first; they
+do not claim an immediate interruption. Completing a job resets its controls without
+sending an accidental resume request. All preparation keeps originals in place.
