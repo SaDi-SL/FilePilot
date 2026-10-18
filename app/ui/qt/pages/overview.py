@@ -16,6 +16,7 @@ class OverviewPage(QWidget):
     setup_requested = Signal()
     library_requested = Signal()
     add_documents_requested = Signal()
+    document_action_requested = Signal(str)
 
     def __init__(self, bridge: QtServiceBridge, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -67,6 +68,7 @@ class OverviewPage(QWidget):
         self._overview_product_snapshot = None
         self._startup_status = None
         self._library_busy = False
+        self._document_action = "library"
         self.welcome_card = SectionCard()
         self.welcome_card.setProperty("cardAccent", "purple")
         welcome_title = QLabel("What would you like to do?")
@@ -92,7 +94,7 @@ class OverviewPage(QWidget):
         self.add_documents_button.setProperty("variant", "primary")
         self.add_documents_button.clicked.connect(self.add_documents_requested)
         self.library_button = QPushButton("Open document library")
-        self.library_button.clicked.connect(self.library_requested)
+        self.library_button.clicked.connect(self._activate_document_action)
         self.document_actions = QBoxLayout(QBoxLayout.Direction.LeftToRight)
         self.document_actions.addWidget(self.add_documents_button)
         self.document_actions.addWidget(self.library_button)
@@ -226,27 +228,55 @@ class OverviewPage(QWidget):
     def _library_error(self, key, _message):
         if key in {"status", "index", "add", "remove"}:
             self.document_next.setText("The library needs attention. Open Document library to review the issue and retry.")
+            self._set_document_action("library", "Review document library")
+
+    def _activate_document_action(self):
+        if self._document_action == "library":
+            self.library_requested.emit()
+        else:
+            self.document_action_requested.emit(self._document_action)
+
+    def _set_document_action(self, action, label):
+        self._document_action = action
+        self.library_button.setText(label)
+        self.library_button.setAccessibleName(label)
+        has_library = bool(self._library_snapshot and (
+            self._library_snapshot.roots or self._library_snapshot.files
+            or self._library_snapshot.searchable))
+        for button, primary in ((self.library_button, has_library),
+                                (self.add_documents_button, not has_library)):
+            button.setProperty("variant", "primary" if primary else "secondary")
+            button.style().unpolish(button)
+            button.style().polish(button)
 
     def _render_document_next(self):
         catalog = self._library_snapshot
         if self._library_busy:
             text = "Preparing your documents… Open the library to see progress or pause."
+            action, label = "library", "View preparation"
         elif catalog is None:
             text = "Add a document folder to begin. Folder monitoring is not required."
+            action, label = "library", "Open document library"
         elif catalog.last_run.get("cancelled"):
-            text = "Preparation was stopped. Open the library and choose Continue preparation; completed work is kept."
+            text = "Preparation was stopped. Choose Continue preparation; completed work is kept."
+            action, label = "prepare", "Continue preparation"
         elif catalog.searchable:
-            text = "Your library has indexed text. Open it to check file status, search or select a document to summarize."
+            text = "Your library has indexed text. Choose Search documents, or open Document library in My Files to select a document to summarize."
+            action, label = "search", "Search documents"
         elif catalog.files:
-            text = "Your documents need a reading check. Open the library and choose Review issues."
+            text = "Your documents need a reading check. Choose Review issues to see the files needing attention."
+            action, label = "issues", "Review issues"
         elif catalog.roots:
-            text = "Your folder is saved. Open the library and choose Prepare documents."
+            text = ("No documents were found in the last preparation. Add a folder containing PDF, Office, text or image files, or prepare again after adding files."
+                    if catalog.last_run else "Your folder is saved. Choose Prepare documents to read its files.")
+            action, label = "prepare", "Prepare documents"
         else:
             text = "Add a document folder to begin. Folder monitoring is not required."
+            action, label = "library", "Open document library"
         self.document_next.setText(text)
         self.add_documents_button.setEnabled(not self._library_busy)
         self.add_documents_button.setText("Add another folder" if catalog and (catalog.roots or catalog.files) else "Add document folder")
-        self.library_button.setText("View preparation" if self._library_busy else "Open document library")
+        self._set_document_action(action, label)
 
     def _status_row(self, name: str, value: str) -> QLabel:
         row = QHBoxLayout()

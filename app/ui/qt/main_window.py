@@ -115,6 +115,7 @@ class MainWindow(QMainWindow):
         self.overview_page.setup_requested.connect(self.open_setup)
         self.overview_page.library_requested.connect(self._open_index)
         self.overview_page.add_documents_requested.connect(self._add_document_folder)
+        self.overview_page.document_action_requested.connect(self._open_document_action)
         self.my_files_page.activity_requested.connect(self._show_organized_activity)
         self.my_files_page.recovery_requested.connect(lambda: self.show_page("recovery"))
         self.bridge.closed.connect(self._finish_close)
@@ -145,10 +146,27 @@ class MainWindow(QMainWindow):
 
     def _open_index(self):
         self.show_page("my_files")
+        self.my_files_page.scroll_area.verticalScrollBar().setValue(0)
         if self.my_files_page.library_workspace is not None:
             self.my_files_page.workspace_tabs.setCurrentWidget(self.my_files_page.library_workspace)
         else:
             self.my_files_page.workspace_tabs.setCurrentIndex(1)
+
+    def _open_document_action(self, action: str) -> None:
+        if action == "search":
+            self.show_page("my_files")
+            self.my_files_page._show_text_search()
+            return
+        self._open_index()
+        workspace = self.my_files_page.library_workspace
+        if workspace is None:
+            return
+        if action == "prepare":
+            # Only the user's labelled Prepare/Continue action starts a job.
+            # The library button and controller retain their current busy guards.
+            QTimer.singleShot(0, workspace, workspace.update_button.click)
+        elif action == "issues":
+            workspace._review_issues()
 
     def _add_document_folder(self):
         self._open_index()

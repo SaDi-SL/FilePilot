@@ -3,8 +3,18 @@
 Overview starts with two explicit choices. **Add document folder** opens the read-only
 Document library folder picker; adding a folder prepares its documents without
 requiring watched folders or an organized destination. Cancelling the picker adds
-nothing. **Open document library** resumes preparation, reviews reading issues,
-or opens already indexed documents. Home guidance follows the stored library status.
+nothing. The next-step button follows the current library status:
+
+- **Prepare documents** reads a saved folder when explicitly clicked.
+- **Continue preparation** starts a new preparation pass after a stopped run, keeping completed work.
+- **View preparation** opens the running job without starting another one.
+- **Review issues** opens the library with unrelated filters cleared and Needs attention selected.
+- **Search documents** opens keyword search with guidance for using Text search without AI. It does not submit a query or start Ollama.
+
+Before a folder is added, **Open document library** opens the workspace. If no
+documents were found in the last preparation, Home explains that a folder containing
+supported files is needed, rather than presenting it as an unread folder. Status
+updates only change guidance and button labels; they do not start preparation.
 Text search does not require AI; summaries require local Ollama and a saved model.
 
 **Set up file organization** opens the optional organization guide below. It never

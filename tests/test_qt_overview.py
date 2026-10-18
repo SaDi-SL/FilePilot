@@ -127,6 +127,89 @@ class QtOverviewTests(unittest.TestCase):
         self.assertIsNone(window._setup_dialog)
         window.close()
 
+    def test_home_actions_follow_library_state_without_starting_work(self):
+        from app.library_catalog import LibrarySnapshot, LibraryFile
+        page, bridge = self._page(snapshot(MonitorState.STOPPED, StartupStatus.SETUP_REQUIRED))
+        actions, libraries = [], []
+        page.document_action_requested.connect(actions.append)
+        page.library_requested.connect(lambda: libraries.append(True))
+        root = Path("/documents")
+        cases = (
+            (LibrarySnapshot((root,), 0, 0, 0, (), {}), "Prepare documents", "prepare"),
+            (LibrarySnapshot((root,), 1, 1, 0, (), {}), "Search documents", "search"),
+            (LibrarySnapshot((root,), 1, 1, 0, (), {"cancelled": True}), "Continue preparation", "prepare"),
+            (LibrarySnapshot((root,), 1, 0, 0, (LibraryFile(root / "scan.pdf", "ocr_required", "", False),), {}), "Review issues", "issues"),
+        )
+        for catalog, label, action in cases:
+            with self.subTest(label=label):
+                previous = len(actions)
+                page._library_result("status", catalog)
+                self.assertEqual(len(actions), previous)
+                self.assertEqual(page.library_button.text(), label)
+                self.assertEqual(page.library_button.property("variant"), "primary")
+                page.library_button.click()
+                self.assertEqual(actions[-1], action)
+        page._library_busy_changed(True)
+        self.assertEqual(page.library_button.text(), "View preparation")
+        page.library_button.click()
+        self.assertEqual(libraries, [True])
+        page._library_busy_changed(False)
+        page._library_error("status", "Unavailable")
+        page.library_button.click()
+        self.assertEqual(libraries, [True, True])
+        self.assertEqual(bridge.start_calls, 0)
+
+    def test_home_shortcuts_route_prepare_issues_and_search_without_ai(self):
+        from app.library_catalog import LibrarySnapshot, LibraryFile
+        from tests.test_qt_library import ControllerStub
+        bridge = BridgeStub(snapshot(MonitorState.STOPPED, StartupStatus.SETUP_REQUIRED))
+        bridge.library = ControllerStub()
+        window = MainWindow(bridge)
+        window.show()
+        self.app.processEvents()
+        home, files = window.overview_page, window.my_files_page
+        library = files.library_workspace
+        root = Path("/documents")
+        saved = LibrarySnapshot((root,), 0, 0, 0, (), {})
+        bridge.library.result.emit("status", saved)
+        self.assertTrue(all(key == "status" for key, _ in bridge.library.requests))
+        home.library_button.click()
+        QTest.qWait(20)
+        self.assertIs(files.workspace_tabs.currentWidget(), library)
+        self.assertEqual(bridge.library.requests[-1], ("index", {}))
+        count = sum(key == "index" for key, _ in bridge.library.requests)
+        # A job starting between the click and its queued dispatch blocks a second job.
+        home.library_button.click()
+        bridge.library.busy_changed.emit(True)
+        QTest.qWait(20)
+        self.assertEqual(sum(key == "index" for key, _ in bridge.library.requests), count)
+        bridge.library.busy_changed.emit(False)
+        bridge.library.result.emit("status", LibrarySnapshot((root,), 1, 0, 0,
+            (LibraryFile(root / "scan.pdf", "ocr_required", "", False),), {}))
+        library.filter.setText("unrelated")
+        library.type_filter.setCurrentText(".txt")
+        home.library_button.click()
+        self.assertEqual(library.filter.text(), "")
+        self.assertEqual(library.type_filter.currentIndex(), 0)
+        self.assertEqual(library.status_filter.currentText(), "Needs attention")
+        self.assertEqual(library.files.topLevelItemCount(), 1)
+        bridge.library.result.emit("status", LibrarySnapshot((root,), 1, 1, 0, (), {}))
+        before = list(bridge.library.requests)
+        home.library_button.click()
+        self.assertEqual(files.workspace_tabs.currentIndex(), 1)
+        self.assertTrue(files.search_input.hasFocus())
+        self.assertIn("without AI", files.search_status.text())
+        self.assertEqual(bridge.library.requests, before)
+        self.assertEqual(bridge.start_calls, 0)
+
+    def test_home_empty_preparation_is_distinct_from_unprepared_folder(self):
+        from app.library_catalog import LibrarySnapshot
+        page, _ = self._page(snapshot(MonitorState.STOPPED))
+        page._library_result("status", LibrarySnapshot((Path("/empty"),), 0, 0, 0, (),
+            {"finished_at": "2026-10-19"}))
+        self.assertIn("No documents were found", page.document_next.text())
+        self.assertEqual(page.library_button.text(), "Prepare documents")
+
     def test_home_next_step_tracks_library_and_does_not_hide_real_errors(self):
         from app.library_catalog import LibrarySnapshot, LibraryFile
         from app.application_service import ProductMetrics, ProductDataState

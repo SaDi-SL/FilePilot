@@ -7,7 +7,7 @@ journeys over adding disconnected features.
 
 | Priority | Implemented foundation | Remaining work |
 | --- | --- | --- |
-| Easy first use | Overview offers read-only document folders and optional organization setup. Preparation guidance follows library state. No automatic setup modal or monitoring start. | Review the complete first-use journey on the user's Windows PC, including no models, an empty folder and unreadable documents. |
+| Easy first use | Overview offers read-only document folders and optional organization setup. Its next-step button routes to preparation, continuation, issues or text-search guidance according to library state. No automatic setup modal or monitoring start. | Review the complete first-use journey on the user's Windows PC, including no models, an empty folder and unreadable documents. |
 | Clear preparation | Reading/smart-search stages, pause/stop requests, continuation, visible issues and filter recovery. | Validate larger and mixed-language collections, inaccessible folders and partial preparation on realistic hardware. |
 | Useful search | Visible indexed excerpts, literal highlighting, source preview, external open, explicit text search without AI. | Improve relevance against a real document/query set. Matched PDF-page navigation needs reliable page mapping; current previews explicitly start on page 1. |
 | Verifiable answers | Selected-file summaries/comparisons, validated citation structure, exact excerpts, library-question entry, explicit AI checks, answer progress, and quick-summary/key-point/action-and-date formats. | Evaluate completeness and factual accuracy on real English, Arabic and Swedish documents. Citation-format validation alone is insufficient. |
