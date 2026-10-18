@@ -67,3 +67,10 @@ Swedish text, JPEG/TIFF/WebP/BMP conversion and an image-only PDF, verifies that
 all three bundled languages are used, and hashes every source before/after. The
 operation writes a new report exclusively and never overwrites a document or an
 existing report. It does not invoke Ollama. Normal launch remains the Qt app.
+
+The OCR-enabled candidate from `11783c8016c63759137185bd625ba2fe0a672d45`
+passed all 825 Windows tests and all eight installed OCR checks, including exact
+Arabic words and Swedish diacritics, plus the native application/uninstall check.
+Download: https://github.com/SaDi-SL/FilePilot/actions/runs/39138296815/artifacts/12140314653.
+Evidence and limitations are recorded in `docs/release-validation.md`. This
+supersedes the earlier OCR-disabled candidate and remains unsigned/development.

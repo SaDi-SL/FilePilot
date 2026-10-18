@@ -52,3 +52,38 @@ The executable and Inno installer were actually built on Windows 2025. Automated
 - Candidate ZIP: 135,407,431 bytes; artifacts expire 1 November 2026.
 
 The first packaging attempt exposed the command-line OCR flag being treated as a truthy string. The installer now uses an explicit integer comparison, and the final actual compilation passed with OCR disabled. The candidate is **unsigned**, includes **no OCR runtime**, and requires separately installed Ollama/models for local AI. No stable release was published and main was not merged. The known Linux ownership/replacement failures remain unresolved.
+
+## Bundled OCR candidate — 18 October 2026
+
+Tested source: `11783c8016c63759137185bd625ba2fe0a672d45`.
+All **825 tests across 53 modules passed, with zero skips**, on Windows.
+The separate Windows quality workflow also passed. The source build detected
+Visual Studio 2026, compiled the pinned static OCR engine, verified all source
+and language downloads, then built the executable and installer successfully.
+
+The installed executable passed **eight real OCR checks**: English, Arabic and
+Swedish PNGs; JPEG, TIFF, WebP and BMP conversion; and a PDF with no embedded
+text. All expected words were verified, including the full Arabic phrase and
+Swedish `för`/`läsning`. Each input's hash remained unchanged. The report verifies
+use of the bundled runtime and all three languages. The native Qt launch,
+normal shutdown, removal of installed binaries and retention of user data also
+passed. These are clean synthetic fixtures, not an accuracy benchmark for
+arbitrary photographs, handwriting, mixed PDFs or every document layout.
+
+An earlier installed check exposed English-first recognition losing an Arabic
+word. Prioritizing Arabic and Swedish before the English fallback corrected the
+fixtures, including Swedish diacritics; the final checks were strengthened to
+verify all those words. Extraction revision v2 invalidates previous cached text.
+
+- Candidate run: https://github.com/SaDi-SL/FilePilot/actions/runs/39138296815
+- Download: https://github.com/SaDi-SL/FilePilot/actions/runs/39138296815/artifacts/12140314653
+- Evidence: https://github.com/SaDi-SL/FilePilot/actions/runs/39138296815/artifacts/12141145451
+- Quality: https://github.com/SaDi-SL/FilePilot/actions/runs/39138296819
+- ZIP: 141,420,174 bytes; retention ends 1 November 2026.
+- Package source fingerprint: `9167c2ec86edece9182b7ed9b2a81e85a0f69136de30b82eb41004afc878787a`.
+
+This candidate includes local OCR and its exact upstream notices; it remains
+unsigned and requires separate local Ollama/models for AI summaries. No stable
+release was published or main merged. The previously documented Linux ownership
+failures remain outside this Windows OCR change. A later documentation-only
+commit records these results without changing the tested application or package.
