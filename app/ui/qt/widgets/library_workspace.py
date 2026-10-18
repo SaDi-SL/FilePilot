@@ -1,12 +1,13 @@
 from pathlib import Path
 
 from PySide6.QtCore import QSettings, QTimer, Qt, QUrl, QSize, QSaveFile, QIODevice, Signal
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QDesktopServices, QColor
 from PySide6.QtWidgets import (QApplication, QAbstractItemView, QCheckBox, QComboBox, QFileDialog,
     QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QPlainTextEdit, QProgressBar, QPushButton, QTreeWidget, QTreeWidgetItem,
-    QVBoxLayout, QWidget, QGridLayout, QLayout)
+    QVBoxLayout, QWidget, QGridLayout, QLayout, QSplitter, QStyle)
 from app.ui.qt.widgets.section_card import SectionCard
+from app.ui.qt.widgets.library_preview import LibraryPreview
 
 
 STATUS = {
@@ -59,7 +60,7 @@ class LibraryWorkspace(QWidget):
         card.setProperty("cardAccent", "purple")
         heading = QLabel("Your document library")
         heading.setProperty("role", "headline")
-        hint = QLabel("Add folders to search and understand their documents. Library folders are read only: adding one never moves or reorganizes its files.")
+        hint = QLabel("Find information inside your documents, preview their pages and get summaries with sources. Your original files stay in place.")
         hint.setWordWrap(True)
         hint.setProperty("role", "secondary")
         card.content_layout.addWidget(heading)
@@ -72,7 +73,8 @@ class LibraryWorkspace(QWidget):
         self.next_step.setWordWrap(True)
         card.content_layout.addWidget(self.next_step)
         self.advanced = QWidget()
-        advanced_layout = QVBoxLayout(self.advanced)
+        advanced_layout = _ActionGrid()
+        self.advanced.setLayout(advanced_layout)
         advanced_layout.setContentsMargins(0, 0, 0, 0)
         self.advanced.hide()
         roots = _ActionGrid()
@@ -132,6 +134,7 @@ class LibraryWorkspace(QWidget):
         self.job_details.hide()
         advanced_layout.addWidget(self.job_details)
         self.more_button = QPushButton("More options")
+        self.more_button.setMaximumWidth(170)
         self.more_button.setCheckable(True)
         self.more_button.toggled.connect(self._toggle_options)
         card.content_layout.addWidget(self.more_button)
@@ -166,8 +169,8 @@ class LibraryWorkspace(QWidget):
         self.files.setRootIsDecorated(False)
         self.files.setHeaderLabels(("Document", "Reading status", "Smart index", "Last indexed (UTC)"))
         self.files.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        self.files.setMinimumHeight(210)
-        self.files.setMaximumHeight(340)
+        self.files.setMinimumHeight(340)
+        self.files.setMaximumHeight(580)
         self.files.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         for col in (1, 2, 3):
             self.files.header().setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
@@ -177,15 +180,24 @@ class LibraryWorkspace(QWidget):
         self.empty_state.setWordWrap(True)
         self.empty_state.hide()
         card.content_layout.addWidget(self.empty_state)
-        card.content_layout.addWidget(self.files)
+        self.document_body = QSplitter(Qt.Orientation.Horizontal)
+        self.document_body.setChildrenCollapsible(False)
+        self.document_body.addWidget(self.files)
+        self.preview = LibraryPreview(controller)
+        self.document_body.addWidget(self.preview)
+        self.document_body.setStretchFactor(0, 3)
+        self.document_body.setStretchFactor(1, 2)
+        card.content_layout.addWidget(self.document_body)
         self.detail = QLabel("Select a document to see its full path and any indexing issue.")
         self.detail.setWordWrap(True)
         self.detail.setTextFormat(Qt.TextFormat.PlainText)
         self.detail.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        card.content_layout.addWidget(self.detail)
+        self.preview.content_layout.insertWidget(2, self.detail)
         document_actions = _ActionGrid()
-        self._rows.append(document_actions)
+        # Keep selected-file actions compact inside the preview panel.
+        document_actions.reflow(2)
         self.summary_button = QPushButton("Summarize selected")
+        self.summary_button.setProperty("variant", "primary")
         self.summary_button.clicked.connect(lambda: self._document(False))
         self.compare_button = QPushButton("Compare two files")
         self.compare_button.clicked.connect(lambda: self._document(True))
@@ -193,6 +205,9 @@ class LibraryWorkspace(QWidget):
         self.suggest_button.clicked.connect(lambda: self._document(False, suggest=True))
         self.open_button = QPushButton("Open file")
         self.open_button.clicked.connect(self._open)
+        self.ocr_check_button = QPushButton("Check OCR")
+        self.ocr_check_button.clicked.connect(lambda: self.controller.request("ocr_status"))
+        self.ocr_check_button.hide()
         self.language = QComboBox()
         self.language.addItems(("English", "Arabic", "Swedish"))
         saved_language = self._preferences.value("library/answer_language", "English")
@@ -200,12 +215,15 @@ class LibraryWorkspace(QWidget):
             self.language.setCurrentText(saved_language)
         self.language.currentTextChanged.connect(lambda value: self._preferences.setValue("library/answer_language", value))
         self.language.setAccessibleName("Document insights language")
-        for widget in (self.summary_button, self.compare_button, self.suggest_button, self.open_button, self.language):
+        for widget in (self.summary_button, self.open_button, self.language, self.compare_button, self.suggest_button):
             document_actions.addWidget(widget)
         self.document_controls = QWidget()
         self.document_controls.setLayout(document_actions)
+        self.preview.content_layout.insertWidget(3, self.ocr_check_button)
         self.document_controls.hide()
-        card.content_layout.addWidget(self.document_controls)
+        self.compare_button.hide()
+        self.suggest_button.hide()
+        self.preview.content_layout.insertWidget(3, self.document_controls)
         self.scope = scope = QLabel("Insights use selected indexed excerpts and local Ollama. Long documents are sampled; chunk numbers are not PDF page numbers.")
         scope.setProperty("role", "caption")
         scope.setWordWrap(True)
@@ -260,12 +278,17 @@ class LibraryWorkspace(QWidget):
         self._update_columns()
 
     def minimumSizeHint(self):
-        return QSize(420, 380)
+        return QSize(420, self.layout().minimumSize().height())
 
     def resizeEvent(self, event):
         columns = 2 if event.size().width() < 840 else 5
         for row in self._rows:
             row.reflow(min(columns, len(row.widgets)))
+        narrow = event.size().width() < 840
+        self.document_body.setOrientation(Qt.Orientation.Vertical if narrow else Qt.Orientation.Horizontal)
+        self.files.setMinimumHeight(220 if narrow else 340)
+        self.files.setMaximumHeight(280 if narrow else 700)
+        self.document_body.setMinimumHeight(890 if narrow else 650)
         self._update_columns(event.size().width())
         super().resizeEvent(event)
 
@@ -282,6 +305,7 @@ class LibraryWorkspace(QWidget):
 
     def _toggle_options(self, checked):
         self.advanced.setVisible(checked)
+        self.suggest_button.setVisible(checked)
         self._update_columns()
         self.more_button.setText("Fewer options" if checked else "More options")
         self.more_button.setAccessibleDescription("Advanced document library controls expanded" if checked else "Advanced document library controls collapsed")
@@ -364,7 +388,9 @@ class LibraryWorkspace(QWidget):
         elif not self.snapshot.total:
             text = "Add a folder to begin, or prepare documents from your organized destination."
         else:
-            text = f"Indexed text in {self.snapshot.searchable} of {self.snapshot.total} files. Select a document below or search your files."
+            attention = self.snapshot.total - self.snapshot.searchable
+            text = f"{self.snapshot.searchable} documents ready" + (f" · {attention} need attention" if attention else "") + ". Select a document to preview, search or summarize."
+        self.journey.setVisible(self.snapshot is None or not self.snapshot.total)
         self.next_step.setText(text)
 
     def _progress(self, progress):
@@ -386,6 +412,13 @@ class LibraryWorkspace(QWidget):
         self.controller.request("local_ai")
 
     def _result(self, key, result):
+        if key == "ocr_status":
+            if result.available:
+                languages = ", ".join({"eng": "English", "ara": "Arabic", "swe": "Swedish"}.get(code, code) for code in result.languages)
+                self.detail.setText(f"Local OCR found ({result.source}). Languages: {languages or 'language files missing'}.\nPrepare documents to retry. If reading still fails, open the original to check it is readable.")
+            else:
+                self.detail.setText("Local OCR is missing. Install FilePilot with Setup from the installer folder, reopen it and select Prepare documents. " + (result.detail or ""))
+            return
         if key == "local_ai":
             self._ai_busy = False
             if not result.reachable:
@@ -456,6 +489,8 @@ class LibraryWorkspace(QWidget):
             self._busy_changed(self._busy)
 
     def _error(self, key, message):
+        if key == "preview":
+            return
         if key == "local_ai":
             self._ai_busy = False
         if key in {"add", "remove"}:
@@ -483,7 +518,10 @@ class LibraryWorkspace(QWidget):
             if self.status_filter.currentIndex() == 2 and record.status == "indexed" and not record.issue:
                 continue
             item = QTreeWidgetItem((record.path.name, STATUS.get(record.status, record.status),
-                "Stored" if record.semantic else "Not indexed", record.indexed_at[:19].replace("T", " ")))
+                "Stored" if record.semantic and record.status == "indexed" else "Not ready", record.indexed_at[:19].replace("T", " ")))
+            icon = QStyle.StandardPixmap.SP_FileIcon
+            item.setIcon(0, self.style().standardIcon(icon))
+            item.setForeground(1, QColor("#8dd9b0" if record.status == "indexed" else "#ffc17a"))
             item.setData(0, Qt.ItemDataRole.UserRole, record)
             item.setToolTip(0, str(record.path))
             item.setToolTip(1, record.issue or STATUS.get(record.status, record.status))
@@ -503,20 +541,24 @@ class LibraryWorkspace(QWidget):
 
     def _selection(self):
         paths = self._selected_paths()
+        self.preview.select(paths[0] if len(paths) == 1 else None)
         enabled = not self._locked()
         readable = bool(paths) and all(item.data(0, Qt.ItemDataRole.UserRole).status == "indexed" for item in self.files.selectedItems())
         self.summary_button.setEnabled(enabled and readable and len(paths) == 1)
         self.suggest_button.setEnabled(enabled and readable and len(paths) == 1)
         self.compare_button.setEnabled(enabled and readable and len(paths) == 2)
+        self.compare_button.setVisible(len(paths) == 2)
         self.open_button.setEnabled(len(paths) == 1)
+        self.ocr_check_button.setVisible(len(paths) == 1 and self.files.selectedItems()[0].data(0, Qt.ItemDataRole.UserRole).status in {"ocr_required", "ocr_unavailable", "extraction_failed"})
         if len(paths) == 1:
             record = self.files.selectedItems()[0].data(0, Qt.ItemDataRole.UserRole)
             advice = "Select Summarize for a local review with sources." if readable else "This file has no current readable text. Prepare documents or check its reading status before summarizing."
-            self.detail.setText(f"{record.path}\n{record.issue or advice}")
+            self.detail.setText(f"{STATUS.get(record.status, record.status)} · {record.path.suffix.upper().lstrip(chr(46)) or chr(8212)}\n{record.issue or advice}")
+            self.detail.setToolTip(str(record.path))
         elif paths:
             self.detail.setText(f"{len(paths)} files selected. Select exactly two with indexed text to compare.")
         else:
-            self.detail.setText("Select one document to summarize, or Ctrl-click two documents to compare.")
+            self.detail.setText("Select a document to preview its pages and choose what to do. Ctrl-click two readable documents to compare.")
 
     def _document(self, compare, *, suggest=False):
         paths = self._selected_paths()

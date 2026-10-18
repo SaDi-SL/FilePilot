@@ -1,8 +1,10 @@
 """Dedicated bounded worker lane for document jobs; lifecycle commands keep their own thread."""
 import time
+from app.ui.qt.widgets.library_preview import read_library_preview
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal, Slot
 from app.library_catalog import IndexControl
 from app.product_support import check_updates, diagnostics
+from app.ocr_runtime import discover_ocr_runtime
 
 
 class _Signals(QObject):
@@ -49,6 +51,8 @@ class LibraryController(QObject):
             return
         actions = {
             "status": lambda: self.service.library_snapshot(),
+            "ocr_status": discover_ocr_runtime,
+            "preview": lambda: read_library_preview(payload["path"], payload.get("page", 0)),
             "local_ai": lambda: self.service.prepare_local_ai(),
             "updates": check_updates,
             "diagnostics": lambda: diagnostics(self.service),

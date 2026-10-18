@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 TEXT_BASED_EXTENSIONS = {
     ".txt", ".md", ".csv", ".json", ".log"
 }
-IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".webp"}
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
 EXCEL_EXTENSIONS = {".xlsx"}
 LEGACY_EXCEL_EXTENSIONS = {".xls"}
 
