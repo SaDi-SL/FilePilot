@@ -7,7 +7,7 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
-    from PySide6.QtCore import QObject, Signal
+    from PySide6.QtCore import QObject, Signal, Qt
     from PySide6.QtWidgets import QApplication
 except ImportError as error:
     raise unittest.SkipTest(
@@ -187,6 +187,81 @@ class QtMyFilesTests(unittest.TestCase):
             message="Ready",
             warning="Preview is advisory",
         )
+
+    def test_explicit_text_search_never_requests_semantic_search(self):
+        self.page.search_input.setText("traction")
+        self.page.text_search_button.click()
+        self.assertEqual(self.bridge.search_requests, [("traction", 25)])
+        self.assertEqual(self.bridge.semantic_search_requests, [])
+        self.assertFalse(self.page.text_search_button.isEnabled())
+        self.assertFalse(self.page.search_button.isEnabled())
+        self.bridge.search_request_failed.emit("search", "Index unavailable")
+        self.assertTrue(self.page.text_search_button.isEnabled())
+        self.assertTrue(self.page.search_button.isEnabled())
+        self.page.answer_text_search.click()
+        self.assertEqual(self.page.workspace_tabs.currentIndex(), 1)
+        self.assertIn("without AI", self.page.search_status.text())
+        self.assertEqual(self.bridge.semantic_search_requests, [])
+        self.assertEqual(self.bridge.answer_requests, [])
+
+    def test_library_question_route_and_explicit_ai_check_report_missing_models(self):
+        from tests.test_qt_library import ControllerStub
+        from app.library_catalog import LibrarySnapshot, LibraryFile
+        from app.local_ai_readiness import LocalAIReadiness
+        bridge = MyFilesBridgeStub()
+        bridge.library = ControllerStub()
+        page = MyFilesPage(bridge)
+        try:
+            workspace = page.library_workspace
+            bridge.library.result.emit("status", LibrarySnapshot((), 1, 1, 0,
+                (LibraryFile(self.source, "indexed", "", False),), {}))
+            workspace.ask_files_button.click()
+            self.assertEqual(page.workspace_tabs.currentIndex(), 2)
+            self.assertEqual(bridge.answer_requests, [])
+            page.answer_ai_check.click()
+            self.assertEqual(bridge.library.requests[-1][0], "local_ai")
+            self.assertFalse(page.answer_progress.isHidden())
+            self.assertFalse(page.ask_button.isEnabled())
+            missing = LocalAIReadiness(True, ("gemma4:latest",), "gemma4", True, "bge-m3", False)
+            bridge.library.result.emit("local_ai", missing)
+            self.assertIn("smart-search model bge-m3", page.answer_status.text())
+            self.assertIn("Text search", page.answer_status.text())
+            self.assertTrue(page.ask_button.isEnabled())
+            self.assertTrue(page.answer_progress.isHidden())
+            page.answer_ai_check.click()
+            bridge.library.error.emit("local_ai", "Wait for preparation to finish")
+            self.assertFalse(page._answer_ai_check_pending)
+            self.assertIn("Wait for preparation", page.answer_status.text())
+            self.assertEqual(bridge.answer_requests, [])
+        finally:
+            page.close()
+            page.deleteLater()
+
+    def test_answer_progress_and_auto_reveal_do_not_jump_another_workspace(self):
+        from PySide6.QtTest import QTest
+        self.page.resize(800, 650)
+        self.page.show()
+        self.page.question_input.setText("Question")
+        self.page.ask_button.click()
+        self.assertFalse(self.page.answer_progress.isHidden())
+        source = RAGSource("S1", self.source, self.source.name, None, 0, 0.9, "دليل الاختبار")
+        result = RAGAnswer("Question", "نتيجة موثقة [S1]", (source,), "ollama", "answered")
+        self.bridge.answer_changed.emit("Question", result)
+        QTest.qWait(30)
+        self.assertTrue(self.page.answer_progress.isHidden())
+        self.assertEqual(self.page.answer_text.document().defaultTextOption().textDirection(), Qt.LayoutDirection.RightToLeft)
+        position = self.page.answer_status.mapTo(self.page.scroll_area.viewport(), self.page.answer_status.rect().topLeft())
+        self.assertGreaterEqual(position.y(), 0)
+        self.assertLess(position.y(), self.page.scroll_area.viewport().height() // 2)
+        self.page.question_input.setText("Next")
+        self.page.ask_button.click()
+        self.assertTrue(self.page.source_details.isHidden())
+        self.assertEqual(self.page.source_excerpt.toPlainText(), "")
+        self.page.workspace_tabs.setCurrentIndex(1)
+        self.page.scroll_area.verticalScrollBar().setValue(0)
+        self.bridge.answer_changed.emit("Next", RAGAnswer("Next", "No evidence", (), "none", "no_evidence"))
+        QTest.qWait(30)
+        self.assertEqual(self.page.scroll_area.verticalScrollBar().value(), 0)
 
     def test_search_request_uses_local_semantic_product_data(self):
         self.page.search_input.setText("documents about train testing")

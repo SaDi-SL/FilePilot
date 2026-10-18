@@ -11,6 +11,8 @@ from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
     QHBoxLayout,
+    QBoxLayout,
+    QProgressBar,
     QLabel,
     QLineEdit,
     QLayout,
@@ -201,6 +203,9 @@ class MyFilesPage(QWidget):
         self.search_button.setProperty("variant", "primary")
         self.search_button.setAccessibleName("Search organized files")
         self.search_button.clicked.connect(self._request_search)
+        self.text_search_button = QPushButton("Text search")
+        self.text_search_button.setToolTip("Search stored text and file names without Ollama or an AI model.")
+        self.text_search_button.clicked.connect(lambda: self._request_search(exact=True))
         self._last_search_results = None
         self.search_type_filter = QComboBox()
         self.search_type_filter.addItems(("All types", ".pdf", ".docx", ".txt", ".xlsx", ".csv", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".webp", ".bmp"))
@@ -209,6 +214,7 @@ class MyFilesPage(QWidget):
         search_row.addWidget(self.search_input, 1)
         search_row.addWidget(self.search_type_filter)
         search_row.addWidget(self.search_button)
+        search_row.addWidget(self.text_search_button)
         self.search_card.content_layout.addLayout(search_row)
 
         self.search_status = QLabel(
@@ -271,8 +277,25 @@ class MyFilesPage(QWidget):
         answer_title = QLabel("Ask your files")
         answer_title.setProperty("role", "sectionTitle")
         self.answer_card.content_layout.addWidget(answer_title)
-        self.answer_status = QLabel("Answers use your indexed files and Ollama on this device. Update the index first.")
+        self._answer_ai_check_pending = False
+        self.answer_scope = QLabel("Ask about a topic across your prepared library. Answers use relevant excerpts, not every file. For one document, use Summarize selected in Document library.")
+        self.answer_scope.setWordWrap(True)
+        self.answer_scope.setProperty("role", "secondary")
+        self.answer_card.content_layout.addWidget(self.answer_scope)
+        self.answer_tools = QBoxLayout(QBoxLayout.Direction.LeftToRight)
+        self.answer_prepare = QPushButton("Prepare documents")
+        self.answer_prepare.clicked.connect(self._request_search_refresh)
+        self.answer_ai_check = QPushButton("Check local AI")
+        self.answer_ai_check.setToolTip("Start installed Ollama if needed and check the saved models. No models are downloaded.")
+        self.answer_ai_check.clicked.connect(self._check_answer_ai)
+        self.answer_text_search = QPushButton("Use text search without AI")
+        self.answer_text_search.clicked.connect(self._show_text_search)
+        for widget in (self.answer_prepare, self.answer_ai_check, self.answer_text_search):
+            self.answer_tools.addWidget(widget)
+        self.answer_card.content_layout.addLayout(self.answer_tools)
+        self.answer_status = QLabel("Prepare documents first. Questions need local Ollama, an answer model and the smart-search model. Check local AI if an answer fails.")
         self.answer_status.setWordWrap(True)
+        self.answer_status.setTextFormat(Qt.TextFormat.PlainText)
         self.answer_status.setProperty("role", "caption")
         self.answer_card.content_layout.addWidget(self.answer_status)
         answer_row = QHBoxLayout()
@@ -287,6 +310,11 @@ class MyFilesPage(QWidget):
         answer_row.addWidget(self.question_input, 1)
         answer_row.addWidget(self.ask_button)
         self.answer_card.content_layout.addLayout(answer_row)
+        self.answer_progress = QProgressBar()
+        self.answer_progress.setRange(0, 0)
+        self.answer_progress.setAccessibleName("Local AI request in progress")
+        self.answer_progress.hide()
+        self.answer_card.content_layout.addWidget(self.answer_progress)
         self.answer_text = QPlainTextEdit()
         self.answer_text.setReadOnly(True)
         self.answer_text.setAccessibleName("Answer from indexed files")
@@ -332,6 +360,7 @@ class MyFilesPage(QWidget):
         self.answer_card.content_layout.addWidget(self.source_details)
         layout.addWidget(self.answer_card)
         self._pending_question = None
+        self._answer_busy()
 
         self.workspace = QWidget()
         self.workspace_layout = QGridLayout(self.workspace)
@@ -462,6 +491,8 @@ class MyFilesPage(QWidget):
             self.library_workspace = LibraryWorkspace(controller, self.bridge)
             self.workspace_tabs.addTab(self.library_workspace, "Document library")
             self.library_workspace.search_requested.connect(self._show_library_search)
+            self.library_workspace.ask_requested.connect(self._show_library_ask)
+            controller.error.connect(self._library_error)
             self.library_workspace.result_ready.connect(self._reveal_document_result)
             controller.result.connect(self._library_result)
             self.file_browser.summarize_requested.connect(self._summarize_browsed_file)
@@ -519,9 +550,41 @@ class MyFilesPage(QWidget):
             self.scroll_area.verticalScrollBar().setValue(max(0, position.y() - 24))
         QTimer.singleShot(0, self, reveal)
 
+    def _answer_busy(self):
+        busy = self._pending_question is not None or self._answer_ai_check_pending
+        self.answer_progress.setVisible(busy)
+        self.ask_button.setEnabled(not busy)
+        self.question_input.setEnabled(not busy)
+        self.answer_prepare.setEnabled(not busy)
+        self.answer_ai_check.setEnabled(not busy and getattr(self.bridge, "library", None) is not None)
+
+    def _check_answer_ai(self):
+        controller = getattr(self.bridge, "library", None)
+        if controller is None or self._pending_question is not None or self._answer_ai_check_pending:
+            return
+        self._answer_ai_check_pending = True
+        self._answer_busy()
+        self.answer_status.setText("Checking local Ollama and saved models… no models will be downloaded.")
+        controller.request("local_ai")
+
+    def _show_library_ask(self):
+        self.workspace_tabs.setCurrentIndex(2)
+        self.scroll_area.verticalScrollBar().setValue(0)
+        self.question_input.setFocus()
+
+    def _show_text_search(self):
+        self._show_library_search()
+        self.search_status.setText("Text search works without AI. Enter keywords and choose Text search.")
+
+    def _library_error(self, key, message):
+        if key == "local_ai" and self._answer_ai_check_pending:
+            self._answer_ai_check_pending = False
+            self._answer_busy()
+            self.answer_status.setText(message or "Local AI could not be checked. Try again or use text search.")
+
     def _request_answer(self) -> None:
         self.workspace_tabs.setCurrentIndex(2)
-        if self._pending_question is not None:
+        if self._pending_question is not None or self._answer_ai_check_pending:
             return
         question = self.question_input.text().strip()
         if not question:
@@ -532,22 +595,22 @@ class MyFilesPage(QWidget):
             self.answer_status.setText("Local answers are unavailable in this runtime.")
             return
         self._pending_question = question
-        self.ask_button.setEnabled(False)
-        self.question_input.setEnabled(False)
+        self._answer_busy()
         self.answer_text.clear()
         self.answer_text.hide()
         self.answer_sources.clear()
         self.answer_sources.hide()
-        self.answer_status.setText("Reading relevant excerpts and answering on this device…")
+        self._select_answer_source(None)
+        self.answer_status.setText("Reading relevant excerpts and answering on this device… the first answer may take longer while the local model loads.")
         request(question)
 
     def _render_answer(self, question: str, result) -> None:
         if question != self._pending_question:
             return
         self._pending_question = None
-        self.ask_button.setEnabled(True)
-        self.question_input.setEnabled(True)
+        self._answer_busy()
         self.answer_text.setPlainText(result.answer)
+        LibraryWorkspace._reading_direction(self.answer_text, result.answer)
         self.answer_text.show()
         self.answer_sources.clear()
         for source in result.sources:
@@ -557,7 +620,7 @@ class MyFilesPage(QWidget):
             item = QListWidgetItem(
                 f"[{source.source_id}] {source.filename} · Chunk {source.chunk_index + 1}\n{preview}"
             )
-            item.setToolTip(str(source.path))
+            item.setToolTip("<qt>" + escape(str(source.path)) + "</qt>")
             item.setData(Qt.ItemDataRole.UserRole, str(source.path))
             item.setData(Qt.ItemDataRole.UserRole + 1, source.excerpt)
             self.answer_sources.addItem(item)
@@ -569,6 +632,16 @@ class MyFilesPage(QWidget):
             if result.status == "no_evidence"
             else f"Answered locally · {len(result.sources)} cited source excerpts"
         )
+        self._reveal_answer_result()
+
+    def _reveal_answer_result(self):
+        def reveal():
+            if self.workspace_tabs.currentIndex() != 2:
+                return
+            self.scroll_area.widget().layout().activate()
+            position = self.answer_status.mapTo(self.scroll_area.widget(), QPoint(0, 0))
+            self.scroll_area.verticalScrollBar().setValue(max(0, position.y() - 24))
+        QTimer.singleShot(0, self, reveal)
 
     def _select_answer_source(self, current, previous=None) -> None:
         self.source_action_status.clear()
@@ -580,6 +653,7 @@ class MyFilesPage(QWidget):
         path = current.data(Qt.ItemDataRole.UserRole)
         self.source_location.setText(str(path))
         self.source_excerpt.setPlainText(current.data(Qt.ItemDataRole.UserRole + 1) or "")
+        LibraryWorkspace._reading_direction(self.source_excerpt, self.source_excerpt.toPlainText())
 
     def _open_answer_source(self, *args) -> None:
         item = self.answer_sources.currentItem()
@@ -606,8 +680,7 @@ class MyFilesPage(QWidget):
         if self._pending_question is None:
             return
         self._pending_question = None
-        self.ask_button.setEnabled(True)
-        self.question_input.setEnabled(True)
+        self._answer_busy()
         self.answer_status.setText(message or "Local answer generation failed. Check Ollama and the index.")
 
     def _reveal_search_source(self):
@@ -650,7 +723,11 @@ class MyFilesPage(QWidget):
         else:
             self.search_status.setText("File unavailable. Update the document library.")
 
-    def _request_search(self) -> None:
+    def _search_busy(self, busy):
+        self.search_button.setEnabled(not busy)
+        self.text_search_button.setEnabled(not busy)
+
+    def _request_search(self, exact=False) -> None:
         self.workspace_tabs.setCurrentIndex(1)
         query = self.search_input.text().strip()
         if not query:
@@ -659,8 +736,8 @@ class MyFilesPage(QWidget):
             self._last_search_results = None
             self.search_status.setText("Enter a search term to find organized files.")
             return
-        request = getattr(self.bridge, "request_semantic_search", None)
-        mode = "smart"
+        request = getattr(self.bridge, "request_search" if exact else "request_semantic_search", None)
+        mode = "exact" if exact else "smart"
         if request is None:
             request = getattr(self.bridge, "request_search", None)
             mode = "exact"
@@ -670,7 +747,7 @@ class MyFilesPage(QWidget):
         self.search_results.clear()
         self.search_body.hide()
         self._last_search_results = None
-        self.search_button.setEnabled(False)
+        self._search_busy(True)
         self.search_status.setText(
             "Searching by meaning on this device…"
             if mode == "smart"
@@ -680,6 +757,7 @@ class MyFilesPage(QWidget):
 
     def _show_library_search(self):
         self.workspace_tabs.setCurrentIndex(1)
+        self.scroll_area.verticalScrollBar().setValue(0)
         self.search_input.setFocus()
 
     def _summarize_browsed_file(self, path):
@@ -688,6 +766,20 @@ class MyFilesPage(QWidget):
             self.library_workspace.summarize_path(path)
 
     def _library_result(self, key, result):
+        if key == "local_ai" and self._answer_ai_check_pending:
+            self._answer_ai_check_pending = False
+            self._answer_busy()
+            if not result.reachable:
+                text = (result.error or "Ollama is unavailable.") + " Text search still works without AI."
+            else:
+                missing = []
+                if not result.answer_installed:
+                    missing.append("answer model " + result.answer_model)
+                if not result.embedding_installed:
+                    missing.append("smart-search model " + result.embedding_model)
+                text = ("Missing " + ", ".join(missing) + ". Review Settings → AI or install the model in Ollama. Text search remains available."
+                    if missing else "Ollama and the saved models were found. Ask a question to verify an actual answer; check its source excerpts.")
+            self.answer_status.setText(text)
         if key == "index":
             self._search_refresh_completed(result)
 
@@ -706,9 +798,9 @@ class MyFilesPage(QWidget):
 
     def _render_search_results(self, query: str, results) -> None:
         if query != self.search_input.text().strip():
-            self.search_button.setEnabled(True)
+            self._search_busy(False)
             return
-        self.search_button.setEnabled(True)
+        self._search_busy(False)
         self.search_results.clear()
 
         raw_results = tuple(results)
@@ -810,9 +902,9 @@ class MyFilesPage(QWidget):
                 )
                 fallback(query, 25)
                 return
-            self.search_button.setEnabled(True)
+            self._search_busy(False)
         elif name == "search":
-            self.search_button.setEnabled(True)
+            self._search_busy(False)
         elif name == "search_refresh":
             self.refresh_search_button.setEnabled(True)
         else:
@@ -1072,6 +1164,7 @@ class MyFilesPage(QWidget):
         width = event.size().width()
         self.search_body.setOrientation(Qt.Orientation.Vertical if width < 920 else Qt.Orientation.Horizontal)
         self.search_results.doItemsLayout()
+        self.answer_tools.setDirection(QBoxLayout.Direction.TopToBottom if width < 920 else QBoxLayout.Direction.LeftToRight)
         if width < 920:
             self.workspace_layout.addWidget(self.source_card, 0, 0)
             self.workspace_layout.addWidget(self.preview_card, 1, 0)

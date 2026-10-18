@@ -49,6 +49,10 @@ Start with **Overview → Add document folder** to search or summarize without s
 
 See [Document library](docs/document-library.md), [Guided setup](docs/guided-setup.md), [Browse files](docs/file-browser.md) and [Ask your files](docs/local-answers.md).
 
+See the [product priorities and remaining work](docs/product-roadmap.md) for the
+end-to-end usability plan and the distinction between implemented features and
+user/release validation.
+
 ## Validate
 
 ```powershell

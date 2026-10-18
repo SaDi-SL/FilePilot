@@ -40,6 +40,7 @@ class _ActionGrid(QGridLayout):
 class LibraryWorkspace(QWidget):
     """A read-only document library with explicit indexing and grounded insights."""
     search_requested = Signal()
+    ask_requested = Signal()
     result_ready = Signal(QWidget)
 
     def __init__(self, controller, bridge, parent=None):
@@ -131,8 +132,11 @@ class LibraryWorkspace(QWidget):
         self.refresh_button.clicked.connect(lambda: controller.request("status"))
         self.search_button = QPushButton("Search documents")
         self.search_button.clicked.connect(self.search_requested.emit)
+        self.ask_files_button = QPushButton("Ask your files")
+        self.ask_files_button.setToolTip("Ask across the indexed library. For one selected file, use Summarize selected.")
+        self.ask_files_button.clicked.connect(self.ask_requested.emit)
         advanced_layout.addWidget(self.refresh_button)
-        for button in (self.update_button, self.search_button):
+        for button in (self.update_button, self.search_button, self.ask_files_button):
             actions.addWidget(button)
         card.content_layout.addLayout(actions)
         self.job_controls = QWidget()
@@ -444,6 +448,7 @@ class LibraryWorkspace(QWidget):
         attention = len({r.path for r in records if r.status != "indexed" or r.issue})
         self.health.setVisible(bool(records))
         self.search_button.setEnabled(bool(self.snapshot and self.snapshot.searchable))
+        self.ask_files_button.setEnabled(bool(self.snapshot and self.snapshot.searchable) and not self._locked())
         self.ready_count.setText(f"Shown: {ready} ready to read")
         self.attention_count.setText(f"Needs attention: {attention}")
         self.attention_count.setVisible(bool(attention))
