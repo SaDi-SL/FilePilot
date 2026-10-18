@@ -148,3 +148,25 @@ the outer workspace to the selected source. PDF previews start on page 1 with no
 page navigation; the UI explicitly distinguishes this from the matched excerpt and
 does not invent a PDF page reference. Changing queries or filtering out the current
 result clears its evidence and preview.
+
+## Summary formats
+
+For one readable selected document, choose **Quick summary**, **Key points** or
+**Actions & dates**, choose English/Arabic/Swedish, then select Summarize selected.
+The chosen format is remembered. The result heading and copied/saved review include
+the format and requested filename. Format/language controls are locked while the
+request runs. Two-file comparisons and organization proposals keep their own tasks.
+
+Quick summary requests at most three concise points. The real Ollama response
+schema and local point-count validator both enforce that limit. Key points focuses
+on supported findings, decisions, requirements and limitations. Actions & dates
+requests only explicit tasks/instructions/commitments or mentioned dates; it tells
+the model to distinguish event dates from deadlines, retain original date wording,
+and avoid inferring owners, deadlines, status or priority. A no-evidence outcome
+gets a localized message limited to the selected excerpts, not an assertion that
+the full document has no actions or dates.
+
+All formats use the same bounded, selected-file evidence and validated source IDs;
+no extra retrieval or cloud provider is introduced. These checks validate citation
+structure and point limits, not the factual correctness of every generated task or
+date. Review the cited original wording, especially for deadlines and OCR text.

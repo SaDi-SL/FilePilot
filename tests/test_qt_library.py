@@ -199,6 +199,24 @@ class LibraryQtTests(unittest.TestCase):
         self.assertTrue(self.widget.stop_button.isEnabled())
         self.assertNotIn("Stopping", self.widget.message.text())
 
+    def test_summary_format_is_captured_and_comparison_keeps_its_own_task(self):
+        self.widget._result("status", self.snapshot)
+        self.widget.files.topLevelItem(0).setSelected(True)
+        self.widget.summary_mode.setCurrentIndex(self.widget.summary_mode.findData("actions"))
+        self.widget._document(False)
+        self.assertEqual(self.controller.requests[-1][1]["mode"], "actions")
+        self.assertIn("Actions & dates", self.widget.result_heading.text())
+        self.assertFalse(self.widget.summary_mode.isEnabled())
+        self.assertFalse(self.widget.language.isEnabled())
+        self.widget._result("document", RAGAnswer("Actions", "No explicit actions in sampled excerpts", (), "ollama", "no_evidence"))
+        self.assertIn("No explicit tasks or dates", self.widget.document_status.text())
+        self.assertTrue(self.widget.summary_mode.isEnabled())
+        self.widget._start_document([self.path, self.path.with_name("second.txt")], compare=True)
+        self.assertEqual(self.controller.requests[-1][1]["mode"], "overview")
+        self.assertIn("Comparison", self.widget.result_heading.text())
+        self.widget._error("document", "Try again")
+        self.widget.summary_mode.setCurrentIndex(self.widget.summary_mode.findData("quick"))
+
     def test_add_folder_prepares_only_after_success_and_releases_controls_on_error(self):
         with patch("app.ui.qt.widgets.library_workspace.QFileDialog.getExistingDirectory", return_value=self.tmp.name):
             self.widget.add_button.click()

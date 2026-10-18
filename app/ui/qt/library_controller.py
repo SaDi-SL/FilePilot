@@ -62,7 +62,7 @@ class LibraryController(QObject):
             "document": lambda: (self.service.suggest_document_organization(payload["paths"],
                 language=payload.get("language", "English")) if payload.get("suggest") else
                 self.service.summarize_documents(payload["paths"],
-                language=payload.get("language", "English"), compare=payload.get("compare", False))),
+                language=payload.get("language", "English"), compare=payload.get("compare", False), mode=payload.get("mode", "overview"))),
         }
         if key == "index":
             self.control = IndexControl()

@@ -38,6 +38,30 @@ class StructuredAnswerTests(unittest.TestCase):
         self.assertEqual(result.sources[0].excerpt, "Exact original excerpt")
         self.assertIsNone(self.provider.response_schema)  # never mutate shared provider
 
+    def test_quick_summary_enforces_three_points_in_schema_and_validation(self):
+        self.service._search.document_context = lambda paths: self.service._search.contexts
+        self.transport.return_value = response([{"text": f"Point {index}", "sources": ["S1"]} for index in range(4)])
+        with self.assertRaisesRegex(LocalRAGError, "point count"):
+            self.service.summarize(["report.pdf"], mode="quick")
+        self.assertEqual(self.transport.call_count, 2)
+        payload = json.loads(self.transport.call_args.args[0].data)
+        self.assertEqual(payload["format"]["properties"]["points"]["maxItems"], 3)
+        self.transport.return_value = response([{"text": "Short evidence", "sources": ["S1"]}])
+        result = self.service.summarize(["report.pdf"], mode="quick")
+        self.assertIn("[S1]", result.answer)
+
+    def test_actions_without_evidence_return_qualified_localized_message(self):
+        self.service._search.document_context = lambda paths: self.service._search.contexts
+        self.transport.return_value = response([], "no_evidence")
+        result = self.service.summarize(["report.pdf"], mode="actions", language="Arabic")
+        self.assertEqual(result.status, "no_evidence")
+        self.assertEqual(result.sources, ())
+        self.assertIn("مهام أو تواريخ", result.answer)
+        self.assertIn("المستند الكامل", result.answer)
+        payload = json.loads(self.transport.call_args.args[0].data)
+        self.assertIn("Never infer a deadline", str(payload["messages"]))
+        self.assertIn("event date", str(payload["messages"]))
+
     def test_missing_source_on_one_point_rejects_entire_answer(self):
         self.transport.return_value = response([
             {"text": "Supported", "sources": ["S1"]}, {"text": "Unsupported", "sources": []}])

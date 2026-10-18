@@ -50,6 +50,7 @@ class LibraryWorkspace(QWidget):
         self.snapshot = None
         self._busy = False
         self._document_busy = False
+        self._document_mode = "overview"
         self._root_busy = False
         self._ai_busy = False
         self._pause_requested = False
@@ -253,7 +254,22 @@ class LibraryWorkspace(QWidget):
             self.language.setCurrentText(saved_language)
         self.language.currentTextChanged.connect(lambda value: self._preferences.setValue("library/answer_language", value))
         self.language.setAccessibleName("Document insights language")
-        for widget in (self.summary_button, self.open_button, self.language, self.compare_button, self.suggest_button):
+        self.summary_mode = QComboBox()
+        for label, value in (("Quick summary", "quick"), ("Key points", "key_points"), ("Actions & dates", "actions")):
+            self.summary_mode.addItem(label, value)
+        saved_mode = self._preferences.value("library/summary_format", "quick")
+        mode_index = self.summary_mode.findData(saved_mode)
+        if mode_index >= 0:
+            self.summary_mode.setCurrentIndex(mode_index)
+        self.summary_mode.setAccessibleName("Summary format")
+        self.summary_mode.setToolTip("Choose what to extract from one selected document. All formats use sampled indexed excerpts and source references.")
+        self.mode_hint = QLabel()
+        self.mode_hint.setWordWrap(True)
+        self.mode_hint.setProperty("role", "caption")
+        self.summary_mode.currentIndexChanged.connect(self._summary_mode_changed)
+        self._summary_mode_changed()
+        self.preview.content_layout.insertWidget(3, self.mode_hint)
+        for widget in (self.summary_mode, self.language, self.summary_button, self.open_button, self.compare_button, self.suggest_button):
             document_actions.addWidget(widget)
         self.document_controls = QWidget()
         self.document_controls.setLayout(document_actions)
@@ -584,7 +600,7 @@ class LibraryWorkspace(QWidget):
         elif key == "document":
             self._document_busy = False
             self.document_progress.hide()
-            self.document_status.setText("No supported summary found. See the result below." if result.status == "no_evidence"
+            self.document_status.setText(("No explicit tasks or dates were identified in the selected excerpts." if self._document_mode == "actions" else "No supported summary found. See the result below.") if result.status == "no_evidence"
                 else "Your result is ready below, with sources to check.")
             self.result_heading.show()
             self._review = result
@@ -603,7 +619,7 @@ class LibraryWorkspace(QWidget):
             self.copy_excerpt_button.setEnabled(bool(result.sources))
             if result.sources:
                 self.sources.setCurrentRow(0)
-            self.message.setText("The selected excerpts did not provide enough relevant evidence. No supported summary was produced."
+            self.message.setText(("No explicit tasks or dates were identified in the selected excerpts; the full document may contain more." if self._document_mode == "actions" else "The selected excerpts did not provide enough relevant evidence. No supported summary was produced.")
                 if result.status == "no_evidence" else
                 "Local excerpt-based review complete. Verify the sources below. Organization proposals are suggestions only; no files were changed.")
             self._busy_changed(self._busy)
@@ -676,6 +692,9 @@ class LibraryWorkspace(QWidget):
         self.summary_button.setText("Preparing result…" if self._document_busy else "Summarize selected")
         readable = bool(paths) and all(item.data(0, Qt.ItemDataRole.UserRole).status == "indexed" for item in self.files.selectedItems())
         self.summary_button.setEnabled(enabled and readable and len(paths) == 1)
+        self.summary_mode.setEnabled(enabled and readable and len(paths) == 1)
+        self.language.setEnabled(enabled and readable)
+        self.mode_hint.setVisible(readable and len(paths) == 1)
         self.suggest_button.setEnabled(enabled and readable and len(paths) == 1)
         self.compare_button.setEnabled(enabled and readable and len(paths) == 2)
         self.compare_button.setVisible(len(paths) == 2)
@@ -691,6 +710,13 @@ class LibraryWorkspace(QWidget):
         else:
             self.detail.setText("Select a document to preview its pages and choose what to do. Ctrl-click two readable documents to compare.")
 
+    def _summary_mode_changed(self, *_args):
+        mode = self.summary_mode.currentData()
+        self._preferences.setValue("library/summary_format", mode)
+        self.mode_hint.setText({"quick": "Up to 3 brief points from the selected excerpts.",
+            "key_points": "Findings, decisions, requirements and limitations supported by the excerpts.",
+            "actions": "Only explicit tasks or dates. Missing owners and deadlines must not be guessed; verify the cited context."}[mode])
+
     def _document(self, compare, *, suggest=False):
         paths = self._selected_paths()
         if len(paths) != (2 if compare else 1) or self._locked():
@@ -704,14 +730,15 @@ class LibraryWorkspace(QWidget):
     def _start_document(self, paths, *, compare=False, suggest=False):
         self._document_busy = True
         self._clear_review()
-        operation = "Comparison" if compare else "Organization suggestions" if suggest else "Summary"
+        self._document_mode = "overview" if compare or suggest else self.summary_mode.currentData()
+        operation = "Comparison" if compare else "Organization suggestions" if suggest else self.summary_mode.currentText()
         self.result_heading.setText(f"{operation} · " + " / ".join(Path(path).name for path in paths))
         self.document_status.setText("Reading your document and preparing the result… The first answer may take longer while the local model loads.")
         self.document_status.show()
         self.document_progress.show()
         self.message.setText("Preparing local AI and reading selected excerpts… the first answer may take longer while the model loads.")
         self._busy_changed(False)
-        self.controller.request("document", paths=paths, compare=compare, suggest=suggest, language=self.language.currentText())
+        self.controller.request("document", paths=paths, compare=compare, suggest=suggest, language=self.language.currentText(), mode=self._document_mode)
 
     def _source(self, index):
         if 0 <= index < len(self._source_records):
@@ -751,7 +778,7 @@ class LibraryWorkspace(QWidget):
     def _review_text(self, *, excerpts=False):
         if self._review is None:
             return ""
-        lines = ["FilePilot document review", "", self._review.answer, "",
+        lines = ["FilePilot document review", self.result_heading.text(), "", self._review.answer, "",
                  "Scope: indexed excerpts; long documents may be sampled. Excerpt numbers are not PDF page numbers."]
         if self._review.sources:
             lines += ["", "Sources"]

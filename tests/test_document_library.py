@@ -115,6 +115,23 @@ class LibraryTests(unittest.TestCase):
             LocalRAGService(self.search, provider).summarize([self.source])
         self.assertEqual(self.search.catalog.snapshot().files[0].status, "stale")
 
+    def test_summary_formats_keep_selected_evidence_and_reject_unknown_mode(self):
+        self.search.catalog.add_root(self.external)
+        self.search.refresh(self.organized)
+        original = self.source.read_bytes()
+        provider = FakeLocalProvider(text="Supported point [S1].")
+        service = LocalRAGService(self.search, provider)
+        for mode, instruction in (("quick", "at most 3"), ("key_points", "requirements"), ("actions", "Never infer a deadline")):
+            result = service.summarize([self.source], language="Swedish", mode=mode)
+            self.assertEqual(result.sources[0].path, self.source)
+            self.assertIn(instruction, provider.chat_calls[-1][0])
+            self.assertIn("Write in Swedish", provider.chat_calls[-1][0])
+        calls = len(provider.chat_calls)
+        with self.assertRaisesRegex(LocalRAGError, "supported summary format"):
+            service.summarize([self.source], mode="unknown")
+        self.assertEqual(len(provider.chat_calls), calls)
+        self.assertEqual(self.source.read_bytes(), original)
+
     def test_comparison_binds_two_files_and_rejects_unknown_citations(self):
         other = self.external / "other.txt"
         other.write_text("Requirement ABC failed", encoding="utf-8")

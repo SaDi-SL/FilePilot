@@ -347,11 +347,11 @@ class FilePilotService:
             ai = dict((self._config or {}).get("ai") or {})
         return prepare_local_ai(ai.get("ollama_model") or "mistral")
 
-    def summarize_documents(self, paths, *, language="English", compare=False):
+    def summarize_documents(self, paths, *, language="English", compare=False, mode="overview"):
         with self._state_lock:
             ai = dict((self._config or {}).get("ai") or {})
         provider = OllamaProvider(model=ai.get("ollama_model") or "mistral", use_chat_api=True, think=False)
-        return LocalRAGService(self._product_search, provider).summarize(paths, language=language, compare=compare)
+        return LocalRAGService(self._product_search, provider).summarize(paths, language=language, compare=compare, mode=mode)
 
     def suggest_document_organization(self, paths, *, language="English"):
         with self._state_lock:

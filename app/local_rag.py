@@ -94,21 +94,34 @@ class LocalRAGService:
         return self._generate(clean_question, contexts, timeout=timeout,
                               max_output_tokens=max_output_tokens)
 
-    def summarize(self, paths, *, language="English", compare=False, timeout=60.0):
+    def summarize(self, paths, *, language="English", compare=False, mode="overview", timeout=60.0):
+        tasks = {
+            "overview": "Summarize the selected document: main subject, key facts and any explicit actions or dates. ",
+            "quick": "Give a quick summary of the selected document in at most 3 short factual points. Focus on its purpose and main conclusion; omit minor details. ",
+            "key_points": "Extract the selected document's key points: supported findings, decisions, requirements and important limitations. Avoid repetition and do not create recommendations. ",
+            "actions": "Extract only explicit tasks, instructions, commitments or explicitly mentioned dates from the selected document. Do not turn general background or interview questions into assigned tasks. Distinguish an event date from a deadline. Never infer a deadline, owner, completion status or priority. Include an owner or date only when explicitly present in the cited excerpt; preserve the original date wording. If no explicit actions or dates are supported, return no_evidence. ",
+        }
         if language not in {"English", "Arabic", "Swedish"}:
             raise LocalRAGError("Choose a supported answer language")
+        if not isinstance(mode, str) or mode not in tasks:
+            raise LocalRAGError("Choose a supported summary format")
         if compare and len(paths) != 2:
             raise LocalRAGError("Choose two documents to compare")
         if not compare and len(paths) != 1:
             raise LocalRAGError("Choose one document to summarize")
         contexts = self._search.document_context(paths)
-        question = (
-            ("Compare the selected documents: supported similarities, differences and missing information. "
-             if compare else "Summarize the selected document: main subject, key facts and any explicit actions or dates. ")
+        question = (("Compare the selected documents: supported similarities, differences and missing information. "
+                     if compare else tasks[mode])
             + f"Write in {language}. Cite each factual point. This is an excerpt-based review; "
-              "the excerpts may sample a longer document. State this scope and do not claim a complete review."
-        )
-        return self._generate(question, contexts, timeout=timeout, max_output_tokens=1000)
+              "the excerpts may sample a longer document. State this scope and do not claim a complete review.")
+        result = self._generate(question, contexts, timeout=timeout, max_output_tokens=600 if mode == "quick" and not compare else 1000,
+                                max_points=3 if mode == "quick" and not compare else 6)
+        if not compare and mode == "actions" and result.status == "no_evidence":
+            message = {"English": "No explicit tasks or dates were identified in the selected excerpts. This does not establish that the complete document contains none.",
+                       "Arabic": "لم تُحدَّد مهام أو تواريخ صريحة في المقتطفات المختارة. هذا لا يعني أن المستند الكامل يخلو منها.",
+                       "Swedish": "Inga uttryckliga uppgifter eller datum identifierades i de valda utdragen. Det betyder inte att hela dokumentet saknar dem."}[language]
+            result = replace(result, answer=message)
+        return result
 
     def propose_organization(self, paths, categories, *, language="English", timeout=60.0):
         if len(paths) != 1 or language not in {"English", "Arabic", "Swedish"}:
@@ -138,7 +151,7 @@ class LocalRAGService:
             raise LocalRAGError("The model suggested an unsafe filename. No files were changed.")
         return result
 
-    def _generate(self, clean_question, contexts, *, timeout, max_output_tokens, structured=True):
+    def _generate(self, clean_question, contexts, *, timeout, max_output_tokens, structured=True, max_points=6):
         if not contexts:
             return RAGAnswer(
                 question=clean_question,
@@ -170,7 +183,7 @@ class LocalRAGService:
         prompt, source_map = self._build_prompt(clean_question, contexts)
         if structured and isinstance(provider, OllamaProvider):
             return self._structured_generate(provider, clean_question, prompt, source_map,
-                                             timeout=timeout, max_output_tokens=max_output_tokens)
+                                             timeout=timeout, max_output_tokens=max_output_tokens, max_points=max_points)
         deadline = time.monotonic() + timeout
         # Retry once using the ORIGINAL evidence, never attach invented citations
         # to an already generated answer. Both attempts share one time budget.
@@ -216,12 +229,12 @@ class LocalRAGService:
             status="answered",
         )
 
-    def _structured_generate(self, provider, question, prompt, source_map, *, timeout, max_output_tokens):
+    def _structured_generate(self, provider, question, prompt, source_map, *, timeout, max_output_tokens, max_points=6):
         schema = {
             "type": "object", "additionalProperties": False,
             "properties": {
                 "status": {"type": "string", "enum": ["answered", "no_evidence"]},
-                "points": {"type": "array", "maxItems": 6, "items": {
+                "points": {"type": "array", "maxItems": max_points, "items": {
                     "type": "object", "additionalProperties": False,
                     "properties": {
                         "text": {"type": "string", "minLength": 1, "maxLength": 1200},
@@ -233,7 +246,7 @@ class LocalRAGService:
         }
         provider = replace(provider, response_schema=schema)
         prompt += ("\n\nOUTPUT CONTRACT (takes precedence over inline citation formatting above): "
-                   "Return ONLY JSON matching the schema below. Give 3 to 6 concise factual points when supported, at most 40 words each. "
+                   f"Return ONLY JSON matching the schema below. Give 1 to {max_points} concise factual points when supported, at most 40 words each. "
                    "Put each point's evidence IDs in its sources array, not in its text. "
                    "Use the requested answer language for text. If there is no relevant evidence, "
                    "return status no_evidence with an empty points array. Never guess evidence IDs.\n"
@@ -254,7 +267,7 @@ class LocalRAGService:
             except Exception as error:
                 raise LocalRAGError(f"Local answer request failed for '{provider.model}'. Check the model in Prepare local AI.") from error
             try:
-                answer, ids, status = self._parse_structured(raw, source_map)
+                answer, ids, status = self._parse_structured(raw, source_map, max_points=max_points)
             except ValueError as error:
                 reason = str(error)
                 if attempt == 0:
@@ -271,7 +284,7 @@ class LocalRAGService:
             return RAGAnswer(question, answer, tuple(source_map[item] for item in ids), provider.name, "answered")
 
     @staticmethod
-    def _parse_structured(raw, source_map):
+    def _parse_structured(raw, source_map, *, max_points=6):
         try:
             data = json.loads(raw)
         except (ValueError, TypeError) as error:
@@ -279,7 +292,7 @@ class LocalRAGService:
         if not isinstance(data, dict) or set(data) != {"status", "points"}:
             raise ValueError("missing status or points fields")
         status, points = data["status"], data["points"]
-        if not isinstance(status, str) or status not in {"answered", "no_evidence"} or not isinstance(points, list) or len(points) > 6:
+        if not isinstance(status, str) or status not in {"answered", "no_evidence"} or not isinstance(points, list) or len(points) > max_points:
             raise ValueError("invalid answer status or point count")
         if status == "no_evidence":
             if points:
