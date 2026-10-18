@@ -112,10 +112,13 @@ class LibraryQtTests(unittest.TestCase):
         try:
             with patch("app.ui.qt.widgets.library_workspace.QFileDialog.getExistingDirectory", return_value=str(folder)), patch.object(search, "refresh_semantic_embeddings", side_effect=SearchIndexError("Local AI offline")):
                 widget.add_button.click()
-                for _ in range(300):
+                # Pump GUI events and explicitly release the GIL for Python worker
+                # callbacks. Repeated native QTest.qWait can starve them on Windows.
+                for _ in range(1000):
+                    self.app.processEvents()
                     if "index" in results and "status" in results:
                         break
-                    QTest.qWait(10)
+                    threading.Event().wait(0.01)
             self.assertFalse(errors)
             self.assertEqual(results[:3], ["add", "index", "status"])
             self.assertEqual(widget.snapshot.searchable, 1)
