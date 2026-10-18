@@ -24,9 +24,13 @@ One additional read-only-before-monitoring-setup regression test was added after
 
 ## Windows and live-model evidence
 
-Earlier build, installation, application launch and uninstallation succeeded on the user's Windows PC. That historical result remains valid for the tested artifact. The new library/AI functionality has not yet been tried on that PC or in a newly built Windows package. Automated document tests use controlled providers; no live Ollama model inference was claimed in this environment.
+Earlier build, installation, application launch and uninstallation succeeded on the user's Windows PC. That historical result remains valid for the tested artifact. The new library/AI functionality has automated Windows coverage but has not yet been tried on the user’s PC or in a newly built Windows package. Automated document tests use controlled providers; no live Ollama model inference was claimed in this environment.
 
-The first Windows workflow actually ran 791 tests with no skips and exposed six failing modules. The logs showed Windows short-path aliases (`RUNNER~1`) breaking path-equality fixtures and fault injectors, and Qt URL slash formatting breaking string comparisons. The runner now uses a canonical temporary directory, and URL assertions compare resolved Path objects. The second Windows run passed every module except a new legacy-database compatibility test whose fixture left its SQLite connection open during temporary-directory cleanup. The fixture now explicitly closes the connection. A new Windows run must verify that final fix; failures are not skipped. The test runner fails on imports, native crashes and timeouts as well as assertion failures.
+The first Windows workflow actually ran 791 tests with no skips and exposed six failing modules. The logs showed Windows short-path aliases (`RUNNER~1`) breaking path-equality fixtures and fault injectors, and Qt URL slash formatting breaking string comparisons. The runner now uses a canonical temporary directory, and URL assertions compare resolved Path objects. The second Windows run passed every module except a new legacy-database compatibility test whose fixture left its SQLite connection open during temporary-directory cleanup. The fixture now explicitly closes the connection. The third Windows run verified the final fix: **791 tests across 50 modules, zero skipped, no failed modules** on runtime commit `30ecaa44255a9c4f4b6725fb18fe3600892e7684`. Evidence: https://github.com/SaDi-SL/FilePilot/actions/runs/39118578778. No runtime tests were skipped to obtain that result. The test runner fails on imports, native crashes and timeouts as well as assertion failures.
+
+An additional integrated smoke check exercised the real Qt bridge, adding a read-only folder, indexing, selected-file summary, exact source display and shutdown while preserving the original file. It used controlled local providers, not live Ollama.
+
+The later validation-record commit changes documentation only; the linked Windows run identifies the exact tested application code.
 
 ## Public-release gate
 
