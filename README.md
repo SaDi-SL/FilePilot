@@ -45,7 +45,7 @@ The build derives display and numeric versions from `app.product_identity.PRODUC
 
 Binaries install under `%LOCALAPPDATA%\Programs\FilePilot`; writable configuration, logs, reports, backups, plugins, reminders and the operation journal live under `%LOCALAPPDATA%\FilePilot`. Upgrades and uninstallation preserve that user-data directory.
 
-The current code remains a **development build**, not a newly published stable release. Earlier Windows build/install/uninstall tests succeeded on the user's PC; the newly added features require validation in a newly built package before public release.
+The current code remains a **development build**, not a newly published stable release. Earlier Windows build/install/uninstall tests succeeded on the user's PC; the latest candidate now passes automated installation, visible-window launch, shutdown and uninstall-preservation checks. Live AI and full interactive use in that candidate still need verification before public release.
 
 ## Download a tested Windows candidate
 

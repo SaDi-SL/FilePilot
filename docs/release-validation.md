@@ -24,7 +24,7 @@ One additional read-only-before-monitoring-setup regression test was added after
 
 ## Windows and live-model evidence
 
-Earlier build, installation, application launch and uninstallation succeeded on the user's Windows PC. That historical result remains valid for the tested artifact. The new library/AI functionality has automated Windows coverage but has not yet been tried on the user’s PC or in a newly built Windows package. Automated document tests use controlled providers; no live Ollama model inference was claimed in this environment.
+Earlier build, installation, application launch and uninstallation succeeded on the user's Windows PC. That historical result remains valid for the tested artifact. The user subsequently confirmed that local structured summarization and the completed-review tools work on their PC. The later simplified add-folder journey has automated Qt/service coverage; interactive validation of that journey and live AI in the new installer still remains. Automated document tests use controlled providers; no live Ollama model inference was claimed in this environment.
 
 The first Windows workflow actually ran 791 tests with no skips and exposed six failing modules. The logs showed Windows short-path aliases (`RUNNER~1`) breaking path-equality fixtures and fault injectors, and Qt URL slash formatting breaking string comparisons. The runner now uses a canonical temporary directory, and URL assertions compare resolved Path objects. The second Windows run passed every module except a new legacy-database compatibility test whose fixture left its SQLite connection open during temporary-directory cleanup. The fixture now explicitly closes the connection. The third Windows run verified the final fix: **791 tests across 50 modules, zero skipped, no failed modules** on runtime commit `30ecaa44255a9c4f4b6725fb18fe3600892e7684`. Evidence: https://github.com/SaDi-SL/FilePilot/actions/runs/39118578778. No runtime tests were skipped to obtain that result. The test runner fails on imports, native crashes and timeouts as well as assertion failures.
 
@@ -39,3 +39,16 @@ The later validation-record commit changes documentation only; the linked Window
 - Keep installed OCR dependencies and their notices verified through the existing packaging checks.
 - Obtain/configure the publisher signing identity and verify a signed build if distributing a signed release.
 - Publish versioned binaries/checksums only after those checks. This branch remains a development build; it was not merged into `main` or published as a stable release by this update.
+
+## Latest Windows candidate — 18 October 2026
+
+Candidate commit: `24d769293d3f9f1cbd43d37c91895de393f0d94f`. All **820 tests across 52 modules passed, with zero skips**, in the candidate workflow.
+
+The executable and Inno installer were actually built on Windows 2025. Automated validation then installed the candidate in a disposable profile, checked the installed executable hash, observed its visible Qt main window using the Windows platform plugin, closed it normally, uninstalled it, and verified the external configuration plus a preservation marker remained. This is an installed-package startup/uninstall smoke check, not a live-model or full interactive product test.
+
+- Successful candidate run: https://github.com/SaDi-SL/FilePilot/actions/runs/39135436281
+- Downloadable candidate artifact: https://github.com/SaDi-SL/FilePilot/actions/runs/39135436281/artifacts/12139682374
+- Validation evidence: https://github.com/SaDi-SL/FilePilot/actions/runs/39135436281/artifacts/12139885886
+- Candidate ZIP: 135,407,431 bytes; artifacts expire 1 November 2026.
+
+The first packaging attempt exposed the command-line OCR flag being treated as a truthy string. The installer now uses an explicit integer comparison, and the final actual compilation passed with OCR disabled. The candidate is **unsigned**, includes **no OCR runtime**, and requires separately installed Ollama/models for local AI. No stable release was published and main was not merged. The known Linux ownership/replacement failures remain unresolved.
