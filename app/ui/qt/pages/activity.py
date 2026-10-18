@@ -35,6 +35,7 @@ class ActivityPage(QWidget):
         self._snapshot = bridge.product_snapshot
         self._details_dialog: OperationDetailsDialog | None = None
         self._preview_dialog: PreviewDialog | None = None
+        self._pending_operation_id: str | None = None
         self.setObjectName("ActivityPage")
         self.setProperty("pageSurface", True)
         self.setAccessibleName("Activity page")
@@ -94,6 +95,13 @@ class ActivityPage(QWidget):
         toolbar.addWidget(self.refresh_button)
         layout.addLayout(toolbar)
 
+        self.operation_hint = QLabel()
+        self.operation_hint.setTextFormat(Qt.TextFormat.PlainText)
+        self.operation_hint.setWordWrap(True)
+        self.operation_hint.setProperty("role", "caption")
+        self.operation_hint.hide()
+        layout.addWidget(self.operation_hint)
+
         self.state_label = QLabel()
         self.state_label.setProperty("role", "secondary")
         self.state_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -144,6 +152,41 @@ class ActivityPage(QWidget):
     def render_snapshot(self, snapshot: ProductSnapshot) -> None:
         self._snapshot = snapshot
         self._apply_filter()
+        self._select_requested_operation()
+
+    def focus_operation(self, operation_id: str) -> None:
+        """Locate an exact operation without treating another row as its result."""
+        self._pending_operation_id = operation_id or None
+        self.search_input.clear()
+        self.filter_combo.setCurrentIndex(0)
+        self._apply_filter()
+        self.operation_hint.setText(
+            "Select View operation details to check whether Undo is available. Stop monitoring before using Undo."
+        )
+        self.operation_hint.show()
+        self._select_requested_operation()
+        self.bridge.request_product_refresh(100)
+
+    def _select_requested_operation(self) -> None:
+        operation_id = self._pending_operation_id
+        if not operation_id:
+            return
+        for index in range(self.table.topLevelItemCount()):
+            item = self.table.topLevelItem(index)
+            record = item.data(0, Qt.ItemDataRole.UserRole + 1)
+            if record.operation_id == operation_id:
+                self.table.setCurrentItem(item)
+                self.table.scrollToItem(item)
+                self._pending_operation_id = None
+                self.operation_hint.setText("Your operation is selected. Choose View operation details to check Undo. Stop monitoring before using Undo.")
+                self._selection_changed()
+                return
+        self.table.clearSelection()
+        self.table.setCurrentItem(None)
+        self.details_button.setEnabled(False)
+        self.operation_hint.setText(
+            f"Operation {operation_id} is not in the currently loaded history. Refresh to check again. No other operation was selected; older activity may be outside this view."
+        )
 
     def _apply_filter(self, _index: int | None = None) -> None:
         snapshot = self._snapshot

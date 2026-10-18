@@ -115,9 +115,15 @@ class MainWindow(QMainWindow):
         self.overview_page.setup_requested.connect(self.open_setup)
         self.overview_page.library_requested.connect(self._open_index)
         self.overview_page.add_documents_requested.connect(self._add_document_folder)
+        self.my_files_page.activity_requested.connect(self._show_organized_activity)
+        self.my_files_page.recovery_requested.connect(lambda: self.show_page("recovery"))
         self.bridge.closed.connect(self._finish_close)
         self.bridge.command_failed.connect(self._handle_command_failure)
         self.show_page("overview")
+
+    def _show_organized_activity(self, operation_id: str) -> None:
+        self.show_page("activity")
+        self.activity_page.focus_operation(operation_id)
 
     def open_setup(self):
         if self._shutdown_requested or self._allow_close:

@@ -108,6 +108,9 @@ class FileDropZone(QFrame):
 
 
 class MyFilesPage(QWidget):
+    activity_requested = Signal(str)
+    recovery_requested = Signal()
+
     def __init__(
         self,
         bridge: QtServiceBridge,
@@ -118,6 +121,9 @@ class MyFilesPage(QWidget):
         self._source: Path | None = None
         self._preview_pending = False
         self._organize_pending = False
+        self._result_destination: Path | None = None
+        self._result_operation_id = ""
+        self._organization_finished = False
 
         self.setObjectName("MyFilesPage")
         self.setProperty("pageSurface", True)
@@ -386,8 +392,11 @@ class MyFilesPage(QWidget):
         self.source_card.content_layout.addWidget(self.drop_zone)
 
         self.selected_name = QLabel("No file selected")
+        self.selected_name.setTextFormat(Qt.TextFormat.PlainText)
+        self.selected_name.setWordWrap(True)
         self.selected_name.setProperty("role", "body")
         self.selected_path = QLabel("Choose a file to begin.")
+        self.selected_path.setTextFormat(Qt.TextFormat.PlainText)
         self.selected_path.setProperty("role", "caption")
         self.selected_path.setWordWrap(True)
         self.selected_path.setTextInteractionFlags(
@@ -413,7 +422,8 @@ class MyFilesPage(QWidget):
         preview_copy.setSpacing(2)
         preview_title = QLabel("Organization preview")
         preview_title.setProperty("role", "sectionTitle")
-        preview_caption = QLabel("Authoritative, non-mutating plan")
+        preview_caption = QLabel("Review the proposed move before choosing Organize file.")
+        preview_caption.setWordWrap(True)
         preview_caption.setProperty("role", "caption")
         preview_copy.addWidget(preview_title)
         preview_copy.addWidget(preview_caption)
@@ -428,19 +438,22 @@ class MyFilesPage(QWidget):
             "Select a file, then ask FilePilot to preview where it would go."
         )
         self.preview_message.setProperty("role", "secondary")
+        self.preview_message.setTextFormat(Qt.TextFormat.PlainText)
         self.preview_message.setWordWrap(True)
         self.preview_card.content_layout.addWidget(self.preview_message)
 
         self.preview_rows = QVBoxLayout()
         self.preview_rows.setSpacing(SPACING.sm)
         self.category_value = self._preview_row("Category", "—")
-        self.destination_value = self._preview_block("Proposed destination", "—")
+        self.name_value = self._preview_block("File name", "—")
+        self.destination_value = self._preview_block("Destination path", "—")
         self.classification_value = self._preview_row("Classified by", "—")
         self.duplicate_value = self._preview_row("Duplicate check", "—")
         self.safety_value = self._preview_row("Safety", "—")
         self.preview_card.content_layout.addLayout(self.preview_rows)
 
         self.preview_warning = QLabel("")
+        self.preview_warning.setTextFormat(Qt.TextFormat.PlainText)
         self.preview_warning.setProperty("role", "caption")
         self.preview_warning.setWordWrap(True)
         self.preview_warning.hide()
@@ -455,6 +468,26 @@ class MyFilesPage(QWidget):
         action_row.addStretch(1)
         action_row.addWidget(self.organize_button)
         self.preview_card.content_layout.addLayout(action_row)
+        self.result_actions = QWidget()
+        result_layout = QVBoxLayout(self.result_actions)
+        result_layout.setContentsMargins(0, 0, 0, 0)
+        self.open_organized_button = QPushButton("Open organized file")
+        self.open_organized_button.clicked.connect(lambda: self._open_organized(False))
+        self.open_organized_folder_button = QPushButton("Open destination folder")
+        self.open_organized_folder_button.clicked.connect(lambda: self._open_organized(True))
+        self.activity_button = QPushButton("View operation in Activity")
+        self.activity_button.clicked.connect(lambda: self.activity_requested.emit(self._result_operation_id))
+        self.recovery_button = QPushButton("Check Recovery")
+        self.recovery_button.clicked.connect(self.recovery_requested.emit)
+        self.result_hint = QLabel()
+        self.result_hint.setTextFormat(Qt.TextFormat.PlainText)
+        self.result_hint.setWordWrap(True)
+        self.result_hint.setProperty("role", "caption")
+        for widget in (self.open_organized_button, self.open_organized_folder_button,
+                       self.activity_button, self.recovery_button, self.result_hint):
+            result_layout.addWidget(widget)
+        self.result_actions.hide()
+        self.preview_card.content_layout.addWidget(self.result_actions)
         self.preview_card.content_layout.addStretch(1)
 
         footer = QLabel(
@@ -918,6 +951,7 @@ class MyFilesPage(QWidget):
         name = QLabel(label)
         name.setProperty("role", "secondary")
         value_label = QLabel(value)
+        value_label.setTextFormat(Qt.TextFormat.PlainText)
         value_label.setProperty("role", "body")
         value_label.setWordWrap(True)
         value_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
@@ -937,6 +971,7 @@ class MyFilesPage(QWidget):
         name = QLabel(label)
         name.setProperty("role", "secondary")
         value_label = QLabel(value)
+        value_label.setTextFormat(Qt.TextFormat.PlainText)
         value_label.setProperty("role", "body")
         value_label.setWordWrap(True)
         value_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -955,6 +990,8 @@ class MyFilesPage(QWidget):
             self._select_source(source)
 
     def _select_source(self, source: str) -> None:
+        if self._organize_pending:
+            return
         path = Path(source)
         if not path.is_file():
             return
@@ -971,8 +1008,9 @@ class MyFilesPage(QWidget):
         )
 
     def _request_preview(self) -> None:
-        if self._source is None or self._preview_pending:
+        if self._source is None or self._preview_pending or self._organize_pending:
             return
+        self._clear_organization_result()
         self._preview_pending = True
         self.preview_button.setEnabled(False)
         self.organize_button.setEnabled(False)
@@ -994,6 +1032,8 @@ class MyFilesPage(QWidget):
 
     def render_preview(self, preview: OperationPreview) -> None:
         if self._source is not None and Path(preview.source) != self._source:
+            return
+        if self._organize_pending or self._organization_finished:
             return
         self._preview_pending = False
         self.preview_button.setEnabled(self._source is not None)
@@ -1025,6 +1065,12 @@ class MyFilesPage(QWidget):
             and not self._organize_pending
         )
         self.category_value.setText(preview.category or "Unavailable")
+        if preview.proposed_destination is None:
+            self.name_value.setText("No name proposed")
+        elif preview.alternative_name_required or preview.destination_collision:
+            self.name_value.setText(f"{preview.proposed_destination.name} — proposed alternative name; rechecked during the move.")
+        else:
+            self.name_value.setText(f"{preview.proposed_destination.name} — unchanged" if preview.proposed_destination.name == preview.source.name else preview.proposed_destination.name)
         self.destination_value.setText(
             str(preview.proposed_destination)
             if preview.proposed_destination is not None
@@ -1032,8 +1078,8 @@ class MyFilesPage(QWidget):
         )
         classification = preview.classification_method or preview.classification_source
         classification_labels = {
-            "extension": "Extension rule",
-            "fallback": "Fallback rule",
+            "extension": f"File type rule ({preview.source.suffix or 'no extension'})",
+            "fallback": "Default category (no matching file type rule)",
         }
         self.classification_value.setText(
             classification_labels.get(classification, classification or "Unavailable")
@@ -1056,17 +1102,24 @@ class MyFilesPage(QWidget):
             else "Execution not currently validated"
         )
         warning = preview.warning
-        if preview.alternative_name_required:
+        if preview.alternative_name_required or preview.destination_collision:
             warning = (
                 (warning + " ") if warning else ""
-            ) + "The destination name is occupied; a safe alternative name would be required."
+            ) + "The original name is already in use in the destination folder. The alternative shown above is a proposal; the final path may differ after rechecking. FilePilot will not overwrite the existing file."
         self.preview_warning.setText(warning or "")
         self.preview_warning.setVisible(bool(warning))
+        QTimer.singleShot(0, self._reveal_organization_result)
+
+    def _reveal_organization_result(self) -> None:
+        if self.workspace_tabs.currentIndex() == 0:
+            target = self.preview_card if self.result_actions.isHidden() else self.result_actions
+            self.scroll_area.ensureWidgetVisible(target, 0, SPACING.md)
 
     def _organize_file(self) -> None:
-        if self._source is None or self._organize_pending:
+        if self._source is None or self._organize_pending or not self.organize_button.isEnabled():
             return
         self._organize_pending = True
+        self.drop_zone.setEnabled(False)
         self.preview_button.setEnabled(False)
         self.organize_button.setEnabled(False)
         self._set_badge("Revalidating", "info")
@@ -1076,6 +1129,7 @@ class MyFilesPage(QWidget):
         request = getattr(self.bridge, "request_organize", None)
         if request is None:
             self._organize_pending = False
+            self.drop_zone.setEnabled(True)
             self.preview_button.setEnabled(self._source.is_file())
             self._reset_preview(
                 "Unavailable",
@@ -1089,6 +1143,7 @@ class MyFilesPage(QWidget):
         if self._source is None or Path(source) != self._source:
             return
         self._organize_pending = True
+        self.drop_zone.setEnabled(False)
         self.preview_button.setEnabled(False)
         self.organize_button.setEnabled(False)
 
@@ -1096,10 +1151,26 @@ class MyFilesPage(QWidget):
         if self._source is None or Path(result.source) != self._source:
             return
         self._organize_pending = False
+        self.drop_zone.setEnabled(True)
+        self._organization_finished = True
+        self._result_operation_id = result.operation_id or ""
+        self.result_actions.show()
+        self.activity_button.setVisible(bool(self._result_operation_id))
+        self.open_organized_button.hide()
+        self.open_organized_folder_button.hide()
+        self.recovery_button.setVisible(bool(result.metadata_error or result.status is MoveStatus.MOVE_FAILED))
+        self.result_hint.setText("In Activity, select View operation details to check Undo. Stop monitoring before using Undo; availability depends on current file checks." if result.operation_id else "No operation identifier was returned. Check Activity and Recovery if the outcome is unclear.")
+        self.preview_warning.setText(result.metadata_error or "")
+        self.preview_warning.setVisible(bool(result.metadata_error))
+        QTimer.singleShot(0, self._reveal_organization_result)
         if result.status is MoveStatus.MOVED:
-            self._set_badge("Organized", "success")
-            self.preview_message.setText("File organized safely. The operation was journaled and can be reviewed in Activity.")
+            self._set_badge("Organized · warning" if result.metadata_error else "Organized", "warning" if result.metadata_error else "success")
+            self.preview_message.setText("File moved. Review the warning below and check Activity or Recovery." if result.metadata_error else "File moved to the destination below. You can open it or review the operation in Activity.")
+            self._result_destination = result.destination
+            self.open_organized_button.setVisible(result.destination is not None)
+            self.open_organized_folder_button.setVisible(result.destination is not None)
             self.destination_value.setText(str(result.destination) if result.destination is not None else "Moved")
+            self.name_value.setText(result.destination.name if result.destination is not None else "See Activity for the final name")
             self.safety_value.setText("Execution completed safely")
             self.preview_button.setEnabled(False)
             self.organize_button.setEnabled(False)
@@ -1118,16 +1189,34 @@ class MyFilesPage(QWidget):
         else:
             self._set_badge("Not organized", "error")
             self.preview_message.setText(
-                result.error or "FilePilot refused the operation. Nothing unsafe was done."
+                result.error or "The move could not be confirmed. Check Activity and Recovery before trying again."
             )
         self.preview_button.setEnabled(self._source.is_file())
         self.organize_button.setEnabled(False)
+
+    def _clear_organization_result(self) -> None:
+        self._organization_finished = False
+        self._result_destination = None
+        self._result_operation_id = ""
+        self.result_actions.hide()
+
+    def _open_organized(self, folder: bool) -> None:
+        destination = self._result_destination
+        if destination is None:
+            return
+        target = destination.parent if folder else destination
+        exists = target.is_dir() if folder else target.is_file()
+        if not exists:
+            self.result_hint.setText("This location is no longer available. Check Activity for the recorded path.")
+        elif not QDesktopServices.openUrl(QUrl.fromLocalFile(str(target.resolve()))):
+            self.result_hint.setText("Could not open this location. You can copy the destination path above.")
 
     def _request_failed(self, name: str, message: str) -> None:
         if name not in {"preview", "organize"}:
             return
         self._preview_pending = False
         self._organize_pending = False
+        self.drop_zone.setEnabled(True)
         self.preview_button.setEnabled(self._source is not None and self._source.is_file())
         self.organize_button.setEnabled(False)
         self._reset_preview(
@@ -1135,6 +1224,16 @@ class MyFilesPage(QWidget):
             message or "Preview could not be completed. Nothing changed.",
             "error",
         )
+        if name == "organize":
+            self._organization_finished = True
+            self.preview_message.setText(message or "The move could not be confirmed. Check Activity and Recovery before trying again.")
+            self.result_actions.show()
+            self.open_organized_button.hide()
+            self.open_organized_folder_button.hide()
+            self.activity_button.show()
+            self.recovery_button.show()
+            self.result_hint.setText("Check the recorded outcome before retrying. No Undo is performed automatically.")
+            QTimer.singleShot(0, self._reveal_organization_result)
 
     def _reset_preview(
         self,
@@ -1143,8 +1242,10 @@ class MyFilesPage(QWidget):
         tone: str = "neutral",
     ) -> None:
         self._set_badge(badge, tone)
+        self._clear_organization_result()
         self.preview_message.setText(message)
         self.category_value.setText("—")
+        self.name_value.setText("—")
         self.destination_value.setText("—")
         self.classification_value.setText("—")
         self.duplicate_value.setText("—")

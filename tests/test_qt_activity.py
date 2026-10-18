@@ -108,6 +108,24 @@ class QtActivityTests(unittest.TestCase):
             widget.close()
         self.app.processEvents()
 
+    def test_organization_route_selects_exact_operation_even_after_refresh(self):
+        bridge = ActivityBridgeStub(available_snapshot(activity_record("other")))
+        window = MainWindow(bridge)
+        page = window.activity_page
+        page.search_input.setText("unrelated")
+        page.filter_combo.setCurrentIndex(2)
+        window.my_files_page.activity_requested.emit("wanted")
+        self.assertEqual(window.page_stack.currentWidget(), page)
+        self.assertEqual(page.search_input.text(), "")
+        self.assertEqual(page.filter_combo.currentIndex(), 0)
+        self.assertIsNone(page.table.selected_record())
+        self.assertFalse(page.details_button.isEnabled())
+        self.assertIn("not in the currently loaded history", page.operation_hint.text())
+        bridge.publish(available_snapshot(activity_record("other"), activity_record("wanted")))
+        self.assertEqual(page.table.selected_operation_id(), "wanted")
+        self.assertTrue(page.details_button.isEnabled())
+        self.assertIn("check Undo", page.operation_hint.text())
+
     def test_overview_renders_authoritative_metrics(self):
         snapshot = available_snapshot(metrics=ProductMetrics(12, 2, 3, 1))
         bridge = ActivityBridgeStub(snapshot)

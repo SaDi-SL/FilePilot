@@ -1,6 +1,7 @@
 import os
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -527,6 +528,84 @@ class QtMyFilesTests(unittest.TestCase):
         self.assertIn("Stop automatic organization", self.page.preview_message.text())
         self.assertTrue(self.page.preview_button.isEnabled())
         self.assertFalse(self.page.organize_button.isEnabled())
+
+    def test_collision_preview_explains_name_change_without_inventing_final_name(self):
+        self.page._select_source(str(self.source))
+        self.bridge.preview_changed.emit(replace(self._ready_preview(),
+            proposed_destination=self.root / "organized" / "report_1.txt",
+            destination_collision=True, alternative_name_required=True))
+        self.assertIn("report_1.txt — proposed alternative", self.page.name_value.text())
+        self.assertIn("final path may differ", self.page.preview_warning.text())
+        self.assertIn("not overwrite", self.page.preview_warning.text())
+        self.assertTrue(self.page.organize_button.isEnabled())
+        self.assertEqual(self.source.read_text(), "content")
+
+    def test_busy_move_keeps_source_and_late_preview_cannot_revive_completed_move(self):
+        self.page.workspace_tabs.setCurrentIndex(0)
+        self.page._select_source(str(self.source))
+        self.page._organize_file()
+        self.assertEqual(self.bridge.organize_requests, [])
+        preview = self._ready_preview()
+        self.bridge.preview_changed.emit(preview)
+        self.page._organize_file()
+        other = self.root / "other.txt"
+        other.write_text("other")
+        self.page._select_source(str(other))
+        self.page._request_preview()
+        self.assertEqual(self.page._source, self.source)
+        self.assertEqual(self.bridge.preview_requests, [])
+        self.assertFalse(self.page.drop_zone.isEnabled())
+        self.bridge.organize_completed.emit(MoveResult(MoveStatus.MOVED,
+            self.source, destination=preview.proposed_destination, operation_id="move-1"))
+        self.bridge.preview_changed.emit(preview)
+        self.assertEqual(self.page.preview_badge.text(), "Organized")
+        self.assertFalse(self.page.organize_button.isEnabled())
+        self.assertTrue(self.page.drop_zone.isEnabled())
+        self.page._select_source(str(other))
+        self.assertFalse(self.page.result_actions.isVisibleTo(self.page))
+
+    def test_move_warning_and_exact_activity_route_and_local_open(self):
+        self.page.workspace_tabs.setCurrentIndex(0)
+        self.page._select_source(str(self.source))
+        self.bridge.preview_changed.emit(self._ready_preview())
+        self.page._organize_file()
+        destination = self.root / "report_1.txt"
+        self.source.rename(destination)
+        self.bridge.organize_completed.emit(MoveResult(MoveStatus.MOVED,
+            self.source, destination=destination, operation_id="move-1",
+            metadata_error="History update failed"))
+        self.assertIn("warning", self.page.preview_badge.text())
+        self.assertEqual(self.page.preview_warning.text(), "History update failed")
+        self.assertEqual(self.page.name_value.text(), destination.name)
+        ids = []
+        self.page.activity_requested.connect(ids.append)
+        self.page.activity_button.click()
+        self.assertEqual(ids, ["move-1"])
+        with patch("app.ui.qt.pages.my_files.QDesktopServices.openUrl", return_value=True) as opener:
+            self.page.open_organized_button.click()
+            self.assertEqual(Path(opener.call_args.args[0].toLocalFile()), destination.resolve())
+            self.page.open_organized_folder_button.click()
+            self.assertEqual(Path(opener.call_args.args[0].toLocalFile()), destination.parent.resolve())
+            destination.unlink()
+            self.page.open_organized_button.click()
+            self.assertEqual(opener.call_count, 2)
+            self.assertIn("no longer available", self.page.result_hint.text())
+
+    def test_unconfirmed_move_offers_recovery_without_claiming_nothing_changed(self):
+        self.page.workspace_tabs.setCurrentIndex(0)
+        self.page._select_source(str(self.source))
+        self.bridge.preview_changed.emit(self._ready_preview())
+        self.page._organize_file()
+        self.bridge.safety_request_failed.emit("organize", "")
+        self.assertIn("could not be confirmed", self.page.preview_message.text())
+        self.assertTrue(self.page.recovery_button.isVisibleTo(self.page))
+        self.assertFalse(self.page.organize_button.isEnabled())
+        self.assertTrue(self.page.preview_button.isEnabled())
+        self.bridge.preview_changed.emit(self._ready_preview())
+        self.assertFalse(self.page.organize_button.isEnabled())
+        self.page._request_preview()
+        self.bridge.preview_changed.emit(self._ready_preview())
+        self.assertTrue(self.page.organize_button.isEnabled())
 
 
 if __name__ == "__main__":
