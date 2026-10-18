@@ -40,7 +40,7 @@ class LibraryQtTests(unittest.TestCase):
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.path = Path(self.tmp.name) / "report.txt"
+        self.path = Path(self.tmp.name).resolve() / "report.txt"
         self.path.write_text("report")
         self.controller = ControllerStub()
         self.widget = LibraryWorkspace(self.controller, SimpleNamespace())

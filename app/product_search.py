@@ -440,6 +440,8 @@ class ProductSearch:
                     removed += int(self._index.remove_file(path))
                     self.catalog.issue(path, "extraction")
                     self.catalog.issue(path, "semantic")
+        if not cancelled:
+            self.catalog.prune_outside_roots(roots)
         return SearchRefreshResult(scanned, indexed, unchanged, removed, failed, tuple(errors), cancelled=cancelled)
 
     def document_context(self, paths, *, max_chars=16000):

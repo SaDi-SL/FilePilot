@@ -85,9 +85,9 @@ class QtFileBrowserTests(unittest.TestCase):
         self.browser.items.setCurrentRow(0)
         with patch("app.ui.qt.widgets.file_browser.QDesktopServices.openUrl", return_value=True) as opener:
             self.browser.open_button.click()
-            self.assertEqual(opener.call_args.args[0].toLocalFile(), str(self.root / "notes.txt"))
+            self.assertEqual(Path(opener.call_args.args[0].toLocalFile()).resolve(), (self.root / "notes.txt").resolve())
             self.browser.open_folder_button.click()
-            self.assertEqual(opener.call_args.args[0].toLocalFile(), str(self.root))
+            self.assertEqual(Path(opener.call_args.args[0].toLocalFile()).resolve(), self.root.resolve())
             self.browser._pool.waitForDone(3000)
             (self.root / "notes.txt").unlink()
             self.browser.open_button.click()

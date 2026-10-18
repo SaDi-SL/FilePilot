@@ -25,6 +25,12 @@ def main():
     output = ROOT / "build" / "test-results"
     output.mkdir(parents=True, exist_ok=True)
     environment = dict(os.environ)
+    # Keep test fixtures on one canonical path. Windows TEMP can contain an 8.3
+    # alias, which breaks path-equality fault injectors after production resolve().
+    temporary_root = output / "tmp"
+    temporary_root.mkdir(exist_ok=True)
+    for key in ("TMP", "TEMP", "TMPDIR"):
+        environment[key] = str(temporary_root.resolve())
     environment.setdefault("QT_QPA_PLATFORM", "offscreen")
     if os.name != "nt":
         environment.setdefault("PYSTRAY_BACKEND", "dummy")

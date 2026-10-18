@@ -135,7 +135,7 @@ class QtMyFilesTests(unittest.TestCase):
         self._show_answer_sources()
         with patch("app.ui.qt.pages.my_files.QDesktopServices.openUrl", return_value=True) as opener:
             self.page.open_source_button.click()
-            self.assertEqual(opener.call_args.args[0].toLocalFile(), str(self.source.resolve()))
+            self.assertEqual(Path(opener.call_args.args[0].toLocalFile()).resolve(), self.source.resolve())
             self.assertEqual(self.source.read_text(), "content")
             self.page.answer_sources.setCurrentRow(1)
             self.page.open_source_button.click()

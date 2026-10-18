@@ -96,6 +96,14 @@ class LibraryCatalog:
             else:
                 db.execute("DELETE FROM library_issues WHERE path=? AND stage=?", (str(path), stage))
 
+    def prune_outside_roots(self, roots):
+        with closing(self._connect()) as db, db:
+            rows = db.execute("SELECT path, stage FROM library_issues").fetchall()
+            for row in rows:
+                path = Path(row["path"])
+                if not any(path == root or path.is_relative_to(root) for root in roots):
+                    db.execute("DELETE FROM library_issues WHERE path=? AND stage=?", (row["path"], row["stage"]))
+
     def finish(self, result):
         data = {"finished_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 "scanned": result.scanned, "indexed": result.indexed,
@@ -107,10 +115,11 @@ class LibraryCatalog:
 
     def snapshot(self, limit=500):
         with closing(self._connect()) as db:
+            db.execute("BEGIN")
             total = db.execute("SELECT COUNT(*) FROM files").fetchone()[0]
             searchable = db.execute("SELECT COUNT(*) FROM files WHERE extraction_status='indexed'").fetchone()[0]
             semantic = db.execute("SELECT COUNT(DISTINCT path) FROM file_embedding_chunks").fetchone()[0]
-            rows = db.execute('''SELECT f.path, f.extraction_status, f.indexed_at_utc,
+            rows = db.execute('''SELECT f.path, f.extraction_status, f.indexed_at_utc, f.size_bytes, f.modified_ns,
                 EXISTS(SELECT 1 FROM file_embedding_chunks e WHERE e.path=f.path) AS semantic,
                 (SELECT GROUP_CONCAT(message, '; ') FROM library_issues i WHERE i.path=f.path) AS issue
                 FROM files f ORDER BY f.path LIMIT ?''', (max(1, min(int(limit), 2000)),)).fetchall()
@@ -120,10 +129,9 @@ class LibraryCatalog:
         for r in rows:
             path = Path(r['path'])
             status, issue = r['extraction_status'], r['issue'] or ""
-            indexed = self.index.get_file(path)
             try:
                 stat = path.stat()
-                if stat.st_size != indexed.size_bytes or stat.st_mtime_ns != indexed.modified_ns:
+                if stat.st_size != r["size_bytes"] or stat.st_mtime_ns != r["modified_ns"]:
                     status, issue = "stale", "File changed since indexing. Update the library."
             except OSError:
                 status, issue = "unavailable", "File is not accessible. Check its folder, then update."

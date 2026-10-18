@@ -6,6 +6,8 @@ The final focused runner completed 19 impacted/regression modules: **328 tests r
 
 A separate legacy-runtime import check completed 31 tests. Windows-only startup integration imports were moved into the operations that need them, preserving Windows behavior while making backend tests importable on Linux. Deferred Qt widget cleanup was fixed in the safety-dialog test teardown. Library layout was visually reviewed at 1100 px and 620 px widths.
 
+A one-off synthetic lexical-index smoke check used 1,000 text files in this Linux environment: first indexing took 5.32 seconds, the unchanged second scan 0.41 seconds, and lexical search about 0.002 seconds; the second scan extracted zero files. This is not a Windows or live-Ollama performance benchmark. A follow-up status-reading change uses one SQL snapshot rather than 500 per-row database reads and removes obsolete diagnostic entries after a location is removed. Its impacted library/search tests passed (46 tests).
+
 ## Whole-project findings
 
 An isolated whole-project run during this review reported **790 tests across 50 modules, 19 skipped**. Three modules failed because of five file-replacement/ownership cases:
@@ -24,7 +26,7 @@ One additional read-only-before-monitoring-setup regression test was added after
 
 Earlier build, installation, application launch and uninstallation succeeded on the user's Windows PC. That historical result remains valid for the tested artifact. The new library/AI functionality has not yet been tried on that PC or in a newly built Windows package. Automated document tests use controlled providers; no live Ollama model inference was claimed in this environment.
 
-The Windows quality workflow is configured to run every test module in a fresh process on Windows with declared dependencies. Its actual run result must be inspected after upload; a configured workflow is not evidence of a successful Windows run. The test runner fails on imports, native crashes and timeouts as well as assertion failures.
+The first Windows workflow actually ran 791 tests with no skips and exposed six failing modules. The logs showed Windows short-path aliases (`RUNNER~1`) breaking path-equality fixtures and fault injectors, and Qt URL slash formatting breaking string comparisons. The runner now uses a canonical temporary directory, and URL assertions compare resolved Path objects. A new Windows run must verify those fixes; failures are not skipped. The test runner fails on imports, native crashes and timeouts as well as assertion failures.
 
 ## Public-release gate
 

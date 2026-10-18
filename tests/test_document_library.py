@@ -15,7 +15,7 @@ from tests.test_local_rag import FakeLocalProvider
 class LibraryTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.root = Path(self.temp.name)
+        self.root = Path(self.temp.name).resolve()
         self.organized = self.root / "organized"
         self.external = self.root / "project"
         self.organized.mkdir(); self.external.mkdir()
@@ -166,6 +166,10 @@ class LibraryTests(unittest.TestCase):
             result = self.search.refresh(self.organized)
         self.search.catalog.finish(result)
         self.assertTrue(any("cannot read" in f.issue for f in self.search.catalog.snapshot().files))
+        self.search.catalog.remove_root(self.external)
+        self.search.refresh(self.organized)
+        self.assertFalse(self.search.catalog.snapshot().files)
+        self.assertTrue(self.source.exists())
 
     def test_existing_legacy_search_database_upgrades_without_losing_text(self):
         self.index.index_file(self.source)
