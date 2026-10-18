@@ -234,7 +234,7 @@ class QtMyFilesTests(unittest.TestCase):
         with patch("app.ui.qt.pages.my_files.QDesktopServices.openUrl") as opened:
             self.page.search_open_button.click()
             self.assertEqual(opened.call_count, 1)
-            self.assertEqual(opened.call_args.args[0].toLocalFile(), str(self.source))
+            self.assertEqual(Path(opened.call_args.args[0].toLocalFile()), self.source)
             self.source.unlink()
             self.page.search_open_button.click()
             self.assertEqual(opened.call_count, 1)
