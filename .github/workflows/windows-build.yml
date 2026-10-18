@@ -3,7 +3,20 @@ on:
   workflow_dispatch:
   push:
     branches: [patch-9e-answer-engine]
-    paths: ['.github/workflows/windows-build.yml']
+    paths:
+      - '.github/workflows/windows-build.yml'
+      - 'app/**'
+      - 'build.py'
+      - 'FilePilot.spec'
+      - 'installer.iss'
+      - 'requirements*.txt'
+      - 'icon.ico'
+      - 'config/default_config.json'
+      - 'third_party/ocr/**'
+      - 'scripts/windows_package_smoke.py'
+concurrency:
+  group: windows-candidate-${{ github.ref }}
+  cancel-in-progress: true
 permissions:
   contents: read
 jobs:
@@ -27,7 +40,13 @@ jobs:
       - name: Validate all tests
         env:
           QT_QPA_PLATFORM: offscreen
-        run: python scripts/check_tests.py
+        run: |
+          python scripts/check_tests.py
+          $testExit = $LASTEXITCODE
+          New-Item -ItemType Directory -Force validation/unit | Out-Null
+          Copy-Item build/test-results/*.log validation/unit
+          Copy-Item build/test-results/summary.json validation/unit
+          exit $testExit
       - name: Build application and require installer
         run: |
           python build.py --exe
@@ -70,7 +89,7 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
           path: |
-            build/test-results/*.log
-            build/test-results/summary.json
+            validation/unit/*.log
+            validation/unit/summary.json
             build/package-validation/*.log
             dist/package-validation.json

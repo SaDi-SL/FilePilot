@@ -46,3 +46,5 @@ This remains a development build. Validation blockers and external signing requi
 - Add a GitHub workflow that requires passing tests, builds the Windows executable and Inno installer, and uploads a downloadable candidate only after package smoke validation.
 - Add disposable-runner-only installation checks for manifest integrity, an actual visible Qt main window, normal shutdown and uninstall preservation of external user configuration. Keep validation logs separate from the downloadable candidate.
 - Candidates remain unsigned development builds with external Ollama/models and no bundled OCR runtime under the current manifest; no release is published automatically.
+
+- Actual candidate compilation exposed an Inno preprocessor flag issue: the command-line OCR value is converted to an integer before deciding whether to include OCR files. This lets non-OCR candidates build without a sidecar directory. Preserve unit validation logs outside the build directory so executable-build cleanup cannot remove them.

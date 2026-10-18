@@ -177,7 +177,7 @@ class OCRPackagingContractTests(unittest.TestCase):
     def test_installer_requires_explicit_ocr_bundle_flag(self):
         source = (ROOT / "installer.iss").read_text(encoding="utf-8")
         self.assertIn("#ifndef OCRBundled", source)
-        self.assertIn("#if OCRBundled", source)
+        self.assertIn("#if Int(OCRBundled) == 1", source)
         self.assertIn('Source: "dist\\ocr\\*"', source)
         self.assertIn('DestDir: "{app}\\ocr"', source)
         self.assertNotIn("skipifsourcedoesntexist", source)
