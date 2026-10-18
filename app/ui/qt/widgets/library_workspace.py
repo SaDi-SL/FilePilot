@@ -323,7 +323,9 @@ class LibraryWorkspace(QWidget):
             self.sources.setVisible(bool(result.sources))
             if result.sources:
                 self.sources.setCurrentRow(0)
-            self.message.setText("Local excerpt-based review complete. Verify the sources below. Organization proposals are suggestions only; no files were changed.")
+            self.message.setText("The selected excerpts did not provide enough relevant evidence. No supported summary was produced."
+                if result.status == "no_evidence" else
+                "Local excerpt-based review complete. Verify the sources below. Organization proposals are suggestions only; no files were changed.")
             self._busy_changed(self._busy)
 
     def _error(self, key, message):

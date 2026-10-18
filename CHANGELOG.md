@@ -21,3 +21,8 @@ This remains a development build. Validation blockers and external signing requi
 - Start installed Windows Ollama on demand, check the configured model, and provide a background Prepare local AI action with clear recovery guidance. No model downloads or cloud fallback.
 - Add `build-windows.cmd` to prepare an isolated Python 3.12 build environment and run the existing build with one command. Inno Setup remains required for installer output.
 - Local validation: 333 tests reported across 19 affected modules (18 skipped), plus 7 local-AI preparation tests passed. Static packaging review passed. Real Windows installation and live model inference require verification of this follow-up.
+
+### Structured local answers (18 October 2026)
+
+- Replace free-text citation formatting for actual Ollama summaries, comparisons and questions with schema-constrained points and source arrays. Validate each point before rendering, reject missing/unknown references, and support truthful no-evidence responses. Keep ordinary classification and organization proposal transport compatible.
+- Add regression coverage for real adapter request schema, malformed response retry, per-point reference validation, unknown references, invalid shapes, no-evidence results and shared timeout. These tests use controlled responses; live Gemma inference on the user's Windows PC remains to be verified.

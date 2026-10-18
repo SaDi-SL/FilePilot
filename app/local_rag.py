@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import re
+import json
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Protocol
 
@@ -124,7 +125,7 @@ class LocalRAGService:
             + original.suffix + ". Do not include folders or special punctuation. "
             + f"Then explain the content-based rationale in {language}, citing the excerpts. If category evidence is insufficient use others."
         )
-        result = self._generate(question, contexts, timeout=timeout, max_output_tokens=700)
+        result = self._generate(question, contexts, timeout=timeout, max_output_tokens=700, structured=False)
         category = re.search(r"^CATEGORY:\s*([^\n]+)$", result.answer, re.MULTILINE)
         name = re.search(r"^NAME:\s*([^\n]+)$", result.answer, re.MULTILINE)
         if category is None or category.group(1).strip() not in allowed or name is None:
@@ -137,7 +138,7 @@ class LocalRAGService:
             raise LocalRAGError("The model suggested an unsafe filename. No files were changed.")
         return result
 
-    def _generate(self, clean_question, contexts, *, timeout, max_output_tokens):
+    def _generate(self, clean_question, contexts, *, timeout, max_output_tokens, structured=True):
         if not contexts:
             return RAGAnswer(
                 question=clean_question,
@@ -167,6 +168,9 @@ class LocalRAGService:
             raise LocalRAGError("Local answer model is unavailable. Select Prepare local AI, then try again.")
 
         prompt, source_map = self._build_prompt(clean_question, contexts)
+        if structured and isinstance(provider, OllamaProvider):
+            return self._structured_generate(provider, clean_question, prompt, source_map,
+                                             timeout=timeout, max_output_tokens=max_output_tokens)
         deadline = time.monotonic() + timeout
         # Retry once using the ORIGINAL evidence, never attach invented citations
         # to an already generated answer. Both attempts share one time budget.
@@ -211,6 +215,95 @@ class LocalRAGService:
             provider=str(getattr(provider, "name", "local")),
             status="answered",
         )
+
+    def _structured_generate(self, provider, question, prompt, source_map, *, timeout, max_output_tokens):
+        schema = {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "status": {"type": "string", "enum": ["answered", "no_evidence"]},
+                "points": {"type": "array", "maxItems": 6, "items": {
+                    "type": "object", "additionalProperties": False,
+                    "properties": {
+                        "text": {"type": "string", "minLength": 1, "maxLength": 1200},
+                        "sources": {"type": "array", "minItems": 1, "maxItems": len(source_map),
+                                    "items": {"type": "string", "enum": list(source_map)}},
+                    }, "required": ["text", "sources"],
+                }},
+            }, "required": ["status", "points"],
+        }
+        provider = replace(provider, response_schema=schema)
+        prompt += ("\n\nOUTPUT CONTRACT (takes precedence over inline citation formatting above): "
+                   "Return ONLY JSON matching the schema below. Give 3 to 6 concise factual points when supported, at most 40 words each. "
+                   "Put each point's evidence IDs in its sources array, not in its text. "
+                   "Use the requested answer language for text. If there is no relevant evidence, "
+                   "return status no_evidence with an empty points array. Never guess evidence IDs.\n"
+                   + json.dumps(schema))
+        deadline = time.monotonic() + timeout
+        reason = "invalid structured response"
+        for attempt in range(2):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise LocalRAGError("Local answer generation timed out. Try again after the model finishes loading.")
+            try:
+                raw = provider.chat(prompt, timeout=remaining,
+                    max_output_tokens=max(256, min(int(max_output_tokens), 1500)))
+            except AIProviderTimeoutError as error:
+                raise LocalRAGError("Local answer generation timed out. The model may still be loading; try again.") from error
+            except AIProviderResponseError as error:
+                raise LocalRAGError(str(error)) from error
+            except Exception as error:
+                raise LocalRAGError(f"Local answer request failed for '{provider.model}'. Check the model in Prepare local AI.") from error
+            try:
+                answer, ids, status = self._parse_structured(raw, source_map)
+            except ValueError as error:
+                reason = str(error)
+                if attempt == 0:
+                    prompt += "\nReturn a fresh JSON object using the exact schema. Validation issue: " + reason
+                    continue
+                raise LocalRAGError(f"Could not verify the structured answer from '{provider.model}': {reason}. No verified answer was produced.") from error
+            if status == "no_evidence":
+                message = "The selected excerpts do not contain enough relevant evidence to answer."
+                if "Write in Arabic" in question:
+                    message = "المقتطفات المحددة لا تحتوي على أدلة كافية لإجابة موثوقة."
+                elif "Write in Swedish" in question:
+                    message = "De valda utdragen innehåller inte tillräckligt med relevant underlag för ett svar."
+                return RAGAnswer(question, message, (), provider.name, status)
+            return RAGAnswer(question, answer, tuple(source_map[item] for item in ids), provider.name, "answered")
+
+    @staticmethod
+    def _parse_structured(raw, source_map):
+        try:
+            data = json.loads(raw)
+        except (ValueError, TypeError) as error:
+            raise ValueError("response is not complete JSON") from error
+        if not isinstance(data, dict) or set(data) != {"status", "points"}:
+            raise ValueError("missing status or points fields")
+        status, points = data["status"], data["points"]
+        if not isinstance(status, str) or status not in {"answered", "no_evidence"} or not isinstance(points, list) or len(points) > 6:
+            raise ValueError("invalid answer status or point count")
+        if status == "no_evidence":
+            if points:
+                raise ValueError("no_evidence must contain no factual points")
+            return "", (), status
+        if not points:
+            raise ValueError("answer contains no factual points")
+        lines, used = [], []
+        for point in points:
+            if not isinstance(point, dict) or set(point) != {"text", "sources"}:
+                raise ValueError("each point must include text and sources")
+            text, sources = point["text"], point["sources"]
+            if not isinstance(text, str) or not text.strip() or len(text) > 1200:
+                raise ValueError("a point contains invalid text")
+            if (not isinstance(sources, list) or not sources or len(sources) > len(source_map)
+                    or any(not isinstance(item, str) or item not in source_map for item in sources)):
+                raise ValueError("a point has missing or unknown source IDs")
+            inline = re.findall(r"\[\s*(S\d+(?:\s*[,،;؛]\s*S\d+)*)\s*\]", text, re.IGNORECASE)
+            if any(item.upper() not in sources for group in inline for item in re.findall(r"S\d+", group, re.IGNORECASE)):
+                raise ValueError("a point contains inconsistent inline source IDs")
+            sources = tuple(dict.fromkeys(sources))
+            used.extend(sources)
+            lines.append(text.strip() + " " + " ".join(f"[{item}]" for item in sources))
+        return "\n\n".join(lines), tuple(dict.fromkeys(used)), status
 
     @staticmethod
     def _build_prompt(

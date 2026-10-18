@@ -110,6 +110,7 @@ class OllamaProvider:
     base_url: str = OLLAMA_BASE_URL
     use_chat_api: bool = False
     think: bool | None = None
+    response_schema: dict[str, Any] | None = field(default=None, repr=False)
 
     name: ClassVar[str] = "ollama"
     is_cloud: ClassVar[bool] = False
@@ -146,6 +147,10 @@ class OllamaProvider:
             payload["think"] = self.think
         if max_output_tokens is not None:
             payload["options"] = {"num_predict": max_output_tokens}
+
+        if self.response_schema is not None:
+            payload["format"] = self.response_schema
+            payload.setdefault("options", {})["temperature"] = 0
 
         req = request.Request(
             f"{self.base_url}/api/{endpoint}",

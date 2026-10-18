@@ -35,3 +35,7 @@ Settings → About & privacy contains **Check for updates** and **Prepare diagno
 Summaries and answers automatically try to start an installed Ollama on Windows when needed. The library's **Prepare local AI** button also starts it and checks the saved answer model, reporting missing models separately from a connection failure. No model downloads or cloud fallback occur. This preparation runs in the background.
 
 If a generated answer omits valid excerpt references, FilePilot makes one fresh generation attempt with the same evidence and an explicit citation reminder. Both generations share the original time budget; a second invalid response remains an error. Citation-format validation does not prove factual accuracy: inspect the displayed excerpts. Requested Arabic/Swedish/English output takes precedence over the internal English task prompt.
+
+### Structured answer validation
+
+Local Ollama summaries, comparisons and questions now request a JSON schema with separate factual points and source-ID arrays. Every point must reference provided excerpts; missing or invented IDs reject the entire response. FilePilot renders the references from those validated fields. A response with no relevant evidence is displayed as such, without a fabricated summary. One regeneration is allowed within the shared request budget. This validates the reference structure, not the truth of every generated claim. The existing category/name organization proposal keeps its separate text protocol. No document contents or raw model responses are written to diagnostics.

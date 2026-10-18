@@ -9,7 +9,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 FOCUS = (
-    "test_document_library", "test_product_support", "test_qt_library", "test_search_index",
+    "test_structured_answers", "test_ai_service", "test_local_ai_readiness", "test_document_library", "test_product_support", "test_qt_library", "test_search_index",
     "test_product_search", "test_application_search", "test_local_rag", "test_embedding_service",
     "test_qt_my_files", "test_qt_file_browser", "test_qt_overview", "test_qt_setup",
     "test_qt_settings", "test_qt_configuration_pages", "test_qt_activity", "test_qt_service_bridge",
