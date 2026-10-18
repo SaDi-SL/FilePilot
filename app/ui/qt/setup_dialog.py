@@ -37,7 +37,7 @@ class SetupDialog(QDialog):
         self._probe_running = False
         self._result = None
         self._saved_model = None
-        self.setWindowTitle("Set up FilePilot")
+        self.setWindowTitle("Set up file organization")
         self.setAccessibleName("FilePilot guided setup")
         self.setModal(True)
         self._initial_geometry_set = False
@@ -47,7 +47,7 @@ class SetupDialog(QDialog):
         self.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, True)
         root = QVBoxLayout(self)
         root.setContentsMargins(SPACING.md, SPACING.md, SPACING.md, SPACING.md)
-        self.heading = QLabel("Make FilePilot yours")
+        self.heading = QLabel("Set up file organization")
         self.heading.setProperty("role", "pageTitle")
         self.progress = QLabel()
         self.progress.setProperty("role", "eyebrow")

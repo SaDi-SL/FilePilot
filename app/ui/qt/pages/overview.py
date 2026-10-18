@@ -1,5 +1,5 @@
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QGridLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QBoxLayout, QGridLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget
 
 from app.application_service import ProductDataState, ProductSnapshot, RecoverySnapshot, SafetyDataState, StartupStatus
 from app.ui.qt.service_bridge import QtServiceBridge, ServiceSnapshot
@@ -15,6 +15,7 @@ class OverviewPage(QWidget):
     recovery_requested = Signal()
     setup_requested = Signal()
     library_requested = Signal()
+    add_documents_requested = Signal()
 
     def __init__(self, bridge: QtServiceBridge, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -62,28 +63,65 @@ class OverviewPage(QWidget):
         header_layout.addWidget(self.header_status, 0, Qt.AlignmentFlag.AlignTop)
         self.page_layout.addWidget(header)
 
-        setup_card = SectionCard()
-        setup_card.setProperty("cardAccent", "purple")
-        setup_row = QHBoxLayout()
-        setup_copy = QVBoxLayout()
-        setup_title = QLabel("Set up your workspace")
-        setup_title.setProperty("role", "sectionTitle")
-        setup_hint = QLabel("Choose folders, check local AI and review what is ready.")
-        setup_hint.setProperty("role", "secondary")
-        setup_hint.setWordWrap(True)
-        setup_copy.addWidget(setup_title)
-        setup_copy.addWidget(setup_hint)
-        setup_row.addLayout(setup_copy, 1)
-        self.setup_button = QPushButton("Guided setup")
-        self.setup_button.setProperty("variant", "primary")
-        self.setup_button.clicked.connect(self.setup_requested)
-        setup_row.addWidget(self.setup_button)
-        self.library_button = QPushButton("Document library")
-        self.library_button.setProperty("variant", "primary")
+        self._library_snapshot = None
+        self._overview_product_snapshot = None
+        self._startup_status = None
+        self._library_busy = False
+        self.welcome_card = SectionCard()
+        self.welcome_card.setProperty("cardAccent", "purple")
+        welcome_title = QLabel("What would you like to do?")
+        welcome_title.setProperty("role", "headline")
+        self.welcome_card.content_layout.addWidget(welcome_title)
+        self.welcome_grid = QGridLayout()
+        self.welcome_grid.setContentsMargins(0, 0, 0, 0)
+        self.welcome_grid.setHorizontalSpacing(SPACING.xl)
+        self.document_entry = QWidget()
+        document_layout = QVBoxLayout(self.document_entry)
+        document_layout.setContentsMargins(0, 0, 0, 0)
+        document_title = QLabel("Find answers in your documents")
+        document_title.setProperty("role", "sectionTitle")
+        document_title.setWordWrap(True)
+        document_copy = QLabel("Choose a folder, prepare its documents, then search or summarize. Your original files stay in place.")
+        document_copy.setProperty("role", "secondary")
+        document_copy.setWordWrap(True)
+        self.document_next = QLabel("Add a document folder to begin. Folder monitoring is not required.")
+        self.document_next.setWordWrap(True)
+        self.document_next.setTextFormat(Qt.TextFormat.PlainText)
+        self.document_next.setAccessibleName("Next step for your document library")
+        self.add_documents_button = QPushButton("Add document folder")
+        self.add_documents_button.setProperty("variant", "primary")
+        self.add_documents_button.clicked.connect(self.add_documents_requested)
+        self.library_button = QPushButton("Open document library")
         self.library_button.clicked.connect(self.library_requested)
-        setup_row.addWidget(self.library_button)
-        setup_card.content_layout.addLayout(setup_row)
-        self.page_layout.addWidget(setup_card)
+        self.document_actions = QBoxLayout(QBoxLayout.Direction.LeftToRight)
+        self.document_actions.addWidget(self.add_documents_button)
+        self.document_actions.addWidget(self.library_button)
+        for widget in (document_title, document_copy, self.document_next):
+            document_layout.addWidget(widget)
+        document_layout.addLayout(self.document_actions)
+        self.organization_entry = QWidget()
+        organization_layout = QVBoxLayout(self.organization_entry)
+        organization_layout.setContentsMargins(0, 0, 0, 0)
+        organization_title = QLabel("Organize files · optional")
+        organization_title.setProperty("role", "sectionTitle")
+        organization_title.setWordWrap(True)
+        organization_copy = QLabel("Choose watched folders and a destination when you want automatic organization. It stays stopped until you choose Start organizing.")
+        organization_copy.setProperty("role", "secondary")
+        organization_copy.setWordWrap(True)
+        self.setup_button = QPushButton("Set up file organization")
+        self.setup_button.clicked.connect(self.setup_requested)
+        organization_layout.addWidget(organization_title)
+        organization_layout.addWidget(organization_copy)
+        organization_layout.addStretch(1)
+        organization_layout.addWidget(self.setup_button)
+        self.welcome_grid.addWidget(self.document_entry, 0, 0)
+        self.welcome_grid.addWidget(self.organization_entry, 0, 1)
+        self.welcome_card.content_layout.addLayout(self.welcome_grid)
+        ai_note = QLabel("Text search works without AI. Summaries need Ollama and a local model; FilePilot checks these when you request an answer.")
+        ai_note.setProperty("role", "caption")
+        ai_note.setWordWrap(True)
+        self.welcome_card.content_layout.addWidget(ai_note)
+        self.page_layout.addWidget(self.welcome_card)
 
         self.metrics_widget = QWidget()
         self.metrics_layout = QGridLayout(self.metrics_widget)
@@ -159,11 +197,56 @@ class OverviewPage(QWidget):
         recovery_signal = getattr(self.bridge, "recovery_snapshot_changed", None)
         if recovery_signal is not None:
             recovery_signal.connect(self.render_recovery_snapshot)
+        controller = getattr(self.bridge, "library", None)
+        if controller is not None:
+            controller.result.connect(self._library_result)
+            controller.busy_changed.connect(self._library_busy_changed)
+            controller.error.connect(self._library_error)
         self.render_state(self.bridge.snapshot)
         self.render_product_snapshot(self.bridge.product_snapshot)
         recovery_snapshot = getattr(self.bridge, "recovery_snapshot", None)
         if recovery_snapshot is not None:
             self.render_recovery_snapshot(recovery_snapshot)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        controller = getattr(self.bridge, "library", None)
+        if controller is not None:
+            controller.request("status")
+
+    def _library_result(self, key, result):
+        if key in {"status", "add", "remove"}:
+            self._library_snapshot = result
+            self._render_document_next()
+
+    def _library_busy_changed(self, busy):
+        self._library_busy = busy
+        self._render_document_next()
+
+    def _library_error(self, key, _message):
+        if key in {"status", "index", "add", "remove"}:
+            self.document_next.setText("The library needs attention. Open Document library to review the issue and retry.")
+
+    def _render_document_next(self):
+        catalog = self._library_snapshot
+        if self._library_busy:
+            text = "Preparing your documents… Open the library to see progress or pause."
+        elif catalog is None:
+            text = "Add a document folder to begin. Folder monitoring is not required."
+        elif catalog.last_run.get("cancelled"):
+            text = "Preparation was stopped. Open the library and choose Continue preparation; completed work is kept."
+        elif catalog.searchable:
+            text = "Your library has indexed text. Open it to check file status, search or select a document to summarize."
+        elif catalog.files:
+            text = "Your documents need a reading check. Open the library and choose Review issues."
+        elif catalog.roots:
+            text = "Your folder is saved. Open the library and choose Prepare documents."
+        else:
+            text = "Add a document folder to begin. Folder monitoring is not required."
+        self.document_next.setText(text)
+        self.add_documents_button.setEnabled(not self._library_busy)
+        self.add_documents_button.setText("Add another folder" if catalog and (catalog.roots or catalog.files) else "Add document folder")
+        self.library_button.setText("View preparation" if self._library_busy else "Open document library")
 
     def _status_row(self, name: str, value: str) -> QLabel:
         row = QHBoxLayout()
@@ -180,11 +263,13 @@ class OverviewPage(QWidget):
         return value_label
 
     def render_state(self, snapshot: ServiceSnapshot) -> None:
+        self._startup_status = snapshot.startup_status
         self.state_panel.render(snapshot)
+        self._update_operation_visibility()
         if snapshot.startup_status is StartupStatus.BLOCKED:
             header_text, tone = "Action required", "error"
         elif snapshot.startup_status is StartupStatus.SETUP_REQUIRED:
-            header_text, tone = "Setup required", "warning"
+            header_text, tone = "Organization not set up", "info"
         elif snapshot.monitor_state.value == "running":
             header_text, tone = "Monitoring", "success"
         elif snapshot.startup_status is StartupStatus.READY:
@@ -200,6 +285,8 @@ class OverviewPage(QWidget):
 
 
     def render_product_snapshot(self, snapshot: ProductSnapshot) -> None:
+        self._overview_product_snapshot = snapshot
+        self._update_operation_visibility()
         if snapshot.state is ProductDataState.AVAILABLE:
             metrics = snapshot.metrics
             self.processed_card.set_value(str(metrics.total_processed), "Completed moves", "success")
@@ -223,6 +310,17 @@ class OverviewPage(QWidget):
             self._show_recent_state(snapshot.error or "Recent activity is currently unavailable.")
         else:
             self._show_recent_state("Nothing here yet. Completed FilePilot operations will appear here.")
+
+    def _update_operation_visibility(self):
+        product = self._overview_product_snapshot
+        first_use = (self._startup_status is StartupStatus.SETUP_REQUIRED and product is not None
+            and (product.state is ProductDataState.LOADING or
+                 product.state is ProductDataState.AVAILABLE and not product.activity
+                 and product.metrics is not None and not any((product.metrics.total_processed,
+                     product.metrics.failed, product.metrics.duplicates, product.metrics.needs_review))))
+        # Keep real history and errors visible; omit empty operation counters on first use.
+        self.metrics_widget.setVisible(not first_use)
+        self.recent_activity.setVisible(not first_use)
 
     def render_recovery_snapshot(self, snapshot: RecoverySnapshot) -> None:
         if snapshot.state is not SafetyDataState.AVAILABLE or not snapshot.items:
@@ -249,6 +347,12 @@ class OverviewPage(QWidget):
 
     def resizeEvent(self, event) -> None:
         width = event.size().width()
+        narrow = width < 820
+        self.welcome_grid.addWidget(self.document_entry, 0, 0)
+        self.welcome_grid.addWidget(self.organization_entry, 1 if narrow else 0, 0 if narrow else 1)
+        self.welcome_grid.setColumnStretch(0, 1)
+        self.welcome_grid.setColumnStretch(1, 0 if narrow else 1)
+        self.document_actions.setDirection(QBoxLayout.Direction.TopToBottom if width < 580 else QBoxLayout.Direction.LeftToRight)
         columns = 1 if width < 560 else 2 if width < 980 else 4
         self._arrange_metrics(columns)
         margin = SPACING.lg if width < 760 else SPACING.xl

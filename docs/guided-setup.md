@@ -1,6 +1,19 @@
 # Guided setup
 
-Open **Overview → Guided setup** at any time. On a standard Qt launch, a missing configuration is seeded through the existing exclusive-create default-config helper; existing configuration is preserved. A setup-required workspace with a readable configuration opens the guide once per session.
+Overview starts with two explicit choices. **Add document folder** opens the read-only
+Document library folder picker; adding a folder prepares its documents without
+requiring watched folders or an organized destination. Cancelling the picker adds
+nothing. **Open document library** resumes preparation, reviews reading issues,
+or opens already indexed documents. Home guidance follows the stored library status.
+Text search does not require AI; summaries require local Ollama and a saved model.
+
+**Set up file organization** opens the optional organization guide below. It never
+opens automatically when organization settings are incomplete. On a standard Qt
+launch, a missing configuration is seeded through the existing exclusive-create
+default-config helper; existing configuration is preserved. Monitoring starts only
+through the explicit Start organizing action after configuration validation.
+Empty organization counters/history are omitted on an unconfigured workspace;
+actual history, journal errors and recovery notices remain available.
 
 The guide fits its initial size to the available screen in Qt logical pixels, including Windows display scaling. Resize it using the bottom-corner grip or window edges. Step content scrolls while Continue, Back and Finish stay outside the scrolling area.
 
@@ -26,4 +39,4 @@ Closing setup asks before discarding unsaved edits and waits for an active save.
 
 ## Validation
 
-Qt guide checks cover unsaved/invalid configuration gates, optional AI, a worker-thread inventory request, stale-result rejection, model selection, save-in-progress closing, compact dialog controls, once-per-session opening and the indexing link. Existing configuration-service tests cover first-run save without monitoring. Layout was reviewed at 980 × 760 and 680 × 540. Short-screen regression checks also cover 1024 × 640 and 800 × 480 logical work areas with navigation buttons inside the dialog. Windows display scaling and live Ollama should be verified on the target computer.
+Qt guide checks cover unsaved/invalid configuration gates, optional AI, a worker-thread inventory request, stale-result rejection, model selection, save-in-progress closing, compact dialog controls, explicit guide opening, first-use document-folder routing without monitoring and the indexing link. Existing configuration-service tests cover first-run save without monitoring. Layout was reviewed at 980 × 760 and 680 × 540. Short-screen regression checks also cover 1024 × 640 and 800 × 480 logical work areas with navigation buttons inside the dialog. Windows display scaling and live Ollama should be verified on the target computer.

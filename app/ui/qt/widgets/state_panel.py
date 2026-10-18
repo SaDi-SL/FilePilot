@@ -131,9 +131,9 @@ class StatePanel(SectionCard):
             self._set_content(
                 "Setup required",
                 "warning",
-                "Initial configuration is needed",
-                "Open Folders, choose the locations FilePilot should watch and organize, "
-                "then save the validated configuration. Monitoring stays stopped.",
+                "Automatic organization is optional",
+                "You can search documents without watched folders. For automatic organization, "
+                "choose Set up file organization above, or Open Folders to configure its locations. Monitoring stays stopped.",
                 False,
                 False,
             )

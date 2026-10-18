@@ -156,7 +156,7 @@ class SetupTests(unittest.TestCase):
             run_qt(service=object())
             seed.assert_not_called()
 
-    def test_window_opens_setup_once_when_required_and_index_link_navigates(self):
+    def test_window_keeps_first_use_on_overview_and_explicit_setup_link_navigates(self):
         from app.application_service import ProductSnapshot, StartupStatus
         from app.ui.qt.main_window import MainWindow
         from app.ui.qt.service_bridge import ServiceSnapshot
@@ -182,8 +182,13 @@ class SetupTests(unittest.TestCase):
         bridge.snapshot = ServiceSnapshot(StartupStatus.SETUP_REQUIRED, MonitorState.STOPPED)
         bridge.state_changed.emit(bridge.snapshot)
         self.app.processEvents()
+        self.assertIsNone(window._setup_dialog)
+        self.assertIs(window.page_stack.currentWidget(), window.overview_page)
+        window.overview_page.setup_button.click()
+        self.app.processEvents()
         self.assertIsNotNone(window._setup_dialog)
         original = window._setup_dialog
+        window.overview_page.setup_button.click()
         bridge.state_changed.emit(bridge.snapshot)
         self.app.processEvents()
         self.assertIs(window._setup_dialog, original)

@@ -94,6 +94,66 @@ class QtOverviewTests(unittest.TestCase):
         page.render_state(state_snapshot)
         return page, bridge
 
+    def test_first_use_document_path_does_not_require_organization_or_start_monitoring(self):
+        from unittest.mock import patch
+        from tests.test_qt_library import ControllerStub
+        from app.library_catalog import LibrarySnapshot
+        bridge = BridgeStub(snapshot(MonitorState.STOPPED, StartupStatus.SETUP_REQUIRED))
+        bridge.library = ControllerStub()
+        window = MainWindow(bridge)
+        window.show()
+        self.app.processEvents()
+        self.assertIsNone(window._setup_dialog)
+        self.assertIs(window.page_stack.currentWidget(), window.overview_page)
+        self.assertTrue(all(key == "status" for key, _ in bridge.library.requests))
+        with patch("app.ui.qt.widgets.library_workspace.QFileDialog.getExistingDirectory", return_value="") as picker:
+            window.overview_page.add_documents_button.click()
+            QTest.qWait(20)
+            picker.assert_called_once()
+        self.assertIs(window.my_files_page.workspace_tabs.currentWidget(), window.my_files_page.library_workspace)
+        self.assertFalse(any(key == "add" for key, _ in bridge.library.requests))
+        with tempfile.TemporaryDirectory() as folder:
+            source = Path(folder) / "notes.txt"
+            source.write_text("Original content", encoding="utf-8")
+            window.show_page("overview")
+            with patch("app.ui.qt.widgets.library_workspace.QFileDialog.getExistingDirectory", return_value=folder):
+                window.overview_page.add_documents_button.click()
+                QTest.qWait(20)
+            self.assertEqual(bridge.library.requests[-1], ("add", {"path": folder}))
+            bridge.library.result.emit("add", LibrarySnapshot((Path(folder),), 0, 0, 0, (), {}))
+            self.assertEqual(bridge.library.requests[-1][0], "index")
+            self.assertEqual(source.read_text(), "Original content")
+        self.assertEqual(bridge.start_calls, 0)
+        self.assertIsNone(window._setup_dialog)
+        window.close()
+
+    def test_home_next_step_tracks_library_and_does_not_hide_real_errors(self):
+        from app.library_catalog import LibrarySnapshot, LibraryFile
+        from app.application_service import ProductMetrics, ProductDataState
+        from tests.test_qt_activity import available_snapshot
+        page, bridge = self._page(snapshot(MonitorState.STOPPED, StartupStatus.SETUP_REQUIRED))
+        page.render_product_snapshot(available_snapshot(metrics=ProductMetrics(0, 0, 0, 0)))
+        self.assertTrue(page.metrics_widget.isHidden())
+        self.assertTrue(page.recent_activity.isHidden())
+        page._library_result("status", LibrarySnapshot((Path("/docs"),), 0, 0, 0, (), {}))
+        self.assertIn("folder is saved", page.document_next.text())
+        page._library_busy_changed(True)
+        self.assertFalse(page.add_documents_button.isEnabled())
+        self.assertIn("Preparing", page.document_next.text())
+        page._library_busy_changed(False)
+        page._library_result("status", LibrarySnapshot((), 1, 0, 0, (LibraryFile(Path("/docs/scan.pdf"), "ocr_required", "", False),), {}))
+        self.assertIn("Review issues", page.document_next.text())
+        page._library_result("status", LibrarySnapshot((), 1, 1, 0, (), {"cancelled": True}))
+        self.assertIn("Continue preparation", page.document_next.text())
+        page._library_error("index", "failure")
+        self.assertIn("needs attention", page.document_next.text())
+        page.render_product_snapshot(available_snapshot(metrics=ProductMetrics(1, 0, 0, 0)))
+        self.assertFalse(page.metrics_widget.isHidden())
+        error = ProductSnapshot(ProductDataState.ERROR, ProductMetrics.unavailable(), (), "Journal unavailable")
+        page.render_product_snapshot(error)
+        self.assertFalse(page.metrics_widget.isHidden())
+        self.assertFalse(page.recent_activity.isHidden())
+
     def test_stopped_state_enables_only_start(self):
         page, _ = self._page(snapshot(MonitorState.STOPPED))
         self.assertEqual(page.state_panel.status_badge.text(), "Stopped")

@@ -45,7 +45,7 @@ blocks a running installed EXE or another preview using the same profile; it nev
 terminates either process automatically. Avoid running another source entry point
 against this shared profile at the same time.
 
-Start with **Overview → Guided setup**, then **Document library**. Add a folder; preparation starts automatically. Use **Prepare documents** to refresh or resume later. **More options** contains local-AI checks and indexing details. Adding a library folder never moves its files. Basic text search works without a local AI model; semantic search uses `bge-m3`, and summaries/answers use the Ollama model saved in Settings.
+Start with **Overview → Add document folder** to search or summarize without setting up automatic organization. Adding a folder starts preparation automatically. **Open document library** returns to progress, reading issues and existing files. **Set up file organization** is optional and opens only when requested; it never starts monitoring by itself. Use **Prepare documents** to refresh or resume later. **More options** contains local-AI checks and indexing details. Adding a library folder never moves its files. Basic text search works without a local AI model; semantic search uses `bge-m3`, and summaries/answers use the Ollama model saved in Settings.
 
 See [Document library](docs/document-library.md), [Guided setup](docs/guided-setup.md), [Browse files](docs/file-browser.md) and [Ask your files](docs/local-answers.md).
 
