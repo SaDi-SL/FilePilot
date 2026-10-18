@@ -79,6 +79,18 @@ class StructuredAnswerTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     LocalRAGService._parse_structured(json.dumps(data), {"S1": object()})
 
+    def test_inline_and_grouped_references_render_once(self):
+        text = "Swedish summary [S1, S2], with facts [S1]."
+        answer, ids, status = LocalRAGService._parse_structured(json.dumps({
+            "status": "answered", "points": [{"text": text, "sources": ["S1", "S2"]}]}), {"S1": object(), "S2": object()})
+        self.assertEqual(answer, "Swedish summary, with facts. [S1] [S2]")
+        self.assertEqual(ids, ("S1", "S2"))
+
+    def test_reference_only_point_is_not_presented_as_a_summary(self):
+        with self.assertRaisesRegex(ValueError, "only source labels"):
+            LocalRAGService._parse_structured(json.dumps({"status": "answered", "points": [
+                {"text": "[S1]", "sources": ["S1"]}]}), {"S1": object()})
+
     def test_shared_timeout_prevents_an_extra_request(self):
         self.transport.return_value = {"message": {"content": "invalid"}}
         with patch("app.local_rag.time.monotonic", side_effect=[0, 1, 46]):

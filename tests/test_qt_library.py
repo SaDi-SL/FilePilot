@@ -80,6 +80,51 @@ class LibraryQtTests(unittest.TestCase):
         self.assertIn("Exact evidence", self.widget.excerpt.toPlainText())
         self.assertIn(str(self.path), self.widget.excerpt.toPlainText())
 
+    def _show_review(self):
+        source = RAGSource("S1", self.path, self.path.name, None, 0, 1.0, "النص الأصلي بلا تعديل")
+        self.widget._result("document", RAGAnswer("Summary", "ملخص موثّق [S1]", (source,), "ollama", "answered"))
+
+    def test_copy_result_and_exact_excerpt_preserve_arabic_and_sources(self):
+        self._show_review()
+        self.widget.copy_button.click()
+        text = self.app.clipboard().text()
+        self.assertIn("ملخص موثّق [S1]", text)
+        self.assertIn("[S1] report.txt", text)
+        self.widget.copy_excerpt_button.click()
+        self.assertEqual(self.app.clipboard().text(), "النص الأصلي بلا تعديل")
+
+    def test_saved_review_includes_exact_sources_and_keeps_original(self):
+        self._show_review()
+        destination = Path(self.tmp.name) / "review.txt"
+        with patch("app.ui.qt.widgets.library_workspace.QFileDialog.getSaveFileName", return_value=(str(destination), "")):
+            self.widget.save_button.click()
+        text = destination.read_text(encoding="utf-8-sig")
+        self.assertIn("ملخص موثّق [S1]", text)
+        self.assertIn("النص الأصلي بلا تعديل", text)
+        self.assertIn(str(self.path), text)
+        self.assertEqual(self.path.read_text(), "report")
+
+    def test_export_cannot_overwrite_source_and_cancel_creates_nothing(self):
+        self._show_review()
+        with patch("app.ui.qt.widgets.library_workspace.QFileDialog.getSaveFileName", return_value=(str(self.path), "")):
+            self.widget.save_button.click()
+        self.assertEqual(self.path.read_text(), "report")
+        self.assertIn("cannot be overwritten", self.widget.message.text())
+        with patch("app.ui.qt.widgets.library_workspace.QFileDialog.getSaveFileName", return_value=("", "")):
+            self.widget.save_button.click()
+        self.assertEqual(len(list(Path(self.tmp.name).iterdir())), 1)
+
+    def test_source_action_uses_result_source_and_new_job_clears_old_review(self):
+        self._show_review()
+        with patch("app.ui.qt.widgets.library_workspace.QDesktopServices.openUrl", return_value=True) as open_url:
+            self.widget.source_button.click()
+        self.assertEqual(Path(open_url.call_args.args[0].toLocalFile()), self.path)
+        self.widget.summarize_path(self.path)
+        self.assertIsNone(self.widget._review)
+        self.assertFalse(self.widget._review_text())
+        self.assertTrue(self.widget.result_tools.isHidden())
+        self.assertTrue(self.widget.excerpt.isHidden())
+
     def test_prepare_ai_shows_missing_model_and_restores_button(self):
         from app.local_ai_readiness import LocalAIReadiness
         self.widget.ai_button.click()

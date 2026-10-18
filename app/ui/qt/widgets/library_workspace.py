@@ -1,8 +1,8 @@
 from pathlib import Path
 
-from PySide6.QtCore import QSettings, QTimer, Qt, QUrl, QSize
+from PySide6.QtCore import QSettings, QTimer, Qt, QUrl, QSize, QSaveFile, QIODevice
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QFileDialog,
+from PySide6.QtWidgets import (QApplication, QAbstractItemView, QCheckBox, QComboBox, QFileDialog,
     QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QPlainTextEdit, QProgressBar, QPushButton, QTreeWidget, QTreeWidgetItem,
     QVBoxLayout, QWidget, QGridLayout, QLayout)
@@ -46,6 +46,7 @@ class LibraryWorkspace(QWidget):
         self._busy = False
         self._document_busy = False
         self._source_records = ()
+        self._review = None
         self._preferences = QSettings()
         layout = QVBoxLayout(self)
         layout.setSizeConstraint(QLayout.SizeConstraint.SetNoConstraint)
@@ -167,10 +168,27 @@ class LibraryWorkspace(QWidget):
         scope.setProperty("role", "caption")
         scope.setWordWrap(True)
         card.content_layout.addWidget(scope)
+        self.result_tools = QWidget()
+        result_actions = _ActionGrid()
+        self._rows.append(result_actions)
+        self.result_tools.setLayout(result_actions)
+        self.copy_button = QPushButton("Copy result")
+        self.copy_button.clicked.connect(self._copy_result)
+        self.save_button = QPushButton("Save result…")
+        self.save_button.clicked.connect(self._save_result)
+        self.source_button = QPushButton("Open source")
+        self.source_button.clicked.connect(self._open_source)
+        self.copy_excerpt_button = QPushButton("Copy excerpt")
+        self.copy_excerpt_button.clicked.connect(self._copy_excerpt)
+        for button in (self.copy_button, self.save_button, self.source_button, self.copy_excerpt_button):
+            result_actions.addWidget(button)
+        self.result_tools.hide()
+        card.content_layout.addWidget(self.result_tools)
         self.answer = QPlainTextEdit()
         self.answer.setAccessibleName("Document summary or comparison")
         self.answer.setReadOnly(True)
-        self.answer.setMinimumHeight(180)
+        self.answer.setMinimumHeight(200)
+        self.answer.document().setDocumentMargin(12)
         self.answer.hide()
         card.content_layout.addWidget(self.answer)
         self.sources = QListWidget()
@@ -250,7 +268,7 @@ class LibraryWorkspace(QWidget):
         self.stop_button.setEnabled(busy)
         self.progress.setVisible(busy)
         if busy:
-            self.answer.clear()
+            self._clear_review()
             self.answer.hide()
             self.sources.hide()
             self.excerpt.hide()
@@ -314,13 +332,20 @@ class LibraryWorkspace(QWidget):
             self.controller.request("status")
         elif key == "document":
             self._document_busy = False
+            self._review = result
             self.answer.setPlainText(result.answer)
+            self._reading_direction(self.answer, result.answer)
+            self.result_tools.show()
             self.answer.show()
             self._source_records = result.sources
+            self.excerpt.clear()
+            self.excerpt.hide()
             self.sources.clear()
             for source in result.sources:
                 self.sources.addItem(f"[{source.source_id}] {source.filename} · Excerpt {source.chunk_index + 1}")
             self.sources.setVisible(bool(result.sources))
+            self.source_button.setEnabled(bool(result.sources))
+            self.copy_excerpt_button.setEnabled(bool(result.sources))
             if result.sources:
                 self.sources.setCurrentRow(0)
             self.message.setText("The selected excerpts did not provide enough relevant evidence. No supported summary was produced."
@@ -390,9 +415,7 @@ class LibraryWorkspace(QWidget):
 
     def _start_document(self, paths, *, compare=False, suggest=False):
         self._document_busy = True
-        self.answer.clear()
-        self.sources.hide()
-        self.excerpt.hide()
+        self._clear_review()
         self.message.setText("Preparing local AI and reading selected excerpts… the first answer may take longer while the model loads.")
         self._busy_changed(False)
         self.controller.request("document", paths=paths, compare=compare, suggest=suggest, language=self.language.currentText())
@@ -400,8 +423,102 @@ class LibraryWorkspace(QWidget):
     def _source(self, index):
         if 0 <= index < len(self._source_records):
             source = self._source_records[index]
-            self.excerpt.setPlainText(f"{source.path}\n\n{source.excerpt}")
+            self.excerpt.setPlainText(f"\u2066{source.path}\u2069\n\n{source.excerpt}")
+            self._reading_direction(self.excerpt, source.excerpt)
             self.excerpt.show()
+
+    def _clear_review(self):
+        self._review = None
+        self._source_records = ()
+        self.result_tools.hide()
+        self.answer.clear()
+        self.answer.hide()
+        self.sources.clear()
+        self.sources.hide()
+        self.excerpt.clear()
+        self.excerpt.hide()
+
+    @staticmethod
+    def _reading_direction(editor, text):
+        import unicodedata
+        direction = Qt.LayoutDirection.LeftToRight
+        for character in text:
+            bidi = unicodedata.bidirectional(character)
+            if bidi in {"R", "AL", "L"}:
+                direction = Qt.LayoutDirection.RightToLeft if bidi in {"R", "AL"} else Qt.LayoutDirection.LeftToRight
+                break
+        option = editor.document().defaultTextOption()
+        option.setTextDirection(direction)
+        option.setAlignment(Qt.AlignmentFlag.AlignRight if direction == Qt.LayoutDirection.RightToLeft else Qt.AlignmentFlag.AlignLeft)
+        editor.document().setDefaultTextOption(option)
+
+    def _review_text(self, *, excerpts=False):
+        if self._review is None:
+            return ""
+        lines = ["FilePilot document review", "", self._review.answer, "",
+                 "Scope: indexed excerpts; long documents may be sampled. Excerpt numbers are not PDF page numbers."]
+        if self._review.sources:
+            lines += ["", "Sources"]
+        for source in self._review.sources:
+            lines.append(f"[{source.source_id}] {source.filename} · Excerpt {source.chunk_index + 1}")
+            if excerpts:
+                lines.extend([str(source.path), source.excerpt, ""])
+        return "\n".join(lines).rstrip() + "\n"
+
+    def _copy_result(self):
+        text = self._review_text()
+        if text:
+            QApplication.clipboard().setText(text)
+            self.message.setText("Result and source references copied.")
+
+    def _copy_excerpt(self):
+        index = self.sources.currentRow()
+        if 0 <= index < len(self._source_records):
+            QApplication.clipboard().setText(self._source_records[index].excerpt)
+            self.message.setText("Exact source excerpt copied.")
+
+    def _save_result(self):
+        if self._review is None:
+            return
+        filename, _ = QFileDialog.getSaveFileName(self, "Save review with source excerpts", "FilePilot-review.txt", "Text files (*.txt)")
+        if not filename:
+            return
+        path = Path(filename)
+        if path.suffix.casefold() != ".txt":
+            self.message.setText("Choose a review filename ending in .txt.")
+            return
+        originals = {source.path for source in self._review.sources}
+        if self.snapshot is not None:
+            originals.update(record.path for record in self.snapshot.files)
+        try:
+            if any(path.resolve() == original.resolve() or (path.exists() and original.exists() and path.samefile(original)) for original in originals):
+                self.message.setText("Choose a new filename for the review. Original library documents cannot be overwritten.")
+                return
+            output = QSaveFile(str(path))
+            if not output.open(QIODevice.OpenModeFlag.WriteOnly):
+                self.message.setText("Could not save the review. Choose a writable folder and try again.")
+                return
+            data = self._review_text(excerpts=True).encode("utf-8-sig")
+            if output.write(data) != len(data):
+                output.cancelWriting()
+                self.message.setText("Could not finish saving the review. Try another location.")
+                return
+            if not output.commit():
+                self.message.setText("Could not finish saving the review. Try another location.")
+                return
+        except OSError:
+            self.message.setText("Could not save the review. Check the destination and try again.")
+            return
+        self.message.setText(f"Review saved with its exact source excerpts: {path}")
+
+    def _open_source(self):
+        index = self.sources.currentRow()
+        if 0 <= index < len(self._source_records):
+            path = self._source_records[index].path
+            if not path.is_file():
+                self.message.setText("This source file is no longer available. The captured excerpt remains visible below.")
+            elif not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))):
+                self.message.setText("Windows could not open the source. Check its default application.")
 
     def _open(self, *_args):
         paths = self._selected_paths()

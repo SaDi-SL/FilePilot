@@ -302,7 +302,14 @@ class LocalRAGService:
                 raise ValueError("a point contains inconsistent inline source IDs")
             sources = tuple(dict.fromkeys(sources))
             used.extend(sources)
-            lines.append(text.strip() + " " + " ".join(f"[{item}]" for item in sources))
+            # References were validated against this point's assigned sources above.
+            # Render them once, even when a model also included inline references.
+            text = re.sub(r"\[\s*(S\d+(?:\s*[,،;؛]\s*S\d+)*)\s*\]", "", text, flags=re.IGNORECASE)
+            text = re.sub(r"[^\S\n]+([.,;:!?،؛])", r"\1", text)
+            text = re.sub(r"[^\S\n]{2,}", " ", text).strip()
+            if not text:
+                raise ValueError("a point contains only source labels")
+            lines.append(text + " " + " ".join(f"[{item}]" for item in sources))
         return "\n\n".join(lines), tuple(dict.fromkeys(used)), status
 
     @staticmethod

@@ -26,3 +26,10 @@ This remains a development build. Validation blockers and external signing requi
 
 - Replace free-text citation formatting for actual Ollama summaries, comparisons and questions with schema-constrained points and source arrays. Validate each point before rendering, reject missing/unknown references, and support truthful no-evidence responses. Keep ordinary classification and organization proposal transport compatible.
 - Add regression coverage for real adapter request schema, malformed response retry, per-point reference validation, unknown references, invalid shapes, no-evidence results and shared timeout. These tests use controlled responses; live Gemma inference on the user's Windows PC remains to be verified.
+
+### Completed review tools (18 October 2026)
+
+- The user confirmed that structured summarization works with their local model.
+- Add Copy result, Save result, Open source and Copy excerpt to completed library reviews. Saved UTF-8 text includes captured source excerpts and paths; source documents are protected against overwrite. Clear stale review actions when a new job starts.
+- Improve Arabic reading direction and preserve left-to-right source paths. Render validated reference labels once instead of duplicating model inline labels.
+- Add regression checks for Arabic clipboard/export, source overwrite protection, cancellation, review-bound source opening and citation normalization.

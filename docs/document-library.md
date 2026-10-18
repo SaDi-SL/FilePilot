@@ -39,3 +39,9 @@ If a generated answer omits valid excerpt references, FilePilot makes one fresh 
 ### Structured answer validation
 
 Local Ollama summaries, comparisons and questions now request a JSON schema with separate factual points and source-ID arrays. Every point must reference provided excerpts; missing or invented IDs reject the entire response. FilePilot renders the references from those validated fields. A response with no relevant evidence is displayed as such, without a fabricated summary. One regeneration is allowed within the shared request budget. This validates the reference structure, not the truth of every generated claim. The existing category/name organization proposal keeps its separate text protocol. No document contents or raw model responses are written to diagnostics.
+
+### Use a completed review
+
+After a summary, comparison or organization proposal finishes, **Copy result** copies the text and its source references. **Save result…** writes a UTF-8 text review containing the answer, reference list, source paths and the exact cited excerpts. Choose a `.txt` filename; the app refuses to overwrite the current source documents or any document in the displayed library snapshot. Saving is atomic and reports write failures. It does not rename or move library files.
+
+Select a source and use **Open source** to open that original document, or **Copy excerpt** to copy its exact text. These actions use the completed review's sources even if you select another document in the library table. Starting a new review or indexing clears the previous review actions. Arabic result text uses right-to-left reading direction; file paths remain isolated left-to-right. Inline reference labels returned inside structured point text are validated and rendered once beside each point.
