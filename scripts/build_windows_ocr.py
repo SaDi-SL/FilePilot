@@ -66,7 +66,20 @@ def build():
                 bundle.extractall(source.parent, filter='data')
         sources[name] = source
 
-    common = ['-G', 'Visual Studio 17 2022', '-A', 'x64',
+    # Hosted Windows images can move to a newer Visual Studio release.
+    # Match an actually installed C++ toolchain to a supported CMake generator.
+    vswhere = Path(os.environ['ProgramFiles(x86)']) / 'Microsoft Visual Studio/Installer/vswhere.exe'
+    installations = json.loads(subprocess.check_output([str(vswhere), '-products', '*', '-requires',
+        'Microsoft.VisualStudio.Component.VC.Tools.x86.x64', '-format', 'json'], text=True, encoding='utf-8'))
+    help_text = subprocess.check_output(['cmake', '--help'], text=True, encoding='utf-8')
+    import re
+    available = {major: f'Visual Studio {major} {year}' for major, year in re.findall(r'Visual Studio (\d+) (\d{4})', help_text)}
+    installation = next((item for item in installations if item['installationVersion'].split('.')[0] in available), None)
+    if installation is None:
+        raise RuntimeError('No supported Visual Studio C++ toolchain found')
+    generator = available[installation['installationVersion'].split('.')[0]]
+    common = ['-G', generator, '-A', 'x64',
+              '-DCMAKE_GENERATOR_INSTANCE=' + installation['installationPath'],
               f'-DCMAKE_INSTALL_PREFIX={prefix}', f'-DCMAKE_PREFIX_PATH={prefix}',
               '-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded', '-DBUILD_SHARED_LIBS=OFF',
               '-DCMAKE_POLICY_DEFAULT_CMP0091=NEW', '-DCMAKE_POLICY_VERSION_MINIMUM=3.5',
