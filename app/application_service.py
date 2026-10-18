@@ -341,6 +341,12 @@ class FilePilotService:
         self._product_search.catalog.remove_root(path)
         return self.library_snapshot()
 
+    def prepare_local_ai(self):
+        from app.local_ai_readiness import prepare_local_ai
+        with self._state_lock:
+            ai = dict((self._config or {}).get("ai") or {})
+        return prepare_local_ai(ai.get("ollama_model") or "mistral")
+
     def summarize_documents(self, paths, *, language="English", compare=False):
         with self._state_lock:
             ai = dict((self._config or {}).get("ai") or {})

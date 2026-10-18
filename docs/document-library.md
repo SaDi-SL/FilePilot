@@ -29,3 +29,9 @@ Organization suggestions must use an existing configured category (or `others`) 
 ## Privacy and support
 
 Settings → About & privacy contains **Check for updates** and **Prepare diagnostics**. Release checks contact the repository's GitHub releases endpoint only on request. They open a validated release page and never download or execute an installer automatically. Diagnostic reports are previewed and saved locally; they exclude document text, file names, folder paths, credentials and raw logs.
+
+## Local AI without a terminal
+
+Summaries and answers automatically try to start an installed Ollama on Windows when needed. The library's **Prepare local AI** button also starts it and checks the saved answer model, reporting missing models separately from a connection failure. No model downloads or cloud fallback occur. This preparation runs in the background.
+
+If a generated answer omits valid excerpt references, FilePilot makes one fresh generation attempt with the same evidence and an explicit citation reminder. Both generations share the original time budget; a second invalid response remains an error. Citation-format validation does not prove factual accuracy: inspect the displayed excerpts. Requested Arabic/Swedish/English output takes precedence over the internal English task prompt.

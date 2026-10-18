@@ -36,10 +36,10 @@ Each module runs in a fresh process. Failures, import errors, crashes and timeou
 ## Build a Windows release candidate
 
 ```powershell
-python -m pip install -r requirements-build.txt
-python build.py --dry-run
-python build.py
+.\build-windows.cmd
 ```
+
+Requires Python 3.12 (Windows launcher). The command creates an isolated build environment, installs build dependencies and runs the existing validated build. Install Inno Setup 6 to produce the installer; otherwise the executable is produced.
 
 The build derives display and numeric versions from `app.product_identity.PRODUCT_IDENTITY`, builds the Qt application, and compiles an Inno Setup installer when Inno Setup 6 is available. A completed installer build also writes `dist/release-manifest.json` with SHA-256 checksums. [Optional digital signing](docs/windows-release.md) requires an existing publisher certificate.
 

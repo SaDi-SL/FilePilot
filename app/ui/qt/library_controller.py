@@ -49,6 +49,7 @@ class LibraryController(QObject):
             return
         actions = {
             "status": lambda: self.service.library_snapshot(),
+            "local_ai": lambda: self.service.prepare_local_ai(),
             "updates": check_updates,
             "diagnostics": lambda: diagnostics(self.service),
             "add": lambda: self.service.add_library_folder(payload["path"]),

@@ -138,6 +138,40 @@ class LocalRAGServiceTests(unittest.TestCase):
                 with self.assertRaisesRegex(LocalRAGError, "not grounded"):
                     LocalRAGService(FakeSearch((context(),)), provider).ask("Question")
 
+    def test_citation_retry_regenerates_from_original_evidence(self):
+        from unittest.mock import Mock
+        provider = FakeLocalProvider()
+        provider.chat = Mock(side_effect=["Uncited draft", "Fresh supported fact [S1]"])
+        result = LocalRAGService(FakeSearch((context(text="original evidence"),)), provider).ask("Question")
+        self.assertEqual(result.answer, "Fresh supported fact [S1]")
+        self.assertEqual(provider.chat.call_count, 2)
+        retry_prompt = provider.chat.call_args.args[0]
+        self.assertIn("original evidence", retry_prompt)
+        self.assertIn("FORMAT REMINDER", retry_prompt)
+        self.assertNotIn("Uncited draft", retry_prompt)
+        self.assertLessEqual(provider.chat.call_args.kwargs["timeout"], 45)
+
+    def test_invalid_retry_is_rejected_without_manufacturing_sources(self):
+        provider = FakeLocalProvider(text="Invented [S99]")
+        with self.assertRaisesRegex(LocalRAGError, "after two attempts"):
+            LocalRAGService(FakeSearch((context(),)), provider).ask("Question")
+        self.assertEqual(len(provider.chat_calls), 2)
+
+    def test_retry_shares_original_timeout_budget(self):
+        from unittest.mock import patch
+        provider = FakeLocalProvider(text="Uncited")
+        with patch("app.local_rag.time.monotonic", side_effect=[0, 1, 46]):
+            with self.assertRaisesRegex(LocalRAGError, "timed out"):
+                LocalRAGService(FakeSearch((context(),)), provider).ask("Question", timeout=45)
+        self.assertEqual(len(provider.chat_calls), 1)
+
+    def test_localized_source_labels_map_to_exact_evidence(self):
+        for label in ("[s1]", "[S١]", "［S۱］"):
+            with self.subTest(label=label):
+                result = LocalRAGService(FakeSearch((context(),)), FakeLocalProvider(text="Fact " + label)).ask("Question")
+                self.assertEqual(result.sources[0].source_id, "S1")
+                self.assertEqual(result.sources[0].excerpt, "IR50 traction testing")
+
     def test_cloud_provider_is_refused_before_any_chat(self):
         provider = FakeCloudProvider()
         service = LocalRAGService(FakeSearch((context(),)), provider)

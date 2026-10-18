@@ -80,6 +80,16 @@ class LibraryQtTests(unittest.TestCase):
         self.assertIn("Exact evidence", self.widget.excerpt.toPlainText())
         self.assertIn(str(self.path), self.widget.excerpt.toPlainText())
 
+    def test_prepare_ai_shows_missing_model_and_restores_button(self):
+        from app.local_ai_readiness import LocalAIReadiness
+        self.widget.ai_button.click()
+        self.assertEqual(self.controller.requests[-1][0], "local_ai")
+        self.assertFalse(self.widget.ai_button.isEnabled())
+        self.widget._result("local_ai", LocalAIReadiness(True, ("gemma4:e4b-it-qat",), "missing", False, "bge-m3", False))
+        self.assertIn("not installed", self.widget.message.text())
+        self.assertIn("gemma4:e4b-it-qat", self.widget.message.text())
+        self.assertTrue(self.widget.ai_button.isEnabled())
+
     def test_compact_layout_does_not_force_a_wide_workspace(self):
         self.widget.resize(620, 900)
         self.widget.show()

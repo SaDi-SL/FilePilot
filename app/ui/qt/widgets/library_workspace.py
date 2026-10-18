@@ -105,6 +105,10 @@ class LibraryWorkspace(QWidget):
         self.message.setTextFormat(Qt.TextFormat.PlainText)
         self.message.setProperty("role", "caption")
         card.content_layout.addWidget(self.message)
+        self.ai_button = QPushButton("Prepare local AI")
+        self.ai_button.setToolTip("Start installed Ollama and check your saved answer model. No models are downloaded.")
+        self.ai_button.clicked.connect(self._prepare_ai)
+        card.content_layout.addWidget(self.ai_button)
         filters = QHBoxLayout()
         self.filter = QLineEdit()
         self.filter.setPlaceholderText("Filter filename or path")
@@ -151,6 +155,10 @@ class LibraryWorkspace(QWidget):
         self.open_button.clicked.connect(self._open)
         self.language = QComboBox()
         self.language.addItems(("English", "Arabic", "Swedish"))
+        saved_language = self._preferences.value("library/answer_language", "English")
+        if saved_language in {"English", "Arabic", "Swedish"}:
+            self.language.setCurrentText(saved_language)
+        self.language.currentTextChanged.connect(lambda value: self._preferences.setValue("library/answer_language", value))
         self.language.setAccessibleName("Document insights language")
         for widget in (self.summary_button, self.compare_button, self.suggest_button, self.open_button, self.language):
             document_actions.addWidget(widget)
@@ -234,6 +242,7 @@ class LibraryWorkspace(QWidget):
 
     def _busy_changed(self, busy):
         self._busy = busy
+        self.ai_button.setEnabled(not busy and not self._document_busy and not getattr(self, "_ai_busy", False))
         self.update_button.setEnabled(not busy and not self._document_busy)
         self.add_button.setEnabled(not busy and not self._document_busy)
         self.remove_button.setEnabled(not busy and not self._document_busy and self.roots.count() > 0)
@@ -261,7 +270,26 @@ class LibraryWorkspace(QWidget):
             count = f"{progress.completed}/{progress.total} files"
         self.message.setText(f"{progress.stage.title()} · {count} · {progress.filename}")
 
+    def _prepare_ai(self):
+        self._ai_busy = True
+        self.ai_button.setEnabled(False)
+        self.message.setText("Preparing local AI… checking Ollama and the saved answer model.")
+        self.controller.request("local_ai")
+
     def _result(self, key, result):
+        if key == "local_ai":
+            self._ai_busy = False
+            if not result.reachable:
+                message = result.error
+            elif not result.answer_installed:
+                message = f"Ollama is running, but the saved answer model '{result.answer_model}' is not installed. Choose an installed model in Settings → AI. Installed models: " + ", ".join(result.models)
+            else:
+                message = f"Ready to summarize with {result.answer_model}. Select a document and press Summarize selected."
+                if not result.embedding_installed:
+                    message += " Smart search model is missing; summaries still work with indexed text."
+            self.message.setText(message)
+            self._busy_changed(self._busy)
+            return
         if key in {"status", "add", "remove"}:
             self.snapshot = result
             current = self.roots.currentData()
@@ -299,6 +327,8 @@ class LibraryWorkspace(QWidget):
             self._busy_changed(self._busy)
 
     def _error(self, key, message):
+        if key == "local_ai":
+            self._ai_busy = False
         if key == "document":
             self._document_busy = False
         self.message.setText(message)
@@ -361,7 +391,7 @@ class LibraryWorkspace(QWidget):
         self.answer.clear()
         self.sources.hide()
         self.excerpt.hide()
-        self.message.setText("Reading selected indexed excerpts and generating a local review…")
+        self.message.setText("Preparing local AI and reading selected excerpts… the first answer may take longer while the model loads.")
         self._busy_changed(False)
         self.controller.request("document", paths=paths, compare=compare, suggest=suggest, language=self.language.currentText())
 

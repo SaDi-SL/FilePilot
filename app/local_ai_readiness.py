@@ -51,3 +51,42 @@ def check_local_ai(answer_model: str) -> LocalAIReadiness:
     return LocalAIReadiness(True, models, answer_model,
                             model_is_installed(answer_model, models), embedding,
                             model_is_installed(embedding, models))
+
+
+def prepare_local_ai(answer_model: str) -> LocalAIReadiness:
+    """Start an installed Windows Ollama server on demand; never install models."""
+    import os
+    import shutil
+    import subprocess
+    import sys
+    import time
+    from pathlib import Path
+
+    result = check_local_ai(answer_model)
+    if result.reachable or sys.platform != "win32":
+        return result
+    executable = shutil.which("ollama.exe")
+    if not executable:
+        local = os.environ.get("LOCALAPPDATA")
+        candidate = Path(local) / "Programs" / "Ollama" / "ollama.exe" if local else None
+        if candidate is not None and candidate.is_file():
+            executable = str(candidate)
+    if not executable:
+        return LocalAIReadiness(False, (), answer_model, False, result.embedding_model, False,
+            "Ollama was not found. Install Ollama, then select Prepare local AI. Your files stay on this computer.")
+    try:
+        environment = dict(os.environ)
+        environment["OLLAMA_HOST"] = "127.0.0.1:11434"
+        subprocess.Popen([executable, "serve"], stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=environment,
+            creationflags=subprocess.CREATE_NO_WINDOW)
+    except OSError:
+        return LocalAIReadiness(False, (), answer_model, False, result.embedding_model, False,
+            "Windows could not start Ollama. Open Ollama from Start, then try again.")
+    deadline = time.monotonic() + 15.0
+    while time.monotonic() < deadline:
+        time.sleep(0.25)
+        result = check_local_ai(answer_model)
+        if result.reachable:
+            return result
+    return result
