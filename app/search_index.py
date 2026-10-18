@@ -23,7 +23,7 @@ from app.semantic_search import (
 
 SEARCH_APPLICATION_ID = 0x46505349  # "FPSI"
 SEARCH_SCHEMA_VERSION = 5
-SEARCH_EXTRACTION_PIPELINE_REVISION = "9b-richer-extraction-ocr-v1"
+SEARCH_EXTRACTION_PIPELINE_REVISION = "9b-richer-extraction-ocr-v2-arabic-swedish"
 MAX_SEARCH_RESULTS = 100
 
 

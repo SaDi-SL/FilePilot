@@ -197,7 +197,7 @@ def main():
         validate(args.installer.resolve(), report)
     except Exception as error:
         report['error'] = str(error)
-        print(f'Package validation failed: {error}', flush=True)
+        print(f'Package validation failed: {ascii(str(error))}', flush=True)
         return_code = 1
     else:
         print('Installation, visible Qt launch, shutdown and uninstall preservation: PASS', flush=True)

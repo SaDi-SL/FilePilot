@@ -42,3 +42,28 @@ Only a passing package check uploads the executable, installer, SHA-256 manifest
 ### Verified candidate
 
 The candidate from `24d769293d3f9f1cbd43d37c91895de393f0d94f` passed all 820 Windows tests and the installed-package check described above. Run: https://github.com/SaDi-SL/FilePilot/actions/runs/39135436281. Its artifact contains both the installer and executable, checksums, package-validation JSON and build notes. Retention ends 1 November 2026. See `docs/release-validation.md` for the evidence and remaining release limits.
+
+### OCR candidate build
+
+The candidate workflow now runs `python scripts/build_windows_ocr.py` before
+PyInstaller. It compiles pinned Tesseract/Leptonica/libpng/zlib sources with the
+installed Visual Studio C++ toolchain and statically links them. All source
+archives and English/Arabic/Swedish `tessdata_fast` models are checked against
+`third_party/ocr/source-lock.json`. Downloads happen during build, never on the
+user's PC. The generated runtime manifest records the exact compiled executable
+hash and files; the existing staging gate verifies them before packaging.
+
+For a local Windows source build with OCR, install Visual Studio C++ build tools
+and CMake, install `requirements-build.txt`, run the OCR build script, then run
+`python build.py`. Generated files live in `.ocr-build/` and
+`third_party/ocr/runtime/`, outside the `build/` folder cleared by PyInstaller.
+Run a normal unbundled source build without that extra step if OCR is not needed.
+The recommended end-user route is the tested Setup artifact, requiring no Python,
+CMake, compiler, separate Tesseract install or OCR model downloads.
+
+Installed-package validation calls the actual installed FilePilot executable's
+internal `--package-ocr-check` operation. It checks recognized English, Arabic and
+Swedish text, JPEG/TIFF/WebP/BMP conversion and an image-only PDF, verifies that
+all three bundled languages are used, and hashes every source before/after. The
+operation writes a new report exclusively and never overwrites a document or an
+existing report. It does not invoke Ollama. Normal launch remains the Qt app.

@@ -51,3 +51,22 @@ Select a source and use **Open source** to open that original document, or **Cop
 The main view presents Add folder, Prepare documents and Search documents. Pause and Stop appear only while preparation runs. More options keeps folder removal, refresh status, the optional periodic update, local AI preparation, stored-vector details and job issues available. Search documents opens the full-index search tab.
 
 The library distinguishes an empty catalog from filters with no matches. Select one document with current indexed text to summarize or suggest organization, or two readable documents to compare. Files needing OCR, an update or another reading fix remain available to open, with an explanation; their summary actions stay disabled. Adding a folder and indexing run sequentially in the worker lane, and other mutating tasks are blocked until the current task completes. Monitoring is not started.
+
+## Scanned documents and images
+
+OCR-enabled Windows installers include local English, Arabic and Swedish OCR.
+Add a folder containing scanned PDFs or supported images, let **Prepare documents**
+finish, then search the extracted text or select a readable file for an insight.
+Existing locations can use **Prepare documents** again after upgrading; the
+extraction capability fingerprint invalidates old OCR-unavailable entries.
+Summaries still require the configured local Ollama model; OCR itself does not.
+
+PNG, JPEG, BMP, TIFF and WebP inputs are supported. Non-PNG images are converted
+locally to temporary PNGs with EXIF orientation applied. Temporary files are
+removed on success or failure; originals are never rewritten. For multi-frame
+images only the first frame is read. PDF OCR runs when the normal PDF reader finds
+no embedded text, and indexes at most the first 20 pages, within the existing
+60-second document/20-second page budgets. Mixed PDFs containing some embedded
+text continue to use that text; this update does not OCR every image in a mixed
+PDF. OCR quality depends on image clarity; extracted excerpts should be reviewed
+when exact wording matters.

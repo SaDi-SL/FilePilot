@@ -11,7 +11,9 @@ from typing import Iterable
 from app.ocr_runtime import OCRRuntime, discover_ocr_runtime
 
 
-DEFAULT_OCR_LANGUAGES = ("eng", "ara", "swe")
+# Prefer Arabic script and Swedish diacritics before the English fallback.
+# Tesseract language order affects recognition in multilingual documents.
+DEFAULT_OCR_LANGUAGES = ("ara", "swe", "eng")
 DEFAULT_OCR_TIMEOUT_SECONDS = 20
 MAX_OCR_OUTPUT_CHARS = 100_000
 _LANGUAGE_CODE = re.compile(r"^[A-Za-z0-9_]+$")

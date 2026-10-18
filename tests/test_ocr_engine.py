@@ -47,10 +47,10 @@ class OCREngineTests(unittest.TestCase):
 
         self.assertEqual(result.status, "extracted")
         self.assertEqual(result.text, "Hello مرحبا")
-        self.assertEqual(result.languages, ("eng", "ara"))
+        self.assertEqual(result.languages, ("ara", "eng"))
         command = run.call_args.args[0]
         self.assertEqual(command[0], str(runtime.executable))
-        self.assertIn("eng+ara", command)
+        self.assertIn("ara+eng", command)
         self.assertIn("--tessdata-dir", command)
         self.assertFalse(run.call_args.kwargs["shell"])
         self.assertLessEqual(run.call_args.kwargs["timeout"], 120)
@@ -155,8 +155,8 @@ class OCREngineTests(unittest.TestCase):
             source.write_bytes(b"image")
             with patch("app.ocr_engine.subprocess.run", return_value=subprocess.CompletedProcess([], 0, "Svenska", "")) as run:
                 result = run_image_ocr(source, runtime=runtime)
-            self.assertEqual(result.languages, ("eng", "ara", "swe"))
-            self.assertIn("eng+ara+swe", run.call_args.args[0])
+            self.assertEqual(result.languages, ("ara", "swe", "eng"))
+            self.assertIn("ara+swe+eng", run.call_args.args[0])
 
     def test_phone_image_is_converted_without_changing_original_and_temp_is_cleaned(self):
         from PIL import Image
