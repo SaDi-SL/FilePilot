@@ -20,7 +20,7 @@ python -m pip install -r requirements-qt.txt
 python -m app.ui.qt
 ```
 
-Start with **Overview → Guided setup**, then **Document library**. Add a folder and choose **Update / retry index**. Adding a library folder never moves its files. Basic text search works without a local AI model; semantic search uses `bge-m3`, and summaries/answers use the Ollama model saved in Settings.
+Start with **Overview → Guided setup**, then **Document library**. Add a folder; preparation starts automatically. Use **Prepare documents** to refresh or resume later. **More options** contains local-AI checks and indexing details. Adding a library folder never moves its files. Basic text search works without a local AI model; semantic search uses `bge-m3`, and summaries/answers use the Ollama model saved in Settings.
 
 See [Document library](docs/document-library.md), [Guided setup](docs/guided-setup.md), [Browse files](docs/file-browser.md) and [Ask your files](docs/local-answers.md).
 

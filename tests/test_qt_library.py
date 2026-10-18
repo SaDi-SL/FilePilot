@@ -68,6 +68,83 @@ class LibraryQtTests(unittest.TestCase):
         self.widget.filter.setText("not-present")
         self.assertEqual(self.widget.files.topLevelItemCount(), 0)
         self.assertFalse(self.widget.summary_button.isEnabled())
+        self.assertFalse(self.widget.empty_state.isHidden())
+        self.assertIn("No documents match", self.widget.empty_state.text())
+
+    def test_add_folder_prepares_only_after_success_and_releases_controls_on_error(self):
+        with patch("app.ui.qt.widgets.library_workspace.QFileDialog.getExistingDirectory", return_value=self.tmp.name):
+            self.widget.add_button.click()
+        self.assertEqual(self.controller.requests[-1][0], "add")
+        self.assertFalse(self.widget.update_button.isEnabled())
+        self.assertEqual(len(self.controller.requests), 1)
+        self.widget._error("add", "Folder unavailable")
+        self.assertTrue(self.widget.update_button.isEnabled())
+        self.assertEqual(len(self.controller.requests), 1)
+        self.widget._result("add", self.snapshot)
+        self.assertEqual(self.controller.requests[-1][0], "index")
+        self.assertEqual(self.path.read_text(), "report")
+
+    def test_unreadable_file_is_not_offered_as_summarizable(self):
+        snapshot = LibrarySnapshot((), 1, 0, 0, (LibraryFile(self.path, "ocr_required", "", False),), {})
+        self.widget._result("status", snapshot)
+        self.widget.files.topLevelItem(0).setSelected(True)
+        self.assertFalse(self.widget.summary_button.isEnabled())
+        self.assertFalse(self.widget.suggest_button.isEnabled())
+        self.assertIn("no current readable text", self.widget.detail.text())
+        self.assertTrue(self.widget.open_button.isEnabled())
+
+    def test_real_controller_adds_then_indexes_read_only_folder(self):
+        from app.application_service import FilePilotService
+        from app.product_search import ProductSearch
+        from app.search_index import SearchIndex, SearchIndexError
+        folder = Path(self.tmp.name).resolve() / "project"
+        folder.mkdir()
+        source = folder / "notes.txt"
+        source.write_text("Integration testing evidence", encoding="utf-8")
+        search = ProductSearch(SearchIndex(Path(self.tmp.name) / "search.sqlite3"))
+        service = FilePilotService(config_path=Path(self.tmp.name) / "config.json",
+            journal_path=Path(self.tmp.name) / "operations.sqlite3", product_search=search)
+        controller = LibraryController(service)
+        widget = LibraryWorkspace(controller, SimpleNamespace())
+        results, errors = [], []
+        controller.result.connect(lambda key, value: results.append(key))
+        controller.error.connect(lambda key, message: errors.append(message))
+        try:
+            with patch("app.ui.qt.widgets.library_workspace.QFileDialog.getExistingDirectory", return_value=str(folder)), patch.object(search, "refresh_semantic_embeddings", side_effect=SearchIndexError("Local AI offline")):
+                widget.add_button.click()
+                for _ in range(300):
+                    if "index" in results and "status" in results:
+                        break
+                    QTest.qWait(10)
+            self.assertFalse(errors)
+            self.assertEqual(results[:3], ["add", "index", "status"])
+            self.assertEqual(widget.snapshot.searchable, 1)
+            self.assertEqual(service.search_files("Integration")[0].path, source)
+            self.assertEqual(source.read_text(encoding="utf-8"), "Integration testing evidence")
+            self.assertIsNone(service.monitor)
+        finally:
+            controller.close()
+            controller.pool.waitForDone(5000)
+            widget.deleteLater(); controller.deleteLater()
+            QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+    def test_controller_prevents_index_racing_a_folder_change(self):
+        entered, release = threading.Event(), threading.Event()
+        def add(path):
+            entered.set(); release.wait(2)
+            return self.snapshot
+        controller = LibraryController(SimpleNamespace(add_library_folder=add))
+        errors = []
+        controller.error.connect(lambda key, message: errors.append(key))
+        try:
+            controller.request("add", path=self.tmp.name)
+            self.assertTrue(entered.wait(1))
+            controller.request("index")
+            self.assertEqual(errors, ["index"])
+        finally:
+            release.set(); controller.close(); controller.pool.waitForDone(5000)
+            controller.deleteLater()
+            QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
     def test_sources_show_exact_text_and_busy_state_preserves_no_fake_completion(self):
         self.widget._busy_changed(True)

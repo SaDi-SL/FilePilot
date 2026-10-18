@@ -33,3 +33,10 @@ This remains a development build. Validation blockers and external signing requi
 - Add Copy result, Save result, Open source and Copy excerpt to completed library reviews. Saved UTF-8 text includes captured source excerpts and paths; source documents are protected against overwrite. Clear stale review actions when a new job starts.
 - Improve Arabic reading direction and preserve left-to-right source paths. Render validated reference labels once instead of duplicating model inline labels.
 - Add regression checks for Arabic clipboard/export, source overwrite protection, cancellation, review-bound source opening and citation normalization.
+
+### Simpler library journey (18 October 2026)
+
+- Start preparation automatically after a read-only folder is successfully added, with explicit preparation and progress states. Keep manual Prepare documents for updates/resume.
+- Keep advanced controls and stored-vector details under More options; show pause/stop only while indexing. Add a direct search shortcut, empty/no-match guidance and readable-file selection rules. Reveal AI preparation options when an error points to them.
+- Prevent folder changes, indexing, model preparation and document tasks from racing in the worker lane.
+- Validate the real Qt/controller/service add → index → searchable-text sequence without moving the source or starting monitoring; cover failed-add recovery, unreadable selection and task exclusion.

@@ -44,8 +44,8 @@ class LibraryController(QObject):
     def request(self, key, **payload):
         if self._closed:
             return
-        if key in {"index", "document", "add", "remove"} and (self.control is not None or "document" in self._active):
-            self.error.emit(key, "Wait for indexing to finish or stop it before changing the library.")
+        if key in {"index", "document", "add", "remove", "local_ai"} and (self.control is not None or self._active.intersection({"index", "document", "add", "remove", "local_ai"})):
+            self.error.emit(key, "Wait for the current library task to finish before starting another.")
             return
         actions = {
             "status": lambda: self.service.library_snapshot(),

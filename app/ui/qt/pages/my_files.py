@@ -418,6 +418,7 @@ class MyFilesPage(QWidget):
         if controller is not None:
             self.library_workspace = LibraryWorkspace(controller, self.bridge)
             self.workspace_tabs.addTab(self.library_workspace, "Document library")
+            self.library_workspace.search_requested.connect(self._show_library_search)
             controller.result.connect(self._library_result)
             self.file_browser.summarize_requested.connect(self._summarize_browsed_file)
         self.workspace_tabs.setCurrentIndex(3)
@@ -585,6 +586,10 @@ class MyFilesPage(QWidget):
             else "Searching the local FilePilot index…"
         )
         request(query, 25)
+
+    def _show_library_search(self):
+        self.workspace_tabs.setCurrentIndex(1)
+        self.search_input.setFocus()
 
     def _summarize_browsed_file(self, path):
         if self.library_workspace is not None:
