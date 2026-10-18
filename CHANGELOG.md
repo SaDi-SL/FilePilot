@@ -40,3 +40,9 @@ This remains a development build. Validation blockers and external signing requi
 - Keep advanced controls and stored-vector details under More options; show pause/stop only while indexing. Add a direct search shortcut, empty/no-match guidance and readable-file selection rules. Reveal AI preparation options when an error points to them.
 - Prevent folder changes, indexing, model preparation and document tasks from racing in the worker lane.
 - Validate the real Qt/controller/service add → index → searchable-text sequence without moving the source or starting monitoring; cover failed-add recovery, unreadable selection and task exclusion.
+
+### Windows candidate delivery (18 October 2026)
+
+- Add a GitHub workflow that requires passing tests, builds the Windows executable and Inno installer, and uploads a downloadable candidate only after package smoke validation.
+- Add disposable-runner-only installation checks for manifest integrity, an actual visible Qt main window, normal shutdown and uninstall preservation of external user configuration. Keep validation logs separate from the downloadable candidate.
+- Candidates remain unsigned development builds with external Ollama/models and no bundled OCR runtime under the current manifest; no release is published automatically.

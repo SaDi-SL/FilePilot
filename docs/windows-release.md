@@ -32,3 +32,9 @@ The in-app update check is explicit and read only. It compares a validated stabl
 ## Release gate
 
 Before publishing a stable release, resolve the known validation blockers, run the full Windows test workflow, build from the intended commit, verify OCR runtime completeness, exercise the new library/AI controls in that package, verify artifact hashes, and apply the publisher signature when a certificate is available. Do not label this development branch as a finished stable release.
+
+## GitHub candidate delivery
+
+`.github/workflows/windows-build.yml` builds a candidate on Windows 2025 after all unit modules pass. It requires an installer to be produced, then runs `scripts/windows_package_smoke.py` on a GitHub-hosted disposable runner. The smoke check verifies manifest hashes, installs into a temporary folder/profile, sees the actual Qt main window through the native Windows platform plugin, closes setup dialogs and the application normally, uninstalls, and checks that external user configuration and a preservation marker survive. It refuses to run on ordinary PCs or self-hosted runners because installer registry state must be isolated.
+
+Only a passing package check uploads the executable, installer, SHA-256 manifest, package-validation report and build notes as a 14-day artifact. Validation logs are uploaded separately even on failure. The workflow does not publish a release, sign binaries, install Ollama/models, or claim bundled OCR when the runtime manifest is disabled. Existing user-performed installation tests remain valid for their earlier build; this check supplies evidence tied to the new commit.

@@ -46,3 +46,7 @@ The build derives display and numeric versions from `app.product_identity.PRODUC
 Binaries install under `%LOCALAPPDATA%\Programs\FilePilot`; writable configuration, logs, reports, backups, plugins, reminders and the operation journal live under `%LOCALAPPDATA%\FilePilot`. Upgrades and uninstallation preserve that user-data directory.
 
 The current code remains a **development build**, not a newly published stable release. Earlier Windows build/install/uninstall tests succeeded on the user's PC; the newly added features require validation in a newly built package before public release.
+
+## Download a tested Windows candidate
+
+The **Windows installer candidate** Actions workflow builds the executable and installer, then checks installation, a visible Qt window, normal shutdown and uninstallation with user-data preservation on a disposable Windows runner. Its successful run provides a `FilePilot-Windows-<commit>` artifact ZIP: extract it and run the Setup executable inside `installer`. This is an unsigned development candidate; Ollama/models remain separate and this candidate does not bundle an OCR runtime. No GitHub Release is published automatically. Artifacts are retained for 14 days. The workflow also supports manual runs once available on the default branch; on this development branch, changes to its workflow file trigger the candidate build.

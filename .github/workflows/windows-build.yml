@@ -1,0 +1,76 @@
+name: Windows installer candidate
+on:
+  workflow_dispatch:
+  push:
+    branches: [patch-9e-answer-engine]
+    paths: ['.github/workflows/windows-build.yml']
+permissions:
+  contents: read
+jobs:
+  package:
+    runs-on: windows-2025
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-qt.txt
+            requirements-build.txt
+      - name: Install build dependencies
+        run: python -m pip install -r requirements-build.txt
+      - name: Validate all tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python scripts/check_tests.py
+      - name: Build application and require installer
+        run: |
+          python build.py --exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python build.py --installer
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify installed application and uninstall preservation
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem dist/installer/FilePilot-Setup-*.exe
+          if ($installer.Count -ne 1) { throw 'Expected exactly one installer' }
+          python scripts/windows_package_smoke.py --installer $installer.FullName --report dist/package-validation.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          @"
+          FilePilot Windows test candidate
+          Source: $env:GITHUB_SHA
+          Extract this ZIP, then run the Setup executable inside installer.
+          Python is not required on the user's PC. Local AI requires installed Ollama and local models.
+          This development candidate is unsigned. OCR runtime binaries are not bundled in this candidate.
+          See release-manifest.json for checksums and package-validation.json for the automated installation check.
+          "@ | Set-Content dist/BUILD-INFO.txt -Encoding utf8
+      - name: Upload tested Windows candidate
+        uses: actions/upload-artifact@v7
+        with:
+          name: FilePilot-Windows-${{ github.sha }}
+          retention-days: 14
+          if-no-files-found: error
+          compression-level: 0
+          path: |
+            dist/FilePilot.exe
+            dist/installer/FilePilot-Setup-*.exe
+            dist/release-manifest.json
+            dist/package-validation.json
+            dist/BUILD-INFO.txt
+      - name: Upload validation evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: Windows-validation-${{ github.sha }}
+          retention-days: 14
+          if-no-files-found: warn
+          path: |
+            build/test-results/*.log
+            build/test-results/summary.json
+            build/package-validation/*.log
+            dist/package-validation.json
