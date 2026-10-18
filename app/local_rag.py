@@ -89,6 +89,54 @@ class LocalRAGService:
         except SearchIndexError as error:
             raise LocalRAGError(str(error)) from error
 
+        return self._generate(clean_question, contexts, timeout=timeout,
+                              max_output_tokens=max_output_tokens)
+
+    def summarize(self, paths, *, language="English", compare=False, timeout=60.0):
+        if language not in {"English", "Arabic", "Swedish"}:
+            raise LocalRAGError("Choose a supported answer language")
+        if compare and len(paths) != 2:
+            raise LocalRAGError("Choose two documents to compare")
+        if not compare and len(paths) != 1:
+            raise LocalRAGError("Choose one document to summarize")
+        contexts = self._search.document_context(paths)
+        question = (
+            ("Compare the selected documents: supported similarities, differences and missing information. "
+             if compare else "Summarize the selected document: main subject, key facts and any explicit actions or dates. ")
+            + f"Write in {language}. Cite each factual point. This is an excerpt-based review; "
+              "the excerpts may sample a longer document. State this scope and do not claim a complete review."
+        )
+        return self._generate(question, contexts, timeout=timeout, max_output_tokens=1000)
+
+    def propose_organization(self, paths, categories, *, language="English", timeout=60.0):
+        if len(paths) != 1 or language not in {"English", "Arabic", "Swedish"}:
+            raise LocalRAGError("Select one document and a supported language")
+        allowed = tuple(sorted(set(categories) | {"others"}))
+        if not allowed or any(not isinstance(item, str) for item in allowed):
+            raise LocalRAGError("File categories are unavailable")
+        contexts = self._search.document_context(paths)
+        original = Path(paths[0])
+        question = (
+            "Propose organization for this document using ONLY its excerpts. This is a suggestion; no files are changed. "
+            + "The first line MUST be CATEGORY: followed by exactly one of: " + ", ".join(allowed) + ". "
+            + "The second line MUST be NAME: followed by one Windows-safe filename, preserving the extension "
+            + original.suffix + ". Do not include folders or special punctuation. "
+            + f"Then explain the content-based rationale in {language}, citing the excerpts. If category evidence is insufficient use others."
+        )
+        result = self._generate(question, contexts, timeout=timeout, max_output_tokens=700)
+        category = re.search(r"^CATEGORY:\s*([^\n]+)$", result.answer, re.MULTILINE)
+        name = re.search(r"^NAME:\s*([^\n]+)$", result.answer, re.MULTILINE)
+        if category is None or category.group(1).strip() not in allowed or name is None:
+            raise LocalRAGError("The model did not return an allowed category and filename. Try again.")
+        filename = name.group(1).strip()
+        stem = filename.split(".")[0].upper()
+        if (not filename or len(filename) > 180 or re.search(r'[<>:"/\\|?*\x00-\x1f]', filename)
+                or filename.endswith((".", " ")) or Path(filename).suffix.lower() != original.suffix.lower()
+                or stem in {"CON", "PRN", "AUX", "NUL", *[f"COM{i}" for i in range(1, 10)], *[f"LPT{i}" for i in range(1, 10)]}):
+            raise LocalRAGError("The model suggested an unsafe filename. No files were changed.")
+        return result
+
+    def _generate(self, clean_question, contexts, *, timeout, max_output_tokens):
         if not contexts:
             return RAGAnswer(
                 question=clean_question,

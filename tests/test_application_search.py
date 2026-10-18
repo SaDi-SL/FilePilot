@@ -51,6 +51,16 @@ class ApplicationSearchServiceTests(unittest.TestCase):
             self.assertIs(provider.think, False)
             engine.return_value.ask.assert_called_once_with("Question")
 
+    def test_read_only_library_can_be_indexed_without_starting_monitoring_setup(self):
+        self.service.add_library_folder(self.organized)
+        source = self.organized / "notes.txt"
+        source.write_text("Read only project notes", encoding="utf-8")
+        result = self.service.refresh_search_index()
+        self.assertEqual(result.indexed, 1)
+        self.assertEqual(self.service.search_files("project")[0].path, source)
+        self.assertIsNone(self.service.monitor)
+        self.assertEqual(source.read_text(encoding="utf-8"), "Read only project notes")
+
     def test_refresh_requires_ready_configuration(self):
         with self.assertRaisesRegex(SearchIndexError, "ready"):
             self.service.refresh_search_index()

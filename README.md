@@ -1,25 +1,48 @@
 # FilePilot
-Smart desktop file automation and organization system
 
-## Windows release candidate
+A local Windows workspace for organizing files, finding documents and understanding their contents.
 
-Install the declared build dependencies, then run from any working directory:
+## What you can do
+
+- Preview organization before moving a file; review activity, duplicates and recovery evidence.
+- Browse organized folders and preview PDF pages, images and text.
+- Search filenames and extracted text, with local semantic ranking when Ollama is available.
+- Add **read-only document folders**, inspect indexing problems, pause/stop indexing and resume completed work later.
+- Summarize a selected document, compare two documents or request an organization suggestion with exact source excerpts. These tasks stay local through Ollama.
+- Check published releases explicitly and prepare a local diagnostic report without document contents, file names, paths or credentials.
+
+The charcoal, purple and orange UI includes guided setup and a multi-resolution Windows icon.
+
+## Start on Windows
 
 ```powershell
-python C:\path\to\FilePilot\build.py
+python -m pip install -r requirements-qt.txt
+python -m app.ui.qt
 ```
 
-The build validates release inputs, derives both display and Windows numeric
-versions from `app.product_identity.PRODUCT_IDENTITY`, builds the professional
-Qt application into `dist\FilePilot.exe`, and compiles an Inno Setup installer
-when Inno Setup 6 is already available. Use `python build.py --dry-run` for a
-static packaging review without building.
+Start with **Overview → Guided setup**, then **Document library**. Add a folder and choose **Update / retry index**. Adding a library folder never moves its files. Basic text search works without a local AI model; semantic search uses `bge-m3`, and summaries/answers use the Ollama model saved in Settings.
 
-Installed binaries live under `%LOCALAPPDATA%\Programs\FilePilot`. Writable
-configuration, logs, reports, backups, plugins, reminders, and the operation
-journal live separately under `%LOCALAPPDATA%\FilePilot`. Upgrades and
-uninstallation do not overwrite or remove that user data.
+See [Document library](docs/document-library.md), [Guided setup](docs/guided-setup.md), [Browse files](docs/file-browser.md) and [Ask your files](docs/local-answers.md).
 
-`icon.ico` is the current development icon. It is wired consistently into the
-EXE and installer, but its single 16x16 image must be replaced by a reviewed
-multi-resolution production icon before a public release.
+## Validate
+
+```powershell
+python scripts/check_tests.py --focus
+python scripts/check_tests.py
+```
+
+Each module runs in a fresh process. Failures, import errors, crashes and timeouts are reported; logs and a machine-readable summary are written to `build/test-results`. The Windows quality workflow runs the complete test set. See [validation and release limitations](docs/release-validation.md).
+
+## Build a Windows release candidate
+
+```powershell
+python -m pip install -r requirements-build.txt
+python build.py --dry-run
+python build.py
+```
+
+The build derives display and numeric versions from `app.product_identity.PRODUCT_IDENTITY`, builds the Qt application, and compiles an Inno Setup installer when Inno Setup 6 is available. A completed installer build also writes `dist/release-manifest.json` with SHA-256 checksums. [Optional digital signing](docs/windows-release.md) requires an existing publisher certificate.
+
+Binaries install under `%LOCALAPPDATA%\Programs\FilePilot`; writable configuration, logs, reports, backups, plugins, reminders and the operation journal live under `%LOCALAPPDATA%\FilePilot`. Upgrades and uninstallation preserve that user-data directory.
+
+The current code remains a **development build**, not a newly published stable release. Earlier Windows build/install/uninstall tests succeeded on the user's PC; the newly added features require validation in a newly built package before public release.

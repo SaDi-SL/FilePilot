@@ -116,6 +116,7 @@ class MainWindow(QMainWindow):
             lambda: self.show_page("recovery")
         )
         self.overview_page.setup_requested.connect(self.open_setup)
+        self.overview_page.library_requested.connect(self._open_index)
         self.bridge.state_changed.connect(self._offer_setup)
         configuration_signal = getattr(self.bridge, "configuration_snapshot_changed", None)
         if configuration_signal is not None:
@@ -144,7 +145,10 @@ class MainWindow(QMainWindow):
 
     def _open_index(self):
         self.show_page("my_files")
-        self.my_files_page.workspace_tabs.setCurrentIndex(1)
+        if self.my_files_page.library_workspace is not None:
+            self.my_files_page.workspace_tabs.setCurrentWidget(self.my_files_page.library_workspace)
+        else:
+            self.my_files_page.workspace_tabs.setCurrentIndex(1)
 
     def _offer_setup(self, *_args):
         config = getattr(self.bridge, "configuration_snapshot", None)

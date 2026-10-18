@@ -1,11 +1,10 @@
 import sys
 from pathlib import Path
 
-import winshell
-from win32com.client import Dispatch
-
 
 def get_startup_shortcut_path() -> Path:
+    import winshell
+
     startup_dir = Path(winshell.startup())
     return startup_dir / "FileAutomation.lnk"
 
@@ -15,6 +14,8 @@ def is_startup_enabled() -> bool:
 
 
 def enable_startup() -> None:
+    from win32com.client import Dispatch
+
     shortcut_path = get_startup_shortcut_path()
 
     shell = Dispatch("WScript.Shell")

@@ -4,7 +4,7 @@ import json
 import logging
 import os
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass, replace, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
@@ -37,8 +37,9 @@ from app.product_configuration import (
 )
 from app.embedding_service import OllamaEmbeddingProvider
 from app.local_rag import LocalRAGService, RAGAnswer
+from app.library_catalog import IndexCancelled
 from app.ai_service import OllamaProvider
-from app.product_search import ProductSearch, SearchRefreshResult
+from app.product_search import ProductSearch, SearchRefreshResult, HybridSearchResult
 from app.search_index import SearchIndexError, SearchResult, SemanticSearchResult
 from app.product_read_model import (
     ActivityRecord,
@@ -232,6 +233,11 @@ class FilePilotService:
         with self._state_lock:
             return self._last_error
 
+    @staticmethod
+    def prepare_first_launch():
+        from app.config_loader import ensure_external_config_exists
+        return ensure_external_config_exists()
+
     def subscribe_activity(self, callback: ActivitySubscriber) -> Callable[[], None]:
         with self._subscriber_lock:
             self._activity_subscribers.append(callback)
@@ -278,9 +284,9 @@ class FilePilotService:
         query: str,
         *,
         limit: int = 25,
-    ) -> tuple[SemanticSearchResult, ...]:
-        """Search the local semantic catalog without changing user files."""
-        return self._product_search.semantic_search(query, limit=limit)
+    ) -> tuple[HybridSearchResult, ...]:
+        """Fuse exact-content and semantic evidence without changing user files."""
+        return self._product_search.hybrid_search(query, limit=limit)
 
     def ask_files(self, question: str) -> RAGAnswer:
         """Answer from the local catalog using the configured Ollama model only."""
@@ -292,37 +298,62 @@ class FilePilotService:
         )
         return LocalRAGService(self._product_search, provider).ask(question)
 
-    def refresh_search_index(self) -> SearchRefreshResult:
+    def refresh_search_index(self, *, control=None, progress=None) -> SearchRefreshResult:
         """Reconcile the local search catalog with the configured organized root."""
         with self._lifecycle_lock:
-            if self.startup_status is not StartupStatus.READY:
-                raise SearchIndexError(
-                    "Search indexing requires a ready FilePilot configuration"
-                )
+            extra_roots = self._product_search.catalog.roots()
             config = dict(self.config or {})
             organized = config.get("organized_base_folder")
-            if not isinstance(organized, str) or not organized.strip():
-                raise SearchIndexError(
-                    "Search indexing requires a configured organized folder"
-                )
-            organized_root = Path(organized)
-        lexical = self._product_search.refresh(organized_root)
-        try:
-            semantic = self._product_search.refresh_semantic_embeddings()
-        except SearchIndexError:
+            if self.startup_status is not StartupStatus.READY and not extra_roots:
+                raise SearchIndexError("Search indexing requires a ready FilePilot configuration or an added read-only library folder")
+            if isinstance(organized, str) and organized.strip():
+                organized_root = Path(organized)
+            elif extra_roots:
+                organized_root = extra_roots[0]
+            else:
+                raise SearchIndexError("Search indexing requires a configured organized folder")
+        kwargs = {"control": control, "progress": progress} if control is not None or progress is not None else {}
+        lexical = self._product_search.refresh(organized_root, **kwargs)
+        if lexical.cancelled:
+            self._product_search.catalog.finish(lexical)
             return lexical
-        return SearchRefreshResult(
-            scanned=lexical.scanned,
-            indexed=lexical.indexed,
-            unchanged=lexical.unchanged,
-            removed=lexical.removed,
-            failed=lexical.failed,
-            errors=lexical.errors,
-            semantic_embedded=semantic.embedded,
-            semantic_unchanged=semantic.unchanged,
-            semantic_failed=semantic.failed,
-            semantic_available=True,
-        )
+        try:
+            semantic = self._product_search.refresh_semantic_embeddings(**kwargs)
+        except IndexCancelled:
+            result = replace(lexical, cancelled=True)
+        except SearchIndexError:
+            result = lexical
+        else:
+            result = replace(lexical, semantic_embedded=semantic.embedded,
+                semantic_unchanged=semantic.unchanged, semantic_failed=semantic.failed,
+                semantic_available=True, errors=lexical.errors + semantic.errors)
+        self._product_search.catalog.finish(result)
+        return result
+
+    def library_snapshot(self):
+        return self._product_search.catalog.snapshot()
+
+    def add_library_folder(self, path):
+        self._product_search.catalog.add_root(path)
+        return self.library_snapshot()
+
+    def remove_library_folder(self, path):
+        self._product_search.catalog.remove_root(path)
+        return self.library_snapshot()
+
+    def summarize_documents(self, paths, *, language="English", compare=False):
+        with self._state_lock:
+            ai = dict((self._config or {}).get("ai") or {})
+        provider = OllamaProvider(model=ai.get("ollama_model") or "mistral", use_chat_api=True, think=False)
+        return LocalRAGService(self._product_search, provider).summarize(paths, language=language, compare=compare)
+
+    def suggest_document_organization(self, paths, *, language="English"):
+        with self._state_lock:
+            config = dict(self._config or {})
+            ai = dict(config.get("ai") or {})
+            categories = tuple((config.get("rules") or {}).keys())
+        provider = OllamaProvider(model=ai.get("ollama_model") or "mistral", use_chat_api=True, think=False)
+        return LocalRAGService(self._product_search, provider).propose_organization(paths, categories, language=language)
 
     def get_product_configuration(self) -> ProductConfigurationSnapshot:
         """Read one immutable product configuration snapshot."""

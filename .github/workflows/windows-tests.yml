@@ -1,0 +1,36 @@
+name: Windows quality checks
+on:
+  pull_request:
+  push:
+    branches: [main, patch-9e-answer-engine]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  tests:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-qt.txt
+      - name: Install Windows and Qt dependencies
+        run: python -m pip install -r requirements-qt.txt
+      - name: Run every test module in a fresh process
+        run: python scripts/check_tests.py
+      - name: Show validation summary
+        if: always()
+        shell: pwsh
+        run: |
+          if (Test-Path build/test-results/summary.json) {
+            Get-Content build/test-results/summary.json
+          }

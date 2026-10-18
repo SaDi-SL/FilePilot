@@ -29,6 +29,7 @@ from app.product_settings import (
     ProductSettingsSnapshot,
 )
 from app.product_identity import PRODUCT_IDENTITY
+from app.ui.qt.library_controller import LibraryController
 
 
 @dataclass(frozen=True)
@@ -509,6 +510,7 @@ class QtServiceBridge(QObject):
     ) -> None:
         super().__init__(parent)
         self._service = service or FilePilotService()
+        self.library = LibraryController(self._service, self)
         self._snapshot = self._snapshot_from_service()
         self._bootstrapped = False
         self._bootstrap_active = False
@@ -1057,6 +1059,7 @@ class QtServiceBridge(QObject):
 
     @Slot()
     def shutdown(self) -> None:
+        self.library.close()
         if self._closing:
             return
         self._closing = True

@@ -17,6 +17,7 @@ from app.semantic_search import (
     decode_vector,
     encode_vector,
     normalize_vector,
+    embedding_fingerprint,
 )
 
 
@@ -417,6 +418,22 @@ class SearchIndex:
             raise SearchIndexError(f"Embedding metadata read failed: {error}") from error
         return None if row is None else str(row["embedding_fingerprint"])
 
+
+    def embeddings_current(self, file_path, *, model, provider="ollama") -> bool:
+        """Validate stored chunk identity before making any embedding requests."""
+        chunks = self.semantic_document_chunks(file_path)
+        with closing(self._connect()) as db:
+            rows = db.execute(
+                "SELECT chunk_index, chunk_text, model, provider, dimensions, embedding_fingerprint, length(vector) AS bytes FROM file_embedding_chunks WHERE path=? ORDER BY chunk_index",
+                (str(Path(file_path).resolve()),),
+            ).fetchall()
+        return bool(chunks) and len(rows) == len(chunks) and all(
+            row["chunk_index"] == i and row["chunk_text"] == text
+            and row["model"] == model and row["provider"] == provider
+            and row["bytes"] == row["dimensions"] * 4
+            and row["embedding_fingerprint"] == embedding_fingerprint(provider=provider, model=model, dimensions=row["dimensions"])
+            for i, (row, text) in enumerate(zip(rows, chunks))
+        )
 
     def semantic_document(self, file_path: str | Path, *, max_chars: int = 12_000) -> str | None:
         """Return bounded indexed text for local embedding without re-reading the source file."""

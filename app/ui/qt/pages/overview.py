@@ -14,6 +14,7 @@ class OverviewPage(QWidget):
     view_all_requested = Signal()
     recovery_requested = Signal()
     setup_requested = Signal()
+    library_requested = Signal()
 
     def __init__(self, bridge: QtServiceBridge, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -77,6 +78,10 @@ class OverviewPage(QWidget):
         self.setup_button.setProperty("variant", "primary")
         self.setup_button.clicked.connect(self.setup_requested)
         setup_row.addWidget(self.setup_button)
+        self.library_button = QPushButton("Document library")
+        self.library_button.setProperty("variant", "primary")
+        self.library_button.clicked.connect(self.library_requested)
+        setup_row.addWidget(self.library_button)
         setup_card.content_layout.addLayout(setup_row)
         self.page_layout.addWidget(setup_card)
 

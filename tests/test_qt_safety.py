@@ -8,7 +8,7 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
-    from PySide6.QtCore import QObject, Qt, Signal
+    from PySide6.QtCore import QObject, Qt, Signal, QCoreApplication, QEvent
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication, QMessageBox, QPushButton
 except ImportError as error:
@@ -148,7 +148,9 @@ class QtSafetyTests(unittest.TestCase):
     def tearDown(self):
         for widget in QApplication.topLevelWidgets():
             widget.close()
+            widget.deleteLater()
         self.app.processEvents()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
     def _bridge(self):
         record = _record()

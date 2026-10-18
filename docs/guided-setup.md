@@ -20,7 +20,7 @@ Continue without local AI if desired. Basic rule-based organization remains avai
 
 ## 3. Review
 
-Review the saved incoming folders, destination, local-model result and current monitoring state. **Finish** closes the guide. **Go to search indexing** opens My Files → Search files; click Update index there to begin indexing explicitly. Start monitoring yourself from Overview.
+Review the saved incoming folders, destination, local-model result and current monitoring state. **Finish** closes the guide. **Go to search indexing** opens the document library (or Search files in runtimes without that workspace); click Update / retry index there to begin indexing explicitly. Start monitoring yourself from Overview.
 
 Closing setup asks before discarding unsaved edits and waits for an active save. Closing does not undo saved configuration. Read-only model checks are ignored after a saved-model change or dialog dismissal.
 

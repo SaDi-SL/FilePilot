@@ -24,6 +24,7 @@ from app.ui.qt.service_bridge import QtServiceBridge, ServiceSnapshot
 from app.ui.qt.theme.tokens import SPACING
 from app.ui.qt.widgets.section_card import SectionCard
 from app.ui.qt.widgets.editor_footer import install_editor_footer
+from app.ui.qt.widgets.support_tools import SupportTools
 
 
 class SecondsControl(QDoubleSpinBox):
@@ -207,6 +208,10 @@ class SettingsPage(QWidget):
         about_card.content_layout.addWidget(self.version_label)
         about_card.content_layout.addWidget(self.build_label)
         tab_layouts[2].addWidget(about_card)
+        controller = getattr(bridge, "library", None)
+        if controller is not None:
+            self.support_tools = SupportTools(controller)
+            tab_layouts[2].addWidget(self.support_tools)
 
         self.feedback_label = QLabel("Loading authoritative Settings...")
         self.feedback_label.setProperty("badgeTone", "info")

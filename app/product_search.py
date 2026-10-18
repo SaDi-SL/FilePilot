@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from app.embedding_service import OllamaEmbeddingProvider
+from app.library_catalog import LibraryCatalog, IndexCancelled, IndexProgress
 from app.search_index import (
     SearchIndex,
     SearchIndexError,
@@ -41,6 +42,7 @@ class SearchRefreshResult:
     semantic_unchanged: int = 0
     semantic_failed: int = 0
     semantic_available: bool = False
+    cancelled: bool = False
 
 
 @dataclass(frozen=True)
@@ -96,6 +98,7 @@ class ProductSearch:
     ) -> None:
         self._index = index or SearchIndex()
         self._embedding_provider = embedding_provider
+        self.catalog = LibraryCatalog(self._index)
 
     def search(self, query: str, *, limit: int = 25) -> tuple[SearchResult, ...]:
         return self._index.search(query, limit=limit)
@@ -104,6 +107,7 @@ class ProductSearch:
         self,
         *,
         timeout: float = 30.0,
+        control=None, progress=None,
     ) -> SemanticRefreshResult:
         provider = self._embedding_provider
         if provider is None:
@@ -113,28 +117,35 @@ class ProductSearch:
 
         scanned = embedded = unchanged = skipped = failed = 0
         errors: list[str] = []
-        for path in self._index.indexed_paths():
+        paths = self._index.indexed_paths()
+        for path in paths:
+            if control:
+                control.checkpoint()
             scanned += 1
+            if progress:
+                progress(IndexProgress("semantic", scanned, len(paths), path.name))
             try:
                 chunks = self._index.semantic_document_chunks(path)
                 if not chunks:
                     skipped += 1
                     continue
 
-                responses = [
-                    provider.embed(chunk, timeout=timeout, task="document")
-                    for chunk in chunks
-                ]
+                if self._index.embeddings_current(path, model=provider.model,
+                        provider=getattr(provider, "provider_name", "ollama")):
+                    unchanged += 1
+                    self.catalog.issue(path, "semantic")
+                    continue
+                responses = []
+                for chunk in chunks:
+                    if control:
+                        control.checkpoint()
+                    responses.append(provider.embed(chunk, timeout=timeout, task="document"))
                 first = responses[0]
                 fingerprint = embedding_fingerprint(
                     provider=first.provider,
                     model=first.model,
                     dimensions=len(first.vector),
                 )
-                if self._index.embedding_fingerprint_for_file(path) == fingerprint:
-                    unchanged += 1
-                    continue
-
                 self._index.upsert_embedding_chunks(
                     path,
                     [response.vector for response in responses],
@@ -144,9 +155,13 @@ class ProductSearch:
                     embedding_fingerprint=fingerprint,
                 )
                 embedded += 1
+                self.catalog.issue(path, "semantic")
+            except IndexCancelled:
+                raise
             except Exception as error:
                 failed += 1
                 errors.append(f"{path.name}: {error}")
+                self.catalog.issue(path, "semantic", str(error))
 
         return SemanticRefreshResult(
             scanned=scanned,
@@ -287,6 +302,13 @@ class ProductSearch:
         per_file: dict[Path, int] = {}
         used_chars = 0
         for item in candidates:
+            indexed = self._index.get_file(item.path)
+            try:
+                stat = item.path.stat()
+            except OSError:
+                continue
+            if indexed is None or indexed.extraction_status != "indexed" or stat.st_size != indexed.size_bytes or stat.st_mtime_ns != indexed.modified_ns:
+                continue
             current_count = per_file.get(item.path, 0)
             if current_count >= per_file_limit:
                 continue
@@ -346,62 +368,109 @@ class ProductSearch:
             )
         return results
 
-    def refresh(self, organized_root: str | Path) -> SearchRefreshResult:
+    def refresh(self, organized_root: str | Path, *, control=None, progress=None) -> SearchRefreshResult:
         root = Path(organized_root).resolve()
-        if not root.is_dir():
+        roots = tuple(dict.fromkeys((root, *self.catalog.roots())))
+        if not any(path.is_dir() for path in roots):
             raise SearchIndexError("Organized folder is unavailable for indexing")
-
         current_paths: set[Path] = set()
-        extraction_fingerprint = self._index.extraction_fingerprint()
+        fingerprint = self._index.extraction_fingerprint()
         scanned = indexed = unchanged = failed = 0
-        errors: list[str] = []
-
-        for candidate in self._iter_regular_files(root):
-            scanned += 1
-            current_paths.add(candidate)
-            try:
-                stat = candidate.stat()
-                existing = self._index.get_file(candidate)
-                if (
-                    existing is not None
-                    and existing.size_bytes == stat.st_size
-                    and existing.modified_ns == stat.st_mtime_ns
-                    and existing.extraction_fingerprint == extraction_fingerprint
-                ):
-                    unchanged += 1
-                    continue
-
-                self._index.index_file(
-                    candidate,
-                    category=self._category_for(root, candidate),
-                )
-                indexed += 1
-            except (OSError, SearchIndexError) as error:
-                failed += 1
-                errors.append(f"{candidate.name}: {error}")
-
-        removed = 0
-        for indexed_path in self._index.indexed_paths():
-            if not self._is_within(root, indexed_path) or indexed_path not in current_paths:
+        errors = []
+        complete_roots = []
+        cancelled = False
+        try:
+            for collection in roots:
+                if control:
+                    control.checkpoint()
                 try:
-                    if self._index.remove_file(indexed_path):
-                        removed += 1
-                except SearchIndexError as error:
+                    if not collection.is_dir():
+                        raise OSError("Folder unavailable; previous indexed records have been kept")
+                    for candidate in self._iter_regular_files(collection):
+                        if candidate == self._index.database_path or str(candidate) in {str(self._index.database_path) + suffix for suffix in ("-wal", "-shm", "-journal")}:
+                            continue
+                        if candidate in current_paths:
+                            continue
+                        if control:
+                            control.checkpoint()
+                        current_paths.add(candidate)
+                        scanned += 1
+                        if progress:
+                            progress(IndexProgress("extracting", scanned, None, candidate.name))
+                        try:
+                            stat = candidate.stat()
+                            existing = self._index.get_file(candidate)
+                            if (existing is not None and existing.size_bytes == stat.st_size
+                                    and existing.modified_ns == stat.st_mtime_ns
+                                    and existing.extraction_fingerprint == fingerprint
+                                    and existing.extraction_status not in {"extraction_failed", "ocr_required", "ocr_unavailable"}):
+                                unchanged += 1
+                                continue
+                            item = self._index.index_file(candidate, category=self._category_for(collection, candidate))
+                            indexed += 1
+                            messages = {
+                                "ocr_required": "Scanned document needs OCR. Check the local OCR runtime.",
+                                "ocr_unavailable": "OCR unavailable. Install or repair the bundled OCR runtime.",
+                                "extraction_failed": "Text extraction failed. Check that this file opens correctly, then retry.",
+                                "unsupported_format": "File type has no text extractor; filename search is available.",
+                                "metadata_only": "No readable text found; filename search is available.",
+                            }
+                            self.catalog.issue(candidate, "extraction", messages.get(item.extraction_status, ""))
+                        except (OSError, SearchIndexError) as error:
+                            failed += 1
+                            errors.append(f"{candidate.name}: {error}")
+                            self.catalog.issue(candidate, "extraction", str(error))
+                    complete_roots.append(collection)
+                    self.catalog.issue(collection, "scan")
+                except (OSError, SearchIndexError) as error:
                     failed += 1
-                    errors.append(f"{indexed_path.name}: {error}")
+                    errors.append(f"{collection}: {error}")
+                    self.catalog.issue(collection, "scan", str(error))
+        except IndexCancelled:
+            cancelled = True
+        removed = 0
+        if not cancelled:
+            for path in self._index.indexed_paths():
+                if control and control.cancelled.is_set():
+                    cancelled = True
+                    break
+                # Keep entries under unavailable roots; never infer deletion from an incomplete scan.
+                memberships = [r for r in roots if self._is_within(r, path)]
+                if not memberships or (all(r in complete_roots for r in memberships) and path not in current_paths):
+                    removed += int(self._index.remove_file(path))
+                    self.catalog.issue(path, "extraction")
+                    self.catalog.issue(path, "semantic")
+        return SearchRefreshResult(scanned, indexed, unchanged, removed, failed, tuple(errors), cancelled=cancelled)
 
-        return SearchRefreshResult(
-            scanned=scanned,
-            indexed=indexed,
-            unchanged=unchanged,
-            removed=removed,
-            failed=failed,
-            errors=tuple(errors),
-        )
+    def document_context(self, paths, *, max_chars=16000):
+        """Evenly sample bounded indexed text, never pretending to cover an entire long document."""
+        selected = []
+        paths = tuple(dict.fromkeys(Path(p).resolve() for p in paths))
+        if not 1 <= len(paths) <= 2:
+            raise SearchIndexError("Select one document to summarize or two to compare.")
+        budget = max_chars // len(paths)
+        for path in paths:
+            indexed = self._index.get_file(path)
+            if indexed is None:
+                raise SearchIndexError(f"{path.name} is not indexed. Update the library first.")
+            try:
+                stat = path.stat()
+            except OSError as error:
+                raise SearchIndexError(f"{path.name} is unavailable. Update the library.") from error
+            if stat.st_size != indexed.size_bytes or stat.st_mtime_ns != indexed.modified_ns:
+                raise SearchIndexError(f"{path.name} changed since indexing. Update the library first.")
+            if indexed.extraction_status != "indexed":
+                raise SearchIndexError(f"{path.name} has no readable indexed text. Review its library status.")
+            chunks = self._index.semantic_document_chunks(path, max_chunk_chars=1600, overlap_chars=0, max_chunks=64)
+            count = min(len(chunks), max(1, budget // 1800))
+            indexes = sorted(set(round(i * (len(chunks)-1) / max(1, count-1)) for i in range(count)))
+            for i in indexes:
+                selected.append(RetrievedContext(path, path.name, indexed.category, i, chunks[i][:1800], 1.0))
+        return tuple(selected)
 
     @staticmethod
     def _iter_regular_files(root: Path):
-        for directory, dirnames, filenames in os.walk(root, followlinks=False):
+        for directory, dirnames, filenames in os.walk(root, followlinks=False, onerror=ProductSearch._scan_error):
             base = Path(directory)
             dirnames[:] = [
                 name
@@ -414,10 +483,14 @@ class ProductSearch:
                     if candidate.is_symlink() or not candidate.is_file():
                         continue
                     resolved = candidate.resolve()
-                except OSError:
-                    continue
+                except OSError as error:
+                    raise SearchIndexError(f"File could not be inspected: {candidate.name}") from error
                 if ProductSearch._is_within(root, resolved):
                     yield resolved
+
+    @staticmethod
+    def _scan_error(error):
+        raise SearchIndexError(f"Folder could not be completely scanned: {error}")
 
     @staticmethod
     def _category_for(root: Path, file_path: Path) -> str | None:

@@ -6,6 +6,7 @@ from PySide6.QtCore import Qt, Signal, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QFileDialog,
+    QComboBox,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -30,6 +31,7 @@ from app.ui.qt.icons import folder_art
 from app.ui.qt.theme.tokens import SPACING
 from app.ui.qt.widgets.section_card import SectionCard
 from app.ui.qt.widgets.file_browser import FileBrowser
+from app.ui.qt.widgets.library_workspace import LibraryWorkspace
 
 
 SMART_RESULTS_VISIBLE_LIMIT = 8
@@ -194,7 +196,13 @@ class MyFilesPage(QWidget):
         self.search_button.setProperty("variant", "primary")
         self.search_button.setAccessibleName("Search organized files")
         self.search_button.clicked.connect(self._request_search)
+        self._last_search_results = None
+        self.search_type_filter = QComboBox()
+        self.search_type_filter.addItems(("All types", ".pdf", ".docx", ".txt", ".xlsx", ".csv"))
+        self.search_type_filter.setAccessibleName("Search result file type")
+        self.search_type_filter.currentIndexChanged.connect(self._refilter_search)
         search_row.addWidget(self.search_input, 1)
+        search_row.addWidget(self.search_type_filter)
         search_row.addWidget(self.search_button)
         self.search_card.content_layout.addLayout(search_row)
 
@@ -208,6 +216,7 @@ class MyFilesPage(QWidget):
         self.search_results = QListWidget()
         self.search_results.setAccessibleName("Search results")
         self.search_results.setAlternatingRowColors(False)
+        self.search_results.itemActivated.connect(self._open_search_result)
         self.search_results.setMinimumHeight(120)
         self.search_results.hide()
         self.search_card.content_layout.addWidget(self.search_results)
@@ -404,6 +413,13 @@ class MyFilesPage(QWidget):
             self.workspace_tabs.addTab(panel, title)
         self.file_browser = FileBrowser(self.bridge)
         self.workspace_tabs.addTab(self.file_browser, "Browse files")
+        self.library_workspace = None
+        controller = getattr(self.bridge, "library", None)
+        if controller is not None:
+            self.library_workspace = LibraryWorkspace(controller, self.bridge)
+            self.workspace_tabs.addTab(self.library_workspace, "Document library")
+            controller.result.connect(self._library_result)
+            self.file_browser.summarize_requested.connect(self._summarize_browsed_file)
         self.workspace_tabs.setCurrentIndex(3)
         layout.addWidget(self.workspace_tabs)
         layout.addStretch(1)
@@ -539,6 +555,13 @@ class MyFilesPage(QWidget):
         self.question_input.setEnabled(True)
         self.answer_status.setText(message or "Local answer generation failed. Check Ollama and the index.")
 
+    def _open_search_result(self, item):
+        path = Path(item.data(Qt.ItemDataRole.UserRole))
+        if path.is_file():
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+        else:
+            self.search_status.setText("File unavailable. Update the document library.")
+
     def _request_search(self) -> None:
         self.workspace_tabs.setCurrentIndex(1)
         query = self.search_input.text().strip()
@@ -563,7 +586,20 @@ class MyFilesPage(QWidget):
         )
         request(query, 25)
 
+    def _summarize_browsed_file(self, path):
+        if self.library_workspace is not None:
+            self.workspace_tabs.setCurrentWidget(self.library_workspace)
+            self.library_workspace.summarize_path(path)
+
+    def _library_result(self, key, result):
+        if key == "index":
+            self._search_refresh_completed(result)
+
     def _request_search_refresh(self) -> None:
+        if self.library_workspace is not None:
+            self.workspace_tabs.setCurrentWidget(self.library_workspace)
+            self.library_workspace.start_index()
+            return
         request = getattr(self.bridge, "request_search_refresh", None)
         if request is None:
             self.search_status.setText("Search indexing is unavailable in this runtime.")
@@ -574,11 +610,16 @@ class MyFilesPage(QWidget):
 
     def _render_search_results(self, query: str, results) -> None:
         if query != self.search_input.text().strip():
+            self.search_button.setEnabled(True)
             return
         self.search_button.setEnabled(True)
         self.search_results.clear()
 
-        all_results = tuple(results)
+        raw_results = tuple(results)
+        self._last_search_results = (query, raw_results)
+        extension = self.search_type_filter.currentText()
+        all_results = tuple(item for item in raw_results if self.search_type_filter.currentIndex() == 0
+                            or getattr(item, "extension", Path(item.path).suffix).lower() == extension)
         is_semantic = bool(all_results) and hasattr(all_results[0], "score")
         visible_results = (
             all_results[:SMART_RESULTS_VISIBLE_LIMIT]
@@ -621,6 +662,10 @@ class MyFilesPage(QWidget):
             self.search_status.setText(
                 f"No indexed files matched “{query}”. Update the index if files changed."
             )
+
+    def _refilter_search(self, *_args):
+        if self._last_search_results is not None:
+            self._render_search_results(*self._last_search_results)
 
     @staticmethod
     def _compact_result_location(path: Path) -> str:

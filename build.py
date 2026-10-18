@@ -24,7 +24,10 @@ from typing import Mapping
 
 from app.product_identity import PRODUCT_IDENTITY
 from app.windows_version import render_pyinstaller_version_file, windows_version_metadata
+from app.release_signing import sign_binary, verify_binary
 
+
+SIGN_RELEASE = False
 
 ROOT = Path(__file__).resolve().parent
 APP_NAME = PRODUCT_IDENTITY.product_name
@@ -697,6 +700,12 @@ def build_executable() -> bool:
     if not ok or not executable.is_file():
         log(f"Executable build: FAIL ({executable} was not produced)")
         return False
+    if SIGN_RELEASE:
+        try:
+            sign_binary(executable)
+        except (ValueError, OSError, subprocess.SubprocessError) as error:
+            log(f"ERROR: Signing failed: {error}")
+            return False
     identity = {
         "display_version": APP_VERSION,
         "numeric_version": windows_version_metadata().numeric_string,
@@ -739,6 +748,12 @@ def build_installer(*, required: bool) -> bool | None:
         log("ERROR: Build the executable for the current product identity first.")
         return False
 
+    if SIGN_RELEASE:
+        try:
+            verify_binary(DIST_DIR / APP_EXE_NAME)
+        except (ValueError, OSError, subprocess.SubprocessError) as error:
+            log(f"ERROR: The application must have a verified signature before building a signed installer: {error}")
+            return False
     staged_ocr_errors = validate_staged_ocr_runtime()
     if staged_ocr_errors:
         for message in staged_ocr_errors:
@@ -766,17 +781,32 @@ def build_installer(*, required: bool) -> bool | None:
     if not ok or not output.is_file():
         log(f"Installer build: FAIL ({output} was not produced)")
         return False
+    if SIGN_RELEASE:
+        try:
+            sign_binary(output)
+        except (ValueError, OSError, subprocess.SubprocessError) as error:
+            log(f"ERROR: Installer signing failed: {error}")
+            return False
+    manifest_path = DIST_DIR / "release-manifest.json"
+    manifest_path.write_text(json.dumps({
+        "version": APP_VERSION, "source_fingerprint": release_source_fingerprint(),
+        "signed_build_requested": SIGN_RELEASE,
+        "files": [{"name": str(path.relative_to(DIST_DIR)), "sha256": _sha256_file(path)}
+                  for path in (DIST_DIR / APP_EXE_NAME, output)],
+    }, indent=2) + "\n", encoding="utf-8")
     log(f"Installer build: PASS -> {output}")
     return True
 
 
 def main() -> int:
+    global SIGN_RELEASE
     args = set(sys.argv[1:])
-    valid_args = {"--version", "--clean", "--dry-run", "--exe", "--installer"}
+    valid_args = {"--version", "--clean", "--dry-run", "--exe", "--installer", "--signed"}
     unknown = args - valid_args
     if unknown or ({"--exe", "--installer"} <= args):
         log(f"ERROR: unsupported arguments: {' '.join(sorted(unknown or args))}")
         return 2
+    SIGN_RELEASE = "--signed" in args
     metadata = windows_version_metadata()
     if "--version" in args:
         log(f"{APP_NAME} {APP_VERSION} (Windows {metadata.numeric_string})")

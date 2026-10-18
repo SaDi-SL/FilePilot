@@ -37,6 +37,7 @@ class _ReadTask(QRunnable):
 
 class FileBrowser(QWidget):
     """Browse the configured destination without modifying any files."""
+    summarize_requested = Signal(str)
     def __init__(self, bridge, parent=None):
         super().__init__(parent)
         self.root = self.current_path = None
@@ -148,7 +149,10 @@ class FileBrowser(QWidget):
         self.open_button.clicked.connect(lambda: self._activate(self.items.currentItem()))
         self.open_folder_button = QPushButton("Open containing folder")
         self.open_folder_button.clicked.connect(self._open_parent)
-        for widget in (self.detail_title, self.detail_info, self.preview, self.visual_panel, self.open_button, self.open_folder_button):
+        self.summary_button = QPushButton("Summarize file")
+        self.summary_button.setVisible(getattr(bridge, "library", None) is not None)
+        self.summary_button.clicked.connect(self._request_summary)
+        for widget in (self.detail_title, self.detail_info, self.preview, self.visual_panel, self.open_button, self.open_folder_button, self.summary_button):
             self.details.content_layout.addWidget(widget)
         self.details.content_layout.addStretch(1)
         body.addWidget(self.details)
@@ -260,6 +264,7 @@ class FileBrowser(QWidget):
         self.visual_image.clear()
         self.visual_image.setMinimumSize(0, 0)
         self.visual_panel.hide()
+        self.summary_button.setEnabled(item is not None and not item.data(Qt.ItemDataRole.UserRole).is_directory)
         self.open_button.setEnabled(item is not None)
         self.open_folder_button.setEnabled(item is not None)
         if item is None:
@@ -350,6 +355,13 @@ class FileBrowser(QWidget):
             self.load(entry.path)
         else:
             self._open_external(entry.path)
+
+    def _request_summary(self):
+        item = self.items.currentItem()
+        if item is not None:
+            entry = item.data(Qt.ItemDataRole.UserRole)
+            if not entry.is_directory:
+                self.summarize_requested.emit(str(entry.path))
 
     def _open_parent(self):
         item = self.items.currentItem()
