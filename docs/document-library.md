@@ -125,3 +125,26 @@ refreshes preserve the active progress range/value and any pause or stop request
 Pause/Stop explain that the current file or model request may finish first; they
 do not claim an immediate interruption. Completing a job resets its controls without
 sending an accidental resume request. All preparation keeps originals in place.
+
+## Search evidence and source previews
+
+Search files now displays a bounded indexed excerpt directly in each result, with
+literal query terms highlighted in English, Swedish and Arabic. Matching is visual;
+it does not change search ranking or claim that semantic matches share the exact
+query words. Document text, file names and paths are escaped before rich-text
+rendering. Older stored vectors with no chunk text explicitly show that an excerpt
+is unavailable.
+
+Semantic matches carry the excerpt from their best scoring stored chunk (up to 800
+characters); hybrid results prefer the exact-search excerpt when one is present.
+Rows display a shorter version. Select a result to inspect the indexed excerpt and
+the current source preview. The preview uses an independent background request key
+so browsing search results cannot replace the Document library preview. Open original
+file, double-click or Enter opens the source externally; missing files show a repair
+message. No files are moved or rewritten.
+
+At narrow widths, results and source stack vertically. View selected source scrolls
+the outer workspace to the selected source. PDF previews start on page 1 with normal
+page navigation; the UI explicitly distinguishes this from the matched excerpt and
+does not invent a PDF page reference. Changing queries or filtering out the current
+result clears its evidence and preview.

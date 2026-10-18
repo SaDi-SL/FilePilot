@@ -218,6 +218,7 @@ class ProductSearch:
             )
             entry["score"] += semantic_weight / (rrf_k + rank)
             entry["semantic_score"] = item.score
+            entry["snippet"] = getattr(item, "snippet", "")
 
         for rank, item in enumerate(lexical, start=1):
             entry = combined.setdefault(

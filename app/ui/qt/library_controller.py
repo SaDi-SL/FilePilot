@@ -53,6 +53,7 @@ class LibraryController(QObject):
             "status": lambda: self.service.library_snapshot(),
             "ocr_status": discover_ocr_runtime,
             "preview": lambda: read_library_preview(payload["path"], payload.get("page", 0)),
+            "search_preview": lambda: read_library_preview(payload["path"], payload.get("page", 0)),
             "local_ai": lambda: self.service.prepare_local_ai(),
             "updates": check_updates,
             "diagnostics": lambda: diagnostics(self.service),

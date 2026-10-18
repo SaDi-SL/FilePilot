@@ -606,7 +606,7 @@ class LibraryWorkspace(QWidget):
             self.result_ready.emit(self.result_heading)
 
     def _error(self, key, message):
-        if key == "preview":
+        if key in {"preview", "search_preview"}:
             return
         if key == "local_ai":
             self._ai_busy = False

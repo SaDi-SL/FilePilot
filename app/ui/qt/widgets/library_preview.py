@@ -21,9 +21,10 @@ def read_library_preview(path, page=0):
 
 
 class LibraryPreview(SectionCard):
-    def __init__(self, controller, parent=None):
+    def __init__(self, controller, parent=None, *, request_key="preview"):
         super().__init__(parent, elevated=True)
         self.controller = controller
+        self.request_key = request_key
         self.path = None
         self.page = 0
         self.count = 0
@@ -102,10 +103,10 @@ class LibraryPreview(SectionCard):
 
     def _request(self):
         if self.path is not None:
-            self.controller.request('preview', path=str(self.path), page=self._pending_page)
+            self.controller.request(self.request_key, path=str(self.path), page=self._pending_page)
 
     def _result(self, key, result):
-        if key != 'preview' or self.path is None or str(self.path) != result['path']:
+        if key != self.request_key or self.path is None or str(self.path) != result['path']:
             return
         self.image = result['image']
         self.page, self.count = result['page'], result['count']
@@ -123,7 +124,7 @@ class LibraryPreview(SectionCard):
             self.status.setText('Text preview · first 8,000 characters' if result['text'] else result['detail'])
 
     def _error(self, key, message):
-        if key == 'preview' and self.path:
+        if key == self.request_key and self.path:
             self.status.setText(message + ' Use Open file to check the original.')
             self.previous.setEnabled(self.page > 0)
             self.next.setEnabled(self.page + 1 < self.count)

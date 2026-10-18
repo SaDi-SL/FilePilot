@@ -236,7 +236,7 @@ class ProductSearchTests(unittest.TestCase):
             encoding="utf-8",
         )
         generic.write_text(
-            "generic software test",
+            "generic software workflow",
             encoding="utf-8",
         )
         self.search.refresh(self.organized)
@@ -246,16 +246,19 @@ class ProductSearchTests(unittest.TestCase):
         provider = FakeEmbeddingProvider({
             relevant_chunk: (0.8, 0.2),
             generic_chunk: (1.0, 0.0),
-            "railway testing": (1.0, 0.0),
+            "railway verification": (1.0, 0.0),
         })
         semantic = ProductSearch(self.index, provider)
         semantic.refresh_semantic_embeddings()
 
-        results = semantic.hybrid_search("railway testing")
+        results = semantic.hybrid_search("railway verification")
 
         self.assertEqual(results[0].path, relevant)
         self.assertIsNotNone(results[0].semantic_score)
         self.assertIsNotNone(results[0].lexical_rank)
+        generic_hit = next(hit for hit in results if hit.path == generic)
+        self.assertEqual(generic_hit.snippet, generic_chunk)
+        self.assertIsNone(generic_hit.lexical_rank)
 
     def test_hybrid_search_empty_query_is_safe(self):
         provider = FakeEmbeddingProvider({})

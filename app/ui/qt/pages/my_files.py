@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from html import escape
 
 from PySide6.QtCore import Qt, Signal, QUrl, QTimer, QPoint
 from PySide6.QtGui import QDesktopServices
@@ -20,6 +21,8 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QPushButton,
     QPlainTextEdit,
+    QTextBrowser,
+    QSplitter,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
@@ -32,6 +35,8 @@ from app.ui.qt.theme.tokens import SPACING
 from app.ui.qt.widgets.section_card import SectionCard
 from app.ui.qt.widgets.file_browser import FileBrowser
 from app.ui.qt.widgets.library_workspace import LibraryWorkspace
+from app.ui.qt.widgets.library_preview import LibraryPreview
+from app.ui.qt.widgets.search_results import SearchResultDelegate, HTML_ROLE, RESULT_ROLE, compact_excerpt, highlighted_text
 
 
 SMART_RESULTS_VISIBLE_LIMIT = 8
@@ -164,7 +169,7 @@ class MyFilesPage(QWidget):
         search_header = QHBoxLayout()
         search_copy = QVBoxLayout()
         search_copy.setSpacing(2)
-        search_title = QLabel("Search your organized files")
+        search_title = QLabel("Search your documents")
         search_title.setProperty("role", "sectionTitle")
         search_caption = QLabel(
             "Search by meaning across filenames, categories, and extracted document text. "
@@ -209,17 +214,55 @@ class MyFilesPage(QWidget):
         self.search_status = QLabel(
             "Smart search uses the local semantic index. Update the index after adding or changing files."
         )
+        self.search_status.setTextFormat(Qt.TextFormat.PlainText)
         self.search_status.setProperty("role", "caption")
         self.search_status.setWordWrap(True)
         self.search_card.content_layout.addWidget(self.search_status)
+        self.search_preview_button = QPushButton("View selected source")
+        self.search_preview_button.clicked.connect(self._reveal_search_source)
+        self.search_preview_button.hide()
+        self.search_card.content_layout.addWidget(self.search_preview_button)
 
         self.search_results = QListWidget()
         self.search_results.setAccessibleName("Search results")
         self.search_results.setAlternatingRowColors(False)
+        self.search_results.setToolTip("Select a result to preview its source. Double-click or press Enter to open the original file.")
         self.search_results.itemActivated.connect(self._open_search_result)
-        self.search_results.setMinimumHeight(120)
-        self.search_results.hide()
-        self.search_card.content_layout.addWidget(self.search_results)
+        self.search_results.setMinimumHeight(240)
+        self.search_results.setMaximumHeight(560)
+        self.search_results.setItemDelegate(SearchResultDelegate(self.search_results))
+        self.search_results.setWordWrap(True)
+        self.search_results.currentItemChanged.connect(self._select_search_result)
+        self.search_body = QSplitter(Qt.Orientation.Horizontal)
+        self.search_body.setChildrenCollapsible(False)
+        self.search_body.addWidget(self.search_results)
+        controller = getattr(self.bridge, "library", None)
+        self.search_preview = LibraryPreview(controller, request_key="search_preview") if controller is not None else None
+        self.search_source = self.search_preview or SectionCard(elevated=True)
+        self.search_source.content_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self.search_source.setMinimumWidth(240)
+        self.search_source_title = self.search_preview.title if self.search_preview else QLabel("Select a result")
+        self.search_source_title.setTextFormat(Qt.TextFormat.PlainText)
+        if self.search_preview is None:
+            self.search_source.content_layout.addWidget(self.search_source_title)
+        self.search_evidence_note = QLabel("Select a result to read its indexed excerpt and preview its source.")
+        self.search_evidence_note.setWordWrap(True)
+        self.search_evidence_note.setProperty("role", "caption")
+        self.search_evidence = QTextBrowser()
+        self.search_evidence.setAccessibleName("Matching indexed search excerpt")
+        self.search_evidence.setOpenLinks(False)
+        self.search_evidence.setOpenExternalLinks(False)
+        self.search_evidence.setFixedHeight(120)
+        self.search_open_button = QPushButton("Open original file")
+        self.search_open_button.clicked.connect(lambda: self._open_search_result(self.search_results.currentItem()))
+        for index, widget in enumerate((self.search_evidence_note, self.search_evidence, self.search_open_button), start=2 if self.search_preview else 1):
+            self.search_source.content_layout.insertWidget(index, widget)
+        self.search_source.hide()
+        self.search_body.addWidget(self.search_source)
+        self.search_body.setStretchFactor(0, 1)
+        self.search_body.setStretchFactor(1, 1)
+        self.search_body.hide()
+        self.search_card.content_layout.addWidget(self.search_body)
 
         layout.addWidget(self.search_card)
 
@@ -567,10 +610,43 @@ class MyFilesPage(QWidget):
         self.question_input.setEnabled(True)
         self.answer_status.setText(message or "Local answer generation failed. Check Ollama and the index.")
 
+    def _reveal_search_source(self):
+        def reveal():
+            if self.workspace_tabs.currentIndex() != 1 or self.search_results.currentItem() is None:
+                return
+            self.scroll_area.widget().layout().activate()
+            position = self.search_source_title.mapTo(self.scroll_area.widget(), QPoint(0, 0))
+            self.scroll_area.verticalScrollBar().setValue(max(0, position.y() - 24))
+        QTimer.singleShot(0, self, reveal)
+
+    def _select_search_result(self, item, previous=None):
+        self.search_preview_button.setVisible(item is not None)
+        self.search_source.setVisible(item is not None)
+        if self.search_preview is not None:
+            self.search_preview.select(Path(item.data(Qt.ItemDataRole.UserRole)) if item else None)
+        if item is None:
+            self.search_evidence.clear()
+            return
+        result = item.data(RESULT_ROLE)
+        path = Path(result.path)
+        self.search_source_title.setText(result.filename)
+        self.search_source_title.setToolTip("<qt>" + escape(str(path)) + "</qt>")
+        self.search_open_button.setEnabled(True)
+        query = self._last_search_results[0] if self._last_search_results else ""
+        snippet = getattr(result, "snippet", "").strip()
+        self.search_evidence.setHtml(highlighted_text(snippet, query) if snippet else
+            "No content excerpt is stored for this match. Open the original file to verify it.")
+        self.search_evidence_note.setText("Indexed excerpt; the preview shows the current file. " +
+            ("PDF preview starts at page 1; this is not an exact page reference." if path.suffix.lower() == ".pdf" else
+             "Open the original to verify the complete context."))
+
     def _open_search_result(self, item):
+        if item is None:
+            return
         path = Path(item.data(Qt.ItemDataRole.UserRole))
         if path.is_file():
-            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+            if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))):
+                self.search_status.setText("Windows could not open this file. Choose an application for this file type in Windows.")
         else:
             self.search_status.setText("File unavailable. Update the document library.")
 
@@ -579,7 +655,8 @@ class MyFilesPage(QWidget):
         query = self.search_input.text().strip()
         if not query:
             self.search_results.clear()
-            self.search_results.hide()
+            self.search_body.hide()
+            self._last_search_results = None
             self.search_status.setText("Enter a search term to find organized files.")
             return
         request = getattr(self.bridge, "request_semantic_search", None)
@@ -590,6 +667,9 @@ class MyFilesPage(QWidget):
         if request is None:
             self.search_status.setText("Local search is unavailable in this runtime.")
             return
+        self.search_results.clear()
+        self.search_body.hide()
+        self._last_search_results = None
         self.search_button.setEnabled(False)
         self.search_status.setText(
             "Searching by meaning on this device…"
@@ -646,19 +726,23 @@ class MyFilesPage(QWidget):
         for result in visible_results:
             category = result.category or "Uncategorized"
             location = self._compact_result_location(result.path)
-            item = QListWidgetItem(
-                f"{result.filename}\n{category}  •  {location}"
-            )
             detail = getattr(result, "snippet", "").strip()
+            excerpt = compact_excerpt(detail) if detail else "No indexed content excerpt; open the original to verify this match."
+            item = QListWidgetItem(f"{result.filename}\n{category}  •  {location}\n{excerpt}")
+            item.setData(HTML_ROLE, f"<b>{highlighted_text(result.filename, query)}</b><br>" +
+                escape(f"{category}  •  {location}") + "<br>" + highlighted_text(excerpt, query))
+            item.setData(RESULT_ROLE, result)
             tooltip_parts = [str(result.path)]
             if detail:
                 tooltip_parts.append(detail)
-            item.setToolTip("\n\n".join(tooltip_parts))
+            item.setToolTip("<qt>" + escape("\n\n".join(tooltip_parts)).replace("\n", "<br>") + "</qt>")
             item.setData(Qt.ItemDataRole.UserRole, str(result.path))
             self.search_results.addItem(item)
 
         count = self.search_results.count()
-        self.search_results.setVisible(count > 0)
+        self.search_body.setVisible(count > 0)
+        if count:
+            self.search_results.setCurrentRow(0)
         if count and is_semantic:
             total = len(all_results)
             if total > count:
@@ -676,6 +760,8 @@ class MyFilesPage(QWidget):
             )
         else:
             self.search_status.setText(
+                f"No {extension} results in these matches. Choose All types or try another query."
+                if self.search_type_filter.currentIndex() and raw_results else
                 f"No indexed files matched “{query}”. Update the index if files changed."
             )
 
@@ -984,6 +1070,8 @@ class MyFilesPage(QWidget):
 
     def resizeEvent(self, event) -> None:
         width = event.size().width()
+        self.search_body.setOrientation(Qt.Orientation.Vertical if width < 920 else Qt.Orientation.Horizontal)
+        self.search_results.doItemsLayout()
         if width < 920:
             self.workspace_layout.addWidget(self.source_card, 0, 0)
             self.workspace_layout.addWidget(self.preview_card, 1, 0)

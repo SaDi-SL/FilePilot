@@ -217,6 +217,64 @@ class QtMyFilesTests(unittest.TestCase):
         self.assertTrue(self.page.search_results.isVisibleTo(self.page))
         self.assertIn("1 best match", self.page.search_status.text())
 
+    def test_search_excerpt_is_visible_escaped_and_original_open_is_explicit(self):
+        from app.ui.qt.widgets.search_results import HTML_ROLE, highlighted_text
+        self.page.search_input.setText("traction")
+        result = SearchResult(self.source, self.source.name, ".txt", None,
+            'Traction evidence <img src="https://example.invalid/leak"> & safety', -1.0)
+        self.bridge.search_results_changed.emit("traction", (result,))
+        item = self.page.search_results.item(0)
+        self.assertIn("Traction evidence", item.text())
+        self.assertIn("&lt;img", item.data(HTML_ROLE))
+        self.assertNotIn('<img', item.data(HTML_ROLE))
+        self.assertNotIn('<img', item.toolTip())
+        self.assertIn('&lt;img', item.toolTip())
+        self.assertIn("Traction evidence", self.page.search_evidence.toPlainText())
+        self.assertIn("background-color", self.page.search_evidence.toHtml())
+        with patch("app.ui.qt.pages.my_files.QDesktopServices.openUrl") as opened:
+            self.page.search_open_button.click()
+            self.assertEqual(opened.call_count, 1)
+            self.assertEqual(opened.call_args.args[0].toLocalFile(), str(self.source))
+            self.source.unlink()
+            self.page.search_open_button.click()
+            self.assertEqual(opened.call_count, 1)
+            self.assertIn("unavailable", self.page.search_status.text())
+        for text in ("اختبار القطار", "Säkerhet ÅÄÖ", "<b>test</b> & query"):
+            self.assertIn("background-color", highlighted_text(text, text.split()[0]))
+
+    def test_search_preview_has_separate_worker_key_and_type_filter_clears_stale_evidence(self):
+        from tests.test_qt_library import ControllerStub
+        from PySide6.QtTest import QTest
+        bridge = MyFilesBridgeStub()
+        bridge.library = ControllerStub()
+        page = MyFilesPage(bridge)
+        try:
+            page.search_input.setText("traction")
+            pdf = self.root / "report.pdf"
+            result = SearchResult(pdf, pdf.name, ".pdf", None, "Traction test evidence", -1.0)
+            page._render_search_results("traction", (result,))
+            QTest.qWait(150)
+            self.assertEqual(bridge.library.requests[-1][0], "search_preview")
+            self.assertEqual(bridge.library.requests[-1][1]["path"], str(pdf))
+            self.assertIn("not an exact page", page.search_evidence_note.text())
+            page.search_type_filter.setCurrentText(".txt")
+            self.assertEqual(page.search_results.count(), 0)
+            self.assertTrue(page.search_source.isHidden())
+            self.assertEqual(page.search_evidence.toPlainText(), "")
+            self.assertIn("Choose All types", page.search_status.text())
+            self.assertIsNone(page.search_preview.path)
+            page.search_type_filter.setCurrentIndex(0)
+            self.assertEqual(page.search_results.count(), 1)
+            page.resize(760, 650)
+            page.show()
+            page.workspace_tabs.setCurrentIndex(1)
+            page.search_preview_button.click()
+            QTest.qWait(50)
+            self.assertGreater(page.scroll_area.verticalScrollBar().value(), 0)
+        finally:
+            page.close()
+            page.deleteLater()
+
     def test_semantic_failure_falls_back_to_exact_local_search(self):
         self.page.search_input.setText("traction")
         self.page._request_search()

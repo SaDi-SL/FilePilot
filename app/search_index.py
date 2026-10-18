@@ -72,6 +72,7 @@ class SemanticSearchResult:
     extension: str
     category: str | None
     score: float
+    snippet: str = ""
 
 
 def current_extraction_fingerprint() -> str:
@@ -758,7 +759,8 @@ class SearchIndex:
                         files.extension,
                         files.category,
                         file_embedding_chunks.vector,
-                        file_embedding_chunks.dimensions
+                        file_embedding_chunks.dimensions,
+                        substr(file_embedding_chunks.chunk_text, 1, 800) AS snippet
                     FROM file_embedding_chunks
                     JOIN files ON files.path = file_embedding_chunks.path
                     WHERE file_embedding_chunks.embedding_fingerprint = ?
@@ -773,7 +775,8 @@ class SearchIndex:
                         files.extension,
                         files.category,
                         file_embeddings.vector,
-                        file_embeddings.dimensions
+                        file_embeddings.dimensions,
+                        '' AS snippet
                     FROM file_embeddings
                     JOIN files ON files.path = file_embeddings.path
                     WHERE file_embeddings.embedding_fingerprint = ?
@@ -801,6 +804,7 @@ class SearchIndex:
                 extension=row["extension"],
                 category=row["category"],
                 score=max(-1.0, min(1.0, float(score))),
+                snippet=row["snippet"][:800],
             )
             previous = best_by_path.get(str(result.path))
             if previous is None or result.score > previous.score:

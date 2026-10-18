@@ -134,6 +134,7 @@ class SearchIndexTests(unittest.TestCase):
         self.index.upsert_embedding_chunks(
             first,
             [[0.0, 1.0], [1.0, 0.0]],
+            chunk_texts=["Unrelated context", "Matching traction evidence"],
             provider="test",
             model="tiny",
             embedding_fingerprint=fingerprint,
@@ -152,6 +153,7 @@ class SearchIndexTests(unittest.TestCase):
         )
 
         self.assertEqual(results[0].path, first)
+        self.assertEqual(results[0].snippet, "Matching traction evidence")
         self.assertGreater(results[0].score, results[1].score)
         self.assertEqual(len([item for item in results if item.path == first]), 1)
 
