@@ -529,6 +529,7 @@ class LibraryWorkspace(QWidget):
             item.setSelected(record.path in selected)
         visible = self.files.topLevelItemCount() > 0
         self.files.setVisible(visible)
+        self.document_body.setVisible(visible)
         self.empty_state.setVisible(not visible)
         self.empty_state.setText("No documents match these filters. Clear or change the filters to see your files." if self.snapshot.total else
             "Add a folder to start. FilePilot will prepare its documents automatically without moving them.")

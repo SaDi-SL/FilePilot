@@ -86,6 +86,17 @@ class LibraryPreviewTests(unittest.TestCase):
             read_library_preview(source)
         self.assertEqual(source.read_bytes(), b'broken PDF')
 
+    def test_empty_and_filtered_library_do_not_show_an_empty_preview_panel(self):
+        self.widget._result('status', LibrarySnapshot((), 0, 0, 0, (), {}))
+        self.assertTrue(self.widget.document_body.isHidden())
+        source = self.root / 'note.txt'
+        source.write_text('A note')
+        self.widget._result('status', LibrarySnapshot((), 1, 1, 0, (LibraryFile(source, 'indexed', '', False),), {}))
+        self.assertFalse(self.widget.document_body.isHidden())
+        self.widget.filter.setText('no matching file')
+        self.assertTrue(self.widget.document_body.isHidden())
+        self.assertFalse(self.widget.empty_state.isHidden())
+
     def test_preview_runs_off_gui_thread_and_newer_request_wins(self):
         controller = LibraryController(SimpleNamespace())
         entered, release = threading.Event(), threading.Event()
