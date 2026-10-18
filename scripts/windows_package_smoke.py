@@ -4,6 +4,7 @@ Runs only explicitly, outside the unit suite. Uses a temporary install/profile,
 requires a real visible Qt window, and checks user data survives uninstallation.
 """
 import argparse
+import base64
 import ctypes
 from ctypes import wintypes
 import hashlib
@@ -129,6 +130,40 @@ def validate(installer, report):
             if process.poll() is None:
                 subprocess.run(['taskkill', '/PID', str(process.pid), '/T', '/F'], check=False, timeout=15)
                 process.wait(timeout=15)
+        # Use the installed executable, not the runner's Python/runtime.
+        fixtures = json.loads((ROOT / 'scripts/ocr_smoke_fixtures.json').read_text(encoding='utf-8'))
+        checks = []
+        from PIL import Image
+        from pypdf import PdfReader
+        for fixture in fixtures:
+            image = base / (fixture['language'] + '.png')
+            image.write_bytes(base64.b64decode(fixture['png_base64'], validate=True))
+            inputs = [image]
+            if fixture['language'] == 'eng':
+                with Image.open(image) as source_image:
+                    for extension in ('.jpg', '.tiff', '.webp', '.bmp', '.pdf'):
+                        candidate = base / ('scanned' + extension)
+                        source_image.convert('RGB').save(candidate)
+                        inputs.append(candidate)
+                if PdfReader(str(inputs[-1])).pages[0].extract_text().strip():
+                    raise RuntimeError('OCR PDF fixture unexpectedly contains embedded text')
+            for source in inputs:
+                before = digest(source)
+                result_path = base / (source.name + '.result.json')
+                result = subprocess.run([str(executable), '--package-ocr-check', str(source), str(result_path)],
+                                        cwd=base, env=environment, check=False, timeout=90)
+                if result.returncode or not result_path.is_file():
+                    raise RuntimeError(f'Installed OCR check failed: {source.name}, exit {result.returncode}')
+                extracted = json.loads(result_path.read_text(encoding='utf-8'))
+                if extracted['runtime_source'] != 'bundled' or set(extracted['languages']) != {'eng', 'ara', 'swe'}:
+                    raise RuntimeError('Installed OCR did not use the complete bundled runtime')
+                if extracted['status'] != 'extracted' or not all(token.casefold() in extracted['text'].casefold() for token in fixture['expected']):
+                    raise RuntimeError(f'Installed OCR text check failed: {source.name}: {extracted}')
+                if digest(source) != before:
+                    raise RuntimeError('OCR modified the source document')
+                checks.append({'file': source.name, 'language': fixture['language'], 'method': extracted['method'],
+                               'text_verified': True, 'original_preserved': True})
+        report['ocr_checks'] = checks
         sentinel = data / 'package-preservation-check.txt'
         sentinel.write_text('User data must survive uninstallation', encoding='utf-8')
         config_hash = digest(config)

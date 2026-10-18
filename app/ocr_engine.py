@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import re
+import tempfile
+from contextlib import ExitStack
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,7 +11,7 @@ from typing import Iterable
 from app.ocr_runtime import OCRRuntime, discover_ocr_runtime
 
 
-DEFAULT_OCR_LANGUAGES = ("eng", "ara")
+DEFAULT_OCR_LANGUAGES = ("eng", "ara", "swe")
 DEFAULT_OCR_TIMEOUT_SECONDS = 20
 MAX_OCR_OUTPUT_CHARS = 100_000
 _LANGUAGE_CODE = re.compile(r"^[A-Za-z0-9_]+$")
@@ -114,20 +116,38 @@ def run_image_ocr(
     bounded_output = max(1, min(int(max_output_chars), MAX_OCR_OUTPUT_CHARS))
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
+    converting = False
     try:
-        completed = subprocess.run(
-            command,
-            check=False,
-            shell=False,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=bounded_timeout,
-            creationflags=creationflags,
-        )
+        with ExitStack() as resources:
+            if source.suffix.casefold() != ".png":
+                # Decode locally and preserve the original. The small bundled OCR
+                # engine needs only PNG support, including for phone photographs.
+                converting = True
+                from PIL import Image, ImageOps
+
+                directory = resources.enter_context(tempfile.TemporaryDirectory(prefix="FilePilot-image-OCR-"))
+                converted = Path(directory) / "input.png"
+                with Image.open(source) as image:
+                    oriented = ImageOps.exif_transpose(image)
+                    try:
+                        oriented.convert("RGB").save(converted, format="PNG")
+                    finally:
+                        oriented.close()
+                command[1] = str(converted)
+                converting = False
+            completed = subprocess.run(
+                command,
+                check=False,
+                shell=False,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=bounded_timeout,
+                creationflags=creationflags,
+            )
     except subprocess.TimeoutExpired:
         return OCRExecutionResult(
             text="",
@@ -135,12 +155,12 @@ def run_image_ocr(
             languages=selected_languages,
             detail="OCR timed out",
         )
-    except OSError:
+    except (ValueError, OSError):
         return OCRExecutionResult(
             text="",
-            status="ocr_unavailable",
+            status="extraction_failed" if converting else "ocr_unavailable",
             languages=selected_languages,
-            detail="OCR process could not be started",
+            detail="Image could not be read" if converting else "OCR process could not be started",
         )
 
     if completed.returncode != 0:

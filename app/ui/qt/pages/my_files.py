@@ -198,7 +198,7 @@ class MyFilesPage(QWidget):
         self.search_button.clicked.connect(self._request_search)
         self._last_search_results = None
         self.search_type_filter = QComboBox()
-        self.search_type_filter.addItems(("All types", ".pdf", ".docx", ".txt", ".xlsx", ".csv"))
+        self.search_type_filter.addItems(("All types", ".pdf", ".docx", ".txt", ".xlsx", ".csv", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".webp", ".bmp"))
         self.search_type_filter.setAccessibleName("Search result file type")
         self.search_type_filter.currentIndexChanged.connect(self._refilter_search)
         search_row.addWidget(self.search_input, 1)

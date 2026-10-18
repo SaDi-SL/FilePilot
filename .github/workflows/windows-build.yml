@@ -14,6 +14,7 @@ on:
       - 'config/default_config.json'
       - 'third_party/ocr/**'
       - 'scripts/windows_package_smoke.py'
+      - 'scripts/build_windows_ocr.py'
 concurrency:
   group: windows-candidate-${{ github.ref }}
   cancel-in-progress: true
@@ -47,6 +48,8 @@ jobs:
           Copy-Item build/test-results/*.log validation/unit
           Copy-Item build/test-results/summary.json validation/unit
           exit $testExit
+      - name: Build pinned English Arabic and Swedish OCR
+        run: python scripts/build_windows_ocr.py
       - name: Build application and require installer
         run: |
           python build.py --exe
@@ -65,7 +68,7 @@ jobs:
           Source: $env:GITHUB_SHA
           Extract this ZIP, then run the Setup executable inside installer.
           Python is not required on the user's PC. Local AI requires installed Ollama and local models.
-          This development candidate is unsigned. OCR runtime binaries are not bundled in this candidate.
+          This development candidate is unsigned. Local OCR is bundled for English, Arabic and Swedish.
           See release-manifest.json for checksums and package-validation.json for the automated installation check.
           "@ | Set-Content dist/BUILD-INFO.txt -Encoding utf8
       - name: Upload tested Windows candidate
@@ -92,4 +95,5 @@ jobs:
             validation/unit/*.log
             validation/unit/summary.json
             build/package-validation/*.log
+            third_party/ocr/runtime-manifest.json
             dist/package-validation.json

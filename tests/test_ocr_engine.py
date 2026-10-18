@@ -147,6 +147,52 @@ class OCREngineTests(unittest.TestCase):
         self.assertEqual(result.status, "empty")
         self.assertEqual(result.text, "")
 
+    def test_swedish_is_used_when_bundled(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            runtime = self._runtime(root, languages=("eng", "ara", "swe"))
+            source = root / "scan.png"
+            source.write_bytes(b"image")
+            with patch("app.ocr_engine.subprocess.run", return_value=subprocess.CompletedProcess([], 0, "Svenska", "")) as run:
+                result = run_image_ocr(source, runtime=runtime)
+            self.assertEqual(result.languages, ("eng", "ara", "swe"))
+            self.assertIn("eng+ara+swe", run.call_args.args[0])
+
+    def test_phone_image_is_converted_without_changing_original_and_temp_is_cleaned(self):
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            runtime = self._runtime(root)
+            source = root / "phone.jpg"
+            Image.new("RGB", (20, 10), "white").save(source)
+            original = source.read_bytes()
+            temporary = []
+            def recognize(command, **kwargs):
+                converted = Path(command[1])
+                self.assertNotEqual(converted, source)
+                self.assertTrue(converted.is_file())
+                with Image.open(converted) as image:
+                    self.assertEqual(image.format, "PNG")
+                temporary.append(converted)
+                raise subprocess.TimeoutExpired(command, 1)
+            with patch("app.ocr_engine.subprocess.run", side_effect=recognize):
+                result = run_image_ocr(source, runtime=runtime)
+            self.assertEqual(result.detail, "OCR timed out")
+            self.assertEqual(source.read_bytes(), original)
+            self.assertFalse(temporary[0].exists())
+
+    def test_corrupt_photo_does_not_start_ocr_or_leak_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            runtime = self._runtime(root)
+            source = root / "private-photo.jpg"
+            source.write_bytes(b"not an image")
+            with patch("app.ocr_engine.subprocess.run") as run:
+                result = run_image_ocr(source, runtime=runtime)
+            run.assert_not_called()
+            self.assertEqual(result.status, "extraction_failed")
+            self.assertEqual(result.detail, "Image could not be read")
+
 
 if __name__ == "__main__":
     unittest.main()

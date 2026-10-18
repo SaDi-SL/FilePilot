@@ -156,7 +156,7 @@ class LibraryWorkspace(QWidget):
         self.status_filter.currentIndexChanged.connect(self._render_files)
         filters.addWidget(self.status_filter)
         self.type_filter = QComboBox()
-        self.type_filter.addItems(("All types", ".pdf", ".docx", ".txt", ".xlsx", ".csv"))
+        self.type_filter.addItems(("All types", ".pdf", ".docx", ".txt", ".xlsx", ".csv", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".webp", ".bmp"))
         self.type_filter.currentIndexChanged.connect(self._render_files)
         filters.addWidget(self.type_filter)
         card.content_layout.addLayout(filters)

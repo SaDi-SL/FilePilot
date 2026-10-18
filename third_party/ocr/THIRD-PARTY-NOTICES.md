@@ -1,50 +1,24 @@
-# FilePilot OCR Third-Party Notices
+# FilePilot bundled OCR notices
 
-FilePilot can bundle a local Tesseract OCR sidecar. The OCR sidecar is separate
-third-party software and is not authored by FilePilot.
+Windows candidate builds compile Tesseract 5.5.3, Leptonica 1.87.0,
+libpng 1.6.59 and zlib 1.3.2 from the source archives recorded with SHA-256
+in source-lock.json. English, Arabic and Swedish models use the pinned
+`tessdata_fast` revision recorded in the same file. Build-time downloads are
+verified before use. The generated runtime manifest records the compiled
+executable checksum and the exact files included in this installer.
 
-## Verified components
+The executable statically links only the listed components and the Microsoft
+C/C++ runtime. It does not include the old MSYS2 binary dependency bundle
+catalogued by license-map.json. That catalogue is for the optional manual
+import tool only; it is not a list of files distributed in this candidate.
 
-### Tesseract OCR
-- Project: Tesseract OCR
-- License: Apache License 2.0
-- Runtime version for the currently reviewed Windows bundle: 5.5.3.20260724
-- Upstream: https://github.com/tesseract-ocr/tesseract
+Redistribution texts with the upstream copyright notices accompany the runtime:
 
-The Tesseract documentation explicitly notes that Tesseract depends on other
-packages which may use different open-source licenses.
+- Tesseract and language data: Apache-2.0; Tesseract AUTHORS included.
+- Leptonica: BSD-2-Clause, Copyright (C) 2001-2020 Leptonica.
+- libpng: PNG Reference Library License, copyright notices in Libpng.txt.
+- zlib: zlib license, copyright notices in Zlib.txt.
 
-### Leptonica
-- Project: Leptonica
-- License: BSD 2-Clause
-- Runtime version reported by the reviewed Tesseract bundle: 1.87.0
-- Upstream: https://github.com/DanBloomberg/leptonica
-
-### Tesseract language data
-- Repository: tessdata_fast
-- Languages bundled by FilePilot: English (eng), Arabic (ara)
-- License: Apache License 2.0
-- Upstream: https://github.com/tesseract-ocr/tessdata_fast
-
-## Windows runtime dependency audit
-
-The reviewed Windows Tesseract distribution also contains dynamically linked
-third-party libraries including image codecs, compression libraries, ICU,
-GLib/Pango/Cairo, curl/archive dependencies, compiler runtimes, and related
-libraries.
-
-Their licenses are not covered merely by Tesseract's Apache-2.0 license.
-FilePilot therefore treats each bundled runtime file as requiring explicit
-license/provenance metadata in the OCR runtime manifest.
-
-A public FilePilot release MUST NOT bundle the OCR runtime while any manifest
-file entry is marked REVIEW_REQUIRED or otherwise lacks reviewed license
-metadata. This notice is not a substitute for the individual license texts or
-attribution notices required by those dependencies.
-
-## Redistribution contract
-
-The packaging pipeline verifies the hashes of all OCR runtime files and refuses
-to build a bundled OCR installer when required provenance/license review is
-incomplete. Exact license texts and required attribution notices must accompany
-the final distributable OCR payload before public release.
+The license-bundle.json file maps each identifier to its accompanying text.
+FilePilot converts supported non-PNG images to temporary PNGs; original files
+are retained. PDF rendering uses the application's separately packaged pypdfium2.
