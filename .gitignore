@@ -230,3 +230,6 @@ __marimo__/
 # Generated pinned OCR build outputs
 .ocr-build/
 third_party/ocr/runtime/
+
+# Local source-preview Python environment
+.venv-dev/

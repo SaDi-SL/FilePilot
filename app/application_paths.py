@@ -99,12 +99,18 @@ def resolve_application_paths(
         else Path(__file__).resolve().parent.parent
     )
 
+    env = os.environ if environment is None else environment
     if not is_frozen:
+        # Explicit source-preview opt-in; ordinary source runs keep their roots.
+        profile_value = env.get("FILEPILOT_DEV_PROFILE", "").strip()
+        profile = Path(profile_value).expanduser() if profile_value else project_root
+        if not profile.is_absolute():
+            raise ApplicationPathError("FILEPILOT_DEV_PROFILE must be an absolute path")
         return ApplicationPaths(
             installed=False,
             install_root=project_root,
             resource_root=project_root,
-            user_data_root=project_root,
+            user_data_root=profile.resolve(),
         )
 
     executable_path = Path(executable or sys.executable).resolve()
@@ -116,7 +122,6 @@ def resolve_application_paths(
     else:
         resource_root = install_root
 
-    env = os.environ if environment is None else environment
     local_app_data = env.get("LOCALAPPDATA", "").strip()
     if not local_app_data:
         raise ApplicationPathError(

@@ -27,6 +27,14 @@ jobs:
         run: python -m pip install -r requirements-qt.txt
       - name: Run every test module in a fresh process
         run: python scripts/check_tests.py
+      - name: Prepare source preview without building an installer
+        run: .\start-filepilot.cmd --check
+      - name: Verify cached preview startup and Qt launch from its environment
+        run: |
+          .\start-filepilot.cmd --check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          .\.venv-dev\Scripts\python.exe -m unittest tests.test_windows_dev_launcher
+          exit $LASTEXITCODE
       - name: Show validation summary
         if: always()
         shell: pwsh

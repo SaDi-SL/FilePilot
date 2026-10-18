@@ -16,9 +16,34 @@ The charcoal, purple and orange UI includes guided setup and a multi-resolution 
 ## Start on Windows
 
 ```powershell
-python -m pip install -r requirements-qt.txt
-python -m app.ui.qt
+.\start-filepilot.cmd
 ```
+
+For development, close the installed FilePilot and double-click
+**start-filepilot.cmd** in the project folder. The first run requires Python 3.12
+(recommended; 3.13 is also supported) and internet access to create a private
+`.venv-dev` environment. Following runs check local imports and reuse it; libraries
+are installed again only when the requirements change or `--repair` is requested.
+No EXE build, Setup download or reinstallation is required for each code change.
+
+The preview uses the current user's `%LOCALAPPDATA%\FilePilot` configuration and
+search index, with code/resources from this checkout. It reuses a complete installed
+English/Arabic/Swedish OCR bundle read-only, including custom per-user Inno install
+locations. The launcher prints the profile and OCR location. Without that bundle,
+normal source OCR discovery is used; OCR may be unavailable. Ollama and the saved
+models remain separate. Close the preview before starting the installed version,
+updating the project, or changing branches. Settings/index updates made in the
+preview are real updates to this shared profile. Use an explicit absolute
+`FILEPILOT_DEV_PROFILE` environment variable for a separate test profile if needed.
+Ordinary `python -m app.ui.qt` keeps the existing repository profile behavior.
+
+To update, close FilePilot, run `git pull --ff-only` on the development branch,
+then open **start-filepilot.cmd** again. Changes appear after restart; there is no
+live reload. `start-filepilot.cmd --check` prepares/checks without opening the UI;
+`start-filepilot.cmd --repair` checks dependency installation again. The launcher
+blocks a running installed EXE or another preview using the same profile; it never
+terminates either process automatically. Avoid running another source entry point
+against this shared profile at the same time.
 
 Start with **Overview → Guided setup**, then **Document library**. Add a folder; preparation starts automatically. Use **Prepare documents** to refresh or resume later. **More options** contains local-AI checks and indexing details. Adding a library folder never moves its files. Basic text search works without a local AI model; semantic search uses `bge-m3`, and summaries/answers use the Ollama model saved in Settings.
 
@@ -49,4 +74,4 @@ The current code remains a **development build**, not a newly published stable r
 
 ## Download a tested Windows candidate
 
-The **Windows installer candidate** Actions workflow builds the executable and installer, then checks installation, a visible Qt window, normal shutdown and uninstallation with user-data preservation on a disposable Windows runner. Its successful run provides a `FilePilot-Windows-<commit>` artifact ZIP: extract it and run the Setup executable inside `installer`. This is an unsigned development candidate; Ollama/models remain separate and this candidate does not bundle an OCR runtime. No GitHub Release is published automatically. Artifacts are retained for 14 days. The workflow also supports manual runs once available on the default branch; on this development branch, application or packaging changes trigger the candidate build. Superseded builds are cancelled automatically.
+The **Windows installer candidate** Actions workflow builds the executable and installer, then checks installation, a visible Qt window, normal shutdown and uninstallation with user-data preservation on a disposable Windows runner. Its successful run provides a `FilePilot-Windows-<commit>` artifact ZIP: extract it and run the Setup executable inside `installer`. This is an unsigned development candidate; Ollama/models remain separate and OCR-enabled Setup builds bundle local English, Arabic and Swedish OCR. No GitHub Release is published automatically. Artifacts are retained for 14 days. The workflow also supports manual runs once available on the default branch; on this development branch, application or packaging changes trigger the candidate build. Superseded builds are cancelled automatically.
