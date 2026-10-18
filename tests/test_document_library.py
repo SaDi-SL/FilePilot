@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from dataclasses import replace
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
@@ -173,7 +174,7 @@ class LibraryTests(unittest.TestCase):
 
     def test_existing_legacy_search_database_upgrades_without_losing_text(self):
         self.index.index_file(self.source)
-        with self.index._connect() as db:
+        with closing(self.index._connect()) as db, db:
             for table in ("library_roots", "library_issues", "library_state"):
                 db.execute(f"DROP TABLE {table}")
         restored = ProductSearch(SearchIndex(self.index.database_path))

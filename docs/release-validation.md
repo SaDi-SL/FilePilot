@@ -26,7 +26,7 @@ One additional read-only-before-monitoring-setup regression test was added after
 
 Earlier build, installation, application launch and uninstallation succeeded on the user's Windows PC. That historical result remains valid for the tested artifact. The new library/AI functionality has not yet been tried on that PC or in a newly built Windows package. Automated document tests use controlled providers; no live Ollama model inference was claimed in this environment.
 
-The first Windows workflow actually ran 791 tests with no skips and exposed six failing modules. The logs showed Windows short-path aliases (`RUNNER~1`) breaking path-equality fixtures and fault injectors, and Qt URL slash formatting breaking string comparisons. The runner now uses a canonical temporary directory, and URL assertions compare resolved Path objects. A new Windows run must verify those fixes; failures are not skipped. The test runner fails on imports, native crashes and timeouts as well as assertion failures.
+The first Windows workflow actually ran 791 tests with no skips and exposed six failing modules. The logs showed Windows short-path aliases (`RUNNER~1`) breaking path-equality fixtures and fault injectors, and Qt URL slash formatting breaking string comparisons. The runner now uses a canonical temporary directory, and URL assertions compare resolved Path objects. The second Windows run passed every module except a new legacy-database compatibility test whose fixture left its SQLite connection open during temporary-directory cleanup. The fixture now explicitly closes the connection. A new Windows run must verify that final fix; failures are not skipped. The test runner fails on imports, native crashes and timeouts as well as assertion failures.
 
 ## Public-release gate
 
