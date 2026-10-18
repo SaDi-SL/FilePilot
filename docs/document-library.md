@@ -70,3 +70,25 @@ no embedded text, and indexes at most the first 20 pages, within the existing
 text continue to use that text; this update does not OCR every image in a mixed
 PDF. OCR quality depends on image clarity; extracted excerpts should be reviewed
 when exact wording matters.
+
+## Preview and selected-file actions
+
+The library now pairs the document list with an inline preview. Selecting a PDF
+shows its rendered pages with Previous/Next controls; supported images show their
+contents, and text/Office documents show a bounded text preview. Rendering and
+reading run in the background. Fast selection changes are debounced; stale
+responses cannot replace the currently selected file. Previews do not move or
+rewrite source files and do not require Ollama.
+
+Open file and Summarize selected appear beside the preview. Compare appears when
+two documents are selected, while organization proposals and technical controls
+remain under More options. The layout stacks vertically at narrow widths and
+uses the page's existing scroll area. Empty catalogs and filters with no matches
+show the next-step message instead of an empty preview panel.
+
+Reading failures remain visible and cannot be summarized. Check OCR inspects
+local runtime availability and language files; a missing bundled runtime points
+to installing the Setup build. It does not claim to diagnose every damaged PDF,
+OCR recognition error or extraction timeout. Preview errors separately suggest
+opening the original document. Stored vectors on unreadable records are labelled
+Not ready rather than implying that the document can be summarized.

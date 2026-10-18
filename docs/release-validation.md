@@ -87,3 +87,34 @@ unsigned and requires separate local Ollama/models for AI summaries. No stable
 release was published or main merged. The previously documented Linux ownership
 failures remain outside this Windows OCR change. A later documentation-only
 commit records these results without changing the tested application or package.
+
+## Inline library preview candidate — 18 October 2026
+
+Tested application commit: `c58ac72f671432864fda45e6a863a52aacaf88e1`.
+All **830 tests in 54 modules passed on Windows, with zero skips**. The independent
+Windows quality workflow passed as well. Five new checks cover real multi-page
+PDF rendering with source hashes unchanged, debounced selection/stale-result
+rejection, OCR availability/repair guidance, empty/filter states, and rendering
+outside the GUI thread. Existing library, browser and document-action regressions
+also passed. The layout was visually checked at 1200 and 650 pixels; a real scroll
+viewport check verified scrolling, failed-preview guidance and blocked summaries
+for unreadable documents. Preview and primary actions share one selected-file pane.
+
+The actual installer was built, installed and launched on Windows. All eight
+installed OCR checks passed again, as did normal shutdown and uninstall data
+preservation. The package report records source fingerprint
+`cffe8c141bc7998eec3b31319fc03cd00fa7e785bbccc453b2d41896f93ac45e`.
+
+- Candidate run: https://github.com/SaDi-SL/FilePilot/actions/runs/39140243098
+- Download: https://github.com/SaDi-SL/FilePilot/actions/runs/39140243098/artifacts/12140804155
+- Evidence: https://github.com/SaDi-SL/FilePilot/actions/runs/39140243098/artifacts/12140564943
+- Quality: https://github.com/SaDi-SL/FilePilot/actions/runs/39140243086
+- ZIP: 141,434,620 bytes; retention ends 1 November 2026.
+
+The user's screenshot showed Read failed and OCR unavailable for two PDFs. Their
+contents and runtime diagnostics were not provided, so their underlying failures
+are not claimed fixed. The new inline preview/error state and Check OCR operation
+make the next diagnostic concrete. The candidate remains unsigned/development;
+no stable release was published or main merged. Known Linux ownership failures
+remain outside this Windows UI update. This later documentation-only record does
+not change the tested application or package.
