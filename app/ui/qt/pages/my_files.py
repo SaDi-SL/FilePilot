@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal, QUrl
+from PySide6.QtCore import Qt, Signal, QUrl, QTimer, QPoint
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QFileDialog,
@@ -419,6 +419,7 @@ class MyFilesPage(QWidget):
             self.library_workspace = LibraryWorkspace(controller, self.bridge)
             self.workspace_tabs.addTab(self.library_workspace, "Document library")
             self.library_workspace.search_requested.connect(self._show_library_search)
+            self.library_workspace.result_ready.connect(self._reveal_document_result)
             controller.result.connect(self._library_result)
             self.file_browser.summarize_requested.connect(self._summarize_browsed_file)
         self.workspace_tabs.setCurrentIndex(3)
@@ -464,6 +465,16 @@ class MyFilesPage(QWidget):
         safety_failed_signal = getattr(self.bridge, "safety_request_failed", None)
         if safety_failed_signal is not None:
             safety_failed_signal.connect(self._request_failed)
+
+    def _reveal_document_result(self, heading):
+        # Wait for the newly visible result controls to take their final positions.
+        def reveal():
+            if self.workspace_tabs.currentWidget() is not self.library_workspace:
+                return
+            self.scroll_area.widget().layout().activate()
+            position = heading.mapTo(self.scroll_area.widget(), QPoint(0, 0))
+            self.scroll_area.verticalScrollBar().setValue(max(0, position.y() - 24))
+        QTimer.singleShot(0, self, reveal)
 
     def _request_answer(self) -> None:
         self.workspace_tabs.setCurrentIndex(2)

@@ -92,3 +92,14 @@ to installing the Setup build. It does not claim to diagnose every damaged PDF,
 OCR recognition error or extraction timeout. Preview errors separately suggest
 opening the original document. Stored vectors on unreadable records are labelled
 Not ready rather than implying that the document can be summarized.
+
+## Visible document review feedback
+
+While a selected-file review runs, its button reads **Preparing result…** and a
+local progress indicator explains that the first answer can take longer while
+the model loads. Failures appear beside the document controls and allow another
+attempt. Completed summaries, comparisons and organization suggestions show the
+requested file names above the answer. The outer My Files page scrolls to that
+heading after layout updates, including at narrow window sizes; completion does
+not switch tabs or scroll an unrelated workspace. An unsupported/no-evidence
+response is also revealed so users can read the outcome.

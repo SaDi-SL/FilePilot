@@ -40,6 +40,7 @@ class _ActionGrid(QGridLayout):
 class LibraryWorkspace(QWidget):
     """A read-only document library with explicit indexing and grounded insights."""
     search_requested = Signal()
+    result_ready = Signal(QWidget)
 
     def __init__(self, controller, bridge, parent=None):
         super().__init__(parent)
@@ -184,6 +185,7 @@ class LibraryWorkspace(QWidget):
         self.document_body.setChildrenCollapsible(False)
         self.document_body.addWidget(self.files)
         self.preview = LibraryPreview(controller)
+        self.preview.content_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.document_body.addWidget(self.preview)
         self.document_body.setStretchFactor(0, 3)
         self.document_body.setStretchFactor(1, 2)
@@ -224,6 +226,22 @@ class LibraryWorkspace(QWidget):
         self.compare_button.hide()
         self.suggest_button.hide()
         self.preview.content_layout.insertWidget(3, self.document_controls)
+        self.document_status = QLabel()
+        self.document_status.setWordWrap(True)
+        self.document_status.setTextFormat(Qt.TextFormat.PlainText)
+        self.document_status.hide()
+        self.preview.content_layout.insertWidget(3, self.document_status)
+        self.document_progress = QProgressBar()
+        self.document_progress.setRange(0, 0)
+        self.document_progress.setAccessibleName("Preparing document insights")
+        self.document_progress.hide()
+        self.preview.content_layout.insertWidget(4, self.document_progress)
+        self.result_heading = QLabel()
+        self.result_heading.setProperty("role", "sectionTitle")
+        self.result_heading.setTextFormat(Qt.TextFormat.PlainText)
+        self.result_heading.setWordWrap(True)
+        self.result_heading.hide()
+        card.content_layout.addWidget(self.result_heading)
         self.scope = scope = QLabel("Insights use selected indexed excerpts and local Ollama. Long documents are sampled; chunk numbers are not PDF page numbers.")
         scope.setProperty("role", "caption")
         scope.setWordWrap(True)
@@ -353,6 +371,7 @@ class LibraryWorkspace(QWidget):
     def _busy_changed(self, busy):
         self._busy = busy
         enabled = not self._locked()
+        self.summary_button.setText("Preparing result…" if self._document_busy else "Summarize selected")
         self.ai_button.setEnabled(enabled)
         self.update_button.setEnabled(enabled)
         self.add_button.setEnabled(enabled)
@@ -467,6 +486,10 @@ class LibraryWorkspace(QWidget):
             self.controller.request("status")
         elif key == "document":
             self._document_busy = False
+            self.document_progress.hide()
+            self.document_status.setText("No supported summary found. See the result below." if result.status == "no_evidence"
+                else "Your result is ready below, with sources to check.")
+            self.result_heading.show()
             self._review = result
             self.answer.setPlainText(result.answer)
             self._reading_direction(self.answer, result.answer)
@@ -488,6 +511,8 @@ class LibraryWorkspace(QWidget):
                 "Local excerpt-based review complete. Verify the sources below. Organization proposals are suggestions only; no files were changed.")
             self._busy_changed(self._busy)
 
+            self.result_ready.emit(self.result_heading)
+
     def _error(self, key, message):
         if key == "preview":
             return
@@ -497,6 +522,9 @@ class LibraryWorkspace(QWidget):
             self._root_busy = False
         if key == "document":
             self._document_busy = False
+            self.document_progress.hide()
+            self.document_status.setText(message)
+            self.document_status.show()
         self.message.setText(message)
         if key == "document" and "Prepare local AI" in message:
             self.more_button.setChecked(True)
@@ -544,6 +572,7 @@ class LibraryWorkspace(QWidget):
         paths = self._selected_paths()
         self.preview.select(paths[0] if len(paths) == 1 else None)
         enabled = not self._locked()
+        self.summary_button.setText("Preparing result…" if self._document_busy else "Summarize selected")
         readable = bool(paths) and all(item.data(0, Qt.ItemDataRole.UserRole).status == "indexed" for item in self.files.selectedItems())
         self.summary_button.setEnabled(enabled and readable and len(paths) == 1)
         self.suggest_button.setEnabled(enabled and readable and len(paths) == 1)
@@ -574,6 +603,11 @@ class LibraryWorkspace(QWidget):
     def _start_document(self, paths, *, compare=False, suggest=False):
         self._document_busy = True
         self._clear_review()
+        operation = "Comparison" if compare else "Organization suggestions" if suggest else "Summary"
+        self.result_heading.setText(f"{operation} · " + " / ".join(Path(path).name for path in paths))
+        self.document_status.setText("Reading your document and preparing the result… The first answer may take longer while the local model loads.")
+        self.document_status.show()
+        self.document_progress.show()
         self.message.setText("Preparing local AI and reading selected excerpts… the first answer may take longer while the model loads.")
         self._busy_changed(False)
         self.controller.request("document", paths=paths, compare=compare, suggest=suggest, language=self.language.currentText())
@@ -587,6 +621,7 @@ class LibraryWorkspace(QWidget):
 
     def _clear_review(self):
         self._review = None
+        self.result_heading.hide()
         self._source_records = ()
         self.result_tools.hide()
         self.answer.clear()

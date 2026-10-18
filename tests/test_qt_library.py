@@ -71,6 +71,63 @@ class LibraryQtTests(unittest.TestCase):
         self.assertFalse(self.widget.empty_state.isHidden())
         self.assertIn("No documents match", self.widget.empty_state.text())
 
+    def test_summary_feedback_keeps_requested_filename_and_releases_on_error(self):
+        revealed = []
+        self.widget.result_ready.connect(revealed.append)
+        self.widget.summarize_path(self.path)
+        self.assertFalse(self.widget.document_progress.isHidden())
+        self.assertIn("Preparing", self.widget.summary_button.text())
+        self.assertFalse(self.widget.summary_button.isEnabled())
+        self._show_review()
+        self.assertTrue(self.widget.document_progress.isHidden())
+        self.assertIn(self.path.name, self.widget.result_heading.text())
+        self.assertEqual(revealed, [self.widget.result_heading])
+        other = self.path.with_name("second.txt")
+        self.widget.summarize_path(other)
+        self.assertTrue(self.widget.answer.isHidden())
+        self.assertTrue(self.widget.result_heading.isHidden())
+        self.assertIn(other.name, self.widget.result_heading.text())
+        self.widget._error("document", "Ollama is unavailable. Try again.")
+        self.assertTrue(self.widget.document_progress.isHidden())
+        self.assertIn("Try again", self.widget.document_status.text())
+        self.assertFalse(self.widget.document_status.isHidden())
+        self.assertEqual(self.widget.summary_button.text(), "Summarize selected")
+        self.assertEqual(len(revealed), 1)
+
+    def test_result_is_revealed_in_outer_page_scroll_at_narrow_and_wide_sizes(self):
+        from tests.test_qt_my_files import MyFilesBridgeStub
+        from app.ui.qt.pages.my_files import MyFilesPage
+        bridge = MyFilesBridgeStub()
+        bridge.library = self.controller
+        page = MyFilesPage(bridge)
+        try:
+            workspace = page.library_workspace
+            page.workspace_tabs.setCurrentWidget(workspace)
+            workspace._result("status", self.snapshot)
+            for width in (650, 1200):
+                page.resize(width, 700)
+                page.show()
+                QTest.qWait(30)
+                page.scroll_area.verticalScrollBar().setValue(0)
+                workspace.summarize_path(self.path)
+                self.controller.result.emit("document", RAGAnswer("Summary", "Evidence", (), "ollama", "answered"))
+                QTest.qWait(30)
+                self.assertGreater(page.scroll_area.verticalScrollBar().value(), 0)
+                position = workspace.result_heading.mapTo(page.scroll_area.viewport(), workspace.result_heading.rect().topLeft())
+                self.assertGreaterEqual(position.y(), 0)
+                self.assertLess(position.y(), page.scroll_area.viewport().height() // 2)
+                self.assertFalse(workspace.answer.isHidden())
+            # Finishing in the background must not jump another workspace.
+            page.workspace_tabs.setCurrentIndex(1)
+            page.scroll_area.verticalScrollBar().setValue(0)
+            workspace.summarize_path(self.path)
+            self.controller.result.emit("document", RAGAnswer("Summary", "Evidence", (), "ollama", "no_evidence"))
+            QTest.qWait(30)
+            self.assertEqual(page.scroll_area.verticalScrollBar().value(), 0)
+        finally:
+            page.close()
+            page.deleteLater()
+
     def test_add_folder_prepares_only_after_success_and_releases_controls_on_error(self):
         with patch("app.ui.qt.widgets.library_workspace.QFileDialog.getExistingDirectory", return_value=self.tmp.name):
             self.widget.add_button.click()
